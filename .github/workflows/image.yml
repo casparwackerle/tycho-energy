@@ -55,7 +55,7 @@ jobs:
             LABEL: ${{ inputs.imageTag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # NOTE:  setting fetch-depth to 0 to retrieve the entire history
           # instead of a shallow-clone so that all tags are fetched as well.
@@ -100,14 +100,14 @@ jobs:
 
       - name: Generate image attestation
         if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch')}}
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v3
         with:
           subject-name: quay.io/sustainable_computing_io/${{matrix.IMAGE_NAME}}
           subject-digest: ${{ steps.build-push-image.outputs.digest }}
           push-to-registry: ${{ inputs.pushImage }}
 
       - name: Generate SBOM
-        uses: anchore/sbom-action@v0.18.0
+        uses: anchore/sbom-action@v0.20.5
         with:
           image: quay.io/sustainable_computing_io/${{matrix.IMAGE_NAME}}:${{matrix.LABEL}}
           artifact-name: sbom-${{matrix.IMAGE_NAME}}-${{matrix.LABEL}}.json
@@ -115,14 +115,14 @@ jobs:
 
       - name: save Kepler image SBOM as artifact
         if: ${{ inputs.pushImage }}
-        uses: actions/upload-artifact@v4.6.1
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: sbom-${{matrix.IMAGE_NAME}}-${{matrix.LABEL}}.spdx.json
           path: ./sbom-${{matrix.IMAGE_NAME}}-${{matrix.LABEL}}.spdx.json
           retention-days: 1
 
       - name: Generate SBOM attestation
-        uses: actions/attest-sbom@v2
+        uses: actions/attest-sbom@v3
         if: ${{ inputs.pushImage }}
         with:
           subject-name: quay.io/sustainable_computing_io/${{matrix.IMAGE_NAME}}

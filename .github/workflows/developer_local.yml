@@ -16,7 +16,7 @@ jobs:
       PROMETHEUS_ENABLE: false
       GRAFANA_ENABLE: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: local cluster set up
         run: make cluster-up
       - name: local container test

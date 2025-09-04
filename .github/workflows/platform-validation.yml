@@ -16,7 +16,7 @@ jobs:
       CTR_CMD: docker
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
@@ -44,7 +44,7 @@ jobs:
           IMAGE_OUTPUT_PATH: ${{env.OUTPUT_DIR}}${{env.KEPLER_FILE_NAME}}
 
       - name: Save Kepler image as artifact
-        uses: actions/upload-artifact@v4.6.1
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: kepler
           path: ${{env.OUTPUT_DIR}}${{env.KEPLER_FILE_NAME}}
@@ -71,7 +71,7 @@ jobs:
           IMAGE_OUTPUT_PATH: ${{env.OUTPUT_DIR}}${{env.VALIDATOR_FILE_NAME}}
 
       - name: Save kepler-validator test image as artifact
-        uses: actions/upload-artifact@v4.6.1
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: validator
           path: ${{env.OUTPUT_DIR}}${{env.VALIDATOR_FILE_NAME}}
@@ -87,15 +87,15 @@ jobs:
       CTR_CMD: docker
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Download Kepler test image artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: kepler
 
       - name: Download kepler-validator test image artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: validator
 
@@ -131,7 +131,7 @@ jobs:
           IMAGE_TAG: x86-rapl
 
       - name: Use Kepler action to deploy cluster
-        uses: sustainable-computing-io/kepler-action@v0.0.7
+        uses: sustainable-computing-io/kepler-action@v0.0.10
         with:
           cluster_provider: ${{matrix.cluster_provider}}
           local_dev_cluster_version: v0.0.9
@@ -171,7 +171,7 @@ jobs:
 
       - name: Save artifacts
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4.6.1
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: artifacts
           path: ${{env.ARTIFACT_DIR}}

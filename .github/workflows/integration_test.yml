@@ -16,7 +16,7 @@ jobs:
     steps:
       # checkout source code
       - name: checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       # set up golang
       - name: install Go
         uses: actions/setup-go@v5
@@ -34,7 +34,7 @@ jobs:
           IMAGE_OUTPUT_PATH: ${{env.OUTPUT_DIR}}${{env.FILE_NAME}}
       # save kepler image
       - name: save Kepler image as artifact
-        uses: actions/upload-artifact@v4.6.1
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: keplerlibbpf
           path: ${{env.OUTPUT_DIR}}${{env.FILE_NAME}}
@@ -53,10 +53,10 @@ jobs:
       CTR_CMD: docker
     steps:
       - name: checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: download Kepler image artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: keplerlibbpf
 
@@ -79,7 +79,7 @@ jobs:
           INPUT_PATH: ${{env.FILE_NAME}}
       # set up k8s cluster with ebpf
       - name: use Kepler action to deploy cluster
-        uses: sustainable-computing-io/kepler-action@v0.0.7
+        uses: sustainable-computing-io/kepler-action@v0.0.10
         with:
           cluster_provider: ${{matrix.cluster_provider}}
           local_dev_cluster_version: v0.0.9
@@ -102,7 +102,7 @@ jobs:
 
       - name: Save artifacts
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4.6.1
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: artifacts
           path: ${{env.ARTIFACT_DIR}}
