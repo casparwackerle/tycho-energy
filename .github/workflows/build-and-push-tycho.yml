@@ -29,11 +29,6 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/tycho-energy
-          tags: |
-            type=sha
-            type=raw,value=dev-{{date 'YYYYMMDD-HHmmss'}}
-
           tags: |
             type=sha
             type=raw,value=dev-{{date 'YYYYMMDD-HHmmss'}}
