@@ -9,26 +9,28 @@ on: # yamllint disable-line rule:truthy
 jobs:
   # daily go security
   gosec:
-    if: github.repository == 'sustainable-computing-io/kepler'
+    if: ${{ github.repository == 'sustainable-computing-io/kepler' }}
     uses: ./.github/workflows/gosec.yml
-  # daily base image build and image build
+  # daily base image build
   image_base:
-    if: github.repository == 'sustainable-computing-io/kepler'
+    if: ${{ github.repository == 'sustainable-computing-io/kepler' }}
     uses: ./.github/workflows/image_base.yml
     secrets:
       username: ${{ secrets.BOT_NAME }}
       password: ${{ secrets.BOT_TOKEN }}
+  # daily final image build
   image:
+    if: ${{ github.repository == 'sustainable-computing-io/kepler' }}
     needs: [image_base]
     uses: ./.github/workflows/image.yml
     secrets:
       username: ${{ secrets.BOT_NAME }}
       password: ${{ secrets.BOT_TOKEN }}
-  # daily openSSF scan
+  # daily OpenSSF scan
   scorecard:
-    if: github.repository == 'sustainable-computing-io/kepler'
+    if: ${{ github.repository == 'sustainable-computing-io/kepler' }}
     uses: ./.github/workflows/scorecard.yml
   # daily rpm
   rpm:
-    if: github.repository == 'sustainable-computing-io/kepler'
+    if: ${{ github.repository == 'sustainable-computing-io/kepler' }}
     uses: ./.github/workflows/rpm.yml
