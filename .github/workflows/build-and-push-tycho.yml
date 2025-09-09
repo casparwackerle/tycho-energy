@@ -34,6 +34,11 @@ jobs:
             type=sha
             type=raw,value=dev-{{date 'YYYYMMDD-HHmmss'}}
 
+          tags: |
+            type=sha
+            type=raw,value=dev-{{date 'YYYYMMDD-HHmmss'}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
       - name: Build and push (multi-arch)
         uses: docker/build-push-action@v6
         with:
