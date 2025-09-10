@@ -31,7 +31,6 @@ jobs:
         with:
           tags: |
             type=sha
-            type=raw,value=dev-{{date 'YYYYMMDD-HHmmss'}}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and push (multi-arch)
