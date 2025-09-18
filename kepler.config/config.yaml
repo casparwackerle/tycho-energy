@@ -1,0 +1,98 @@
+---
+# -- Replaces the name of the chart in the Chart.yaml file
+nameOverride: ""
+# -- Replaces the generated name
+fullnameOverride: ""
+
+image:
+  # -- Repository to pull the image from
+  repository: "ghcr.io/casparwackerle/tycho-energy"
+  # -- Image tag, if empty it will get it from the chart's appVersion
+  tag: "latest"
+  # -- Pull policy
+  pullPolicy: Always
+
+# -- Secret name for pulling images from private repository
+imagePullSecrets: []
+
+# -- Additional DaemonSet annotations
+annotations: {}
+
+# -- Additional pod annotations
+podAnnotations: {}
+
+# -- Additional pod labels
+podLabels: {}
+
+# -- Privileges and access control settings for a Pod (all containers in a pod)
+podSecurityContext: {}
+  # fsGroup: 2000
+
+# -- Privileges and access control settings for a container
+securityContext:
+  privileged: true
+
+# -- Node selection constraint
+nodeSelector:
+  kubernetes.io/os: linux
+
+# -- Toleration for taints
+tolerations:
+  - effect: NoSchedule
+    key: node-role.kubernetes.io/control-plane
+
+# -- Affinity rules
+affinity: {}
+
+# -- CPU/MEM resources
+resources: {}
+
+# -- Extra environment variables
+extraEnvVars:
+  KEPLER_LOG_LEVEL: "5"           #reduce log level to 5 for finished builds
+  # METRIC_PATH: "/metrics"
+  # BIND_ADDRESS: "0.0.0.0:9102"
+  ENABLE_GPU: "false"
+  ENABLE_QAT: "false"
+  ENABLE_EBPF_CGROUPID: "true"
+  EXPOSE_HW_COUNTER_METRICS: "false" # temporarily changed
+  EXPOSE_IRQ_COUNTER_METRICS: "true"
+  EXPOSE_CGROUP_METRICS: "true"
+  ENABLE_PROCESS_METRICS: "true"
+  CPU_ARCH_OVERRIDE: ""
+  CGROUP_METRICS: '*'
+  REDFISH_PROBE_INTERVAL_IN_SECONDS: "60"
+  REDFISH_SKIP_SSL_VERIFY: "true"
+
+canMount:
+  usrSrc: true  # /usr/src may not available, ie GKE
+
+service:
+  annotations: {}
+  type: ClusterIP
+  port: 9102
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+serviceMonitor:
+  enabled: true
+  namespace: tycho 
+  interval: 10s
+  scrapeTimeout: 5s
+  labels: {}
+  attachMetadata:
+    node: false
+  relabelings:
+    - action: replace
+      regex: (.*)
+      replacement: $1
+      sourceLabels:
+        - __meta_kubernetes_pod_node_name
+      targetLabel: instance
