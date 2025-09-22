@@ -12,6 +12,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"io"
+	"iter"
 	"os"
 	"slices"
 	"strings"
@@ -113,7 +114,8 @@ type WriteSettings struct {
 
 	// CanonicalAttrVal forces the production of XML character references for
 	// attribute value characters &, < and ". If false, XML character
-	// references are also produced for > and '. Default: false.
+	// references are also produced for > and '. Ignored when AttrSingleQuote
+	// is true. Default: false.
 	CanonicalAttrVal bool
 
 	// AttrSingleQuote causes attributes to use single quotes (attr='example')
@@ -751,11 +753,32 @@ func (e *Element) findTermCharDataIndex(start int) int {
 }
 
 // CreateElement creates a new element with the specified tag (i.e., name) and
-// adds it as the last child token of this element. The tag may include a
-// prefix followed by a colon.
+// adds it as the last child of element 'e'. The tag may include a prefix
+// followed by a colon.
 func (e *Element) CreateElement(tag string) *Element {
 	space, stag := spaceDecompose(tag)
 	return newElement(space, stag, e)
+}
+
+// CreateChild performs the same task as CreateElement but calls a
+// continuation function after the child element is created, allowing
+// additional actions to be performed on the child element before returning.
+//
+// This method of element creation is particularly useful when building nested
+// XML documents from code. For example:
+//
+//	org := doc.CreateChild("organization", func(e *Element) {
+//		e.CreateComment("Mary")
+//		e.CreateChild("person", func(e *Element) {
+//			e.CreateAttr("name", "Mary")
+//			e.CreateAttr("age", "30")
+//			e.CreateAttr("hair", "brown")
+//		})
+//	})
+func (e *Element) CreateChild(tag string, cont func(e *Element)) *Element {
+	child := e.CreateElement(tag)
+	cont(child)
+	return child
 }
 
 // AddChild adds the token 't' as the last child of the element. If token 't'
@@ -809,7 +832,7 @@ func (e *Element) InsertChildAt(index int, t Token) {
 	}
 
 	if t.Parent() != nil {
-		if t.Parent() == e && t.Index() > index {
+		if t.Parent() == e && t.Index() < index {
 			index--
 		}
 		t.Parent().RemoveChild(t)
@@ -996,24 +1019,29 @@ func (e *Element) SelectAttrValue(key, dflt string) string {
 
 // ChildElements returns all elements that are children of this element.
 func (e *Element) ChildElements() []*Element {
-	var elements []*Element
-	for _, t := range e.Child {
-		if c, ok := t.(*Element); ok {
-			elements = append(elements, c)
+	return slices.Collect(e.ChildElementsSeq())
+}
+
+// ChildElementsSeq returns an iterator over all child elements of this
+// element.
+func (e *Element) ChildElementsSeq() iter.Seq[*Element] {
+	return func(yield func(*Element) bool) {
+		for _, t := range e.Child {
+			if c, ok := t.(*Element); ok {
+				if !yield(c) {
+					return
+				}
+			}
 		}
 	}
-	return elements
 }
 
 // SelectElement returns the first child element with the given 'tag' (i.e.,
 // name). The function returns nil if no child element matching the tag is
 // found. The tag may include a namespace prefix followed by a colon.
 func (e *Element) SelectElement(tag string) *Element {
-	space, stag := spaceDecompose(tag)
-	for _, t := range e.Child {
-		if c, ok := t.(*Element); ok && spaceMatch(space, c.Space) && stag == c.Tag {
-			return c
-		}
+	for element := range e.SelectElementsSeq(tag) {
+		return element
 	}
 	return nil
 }
@@ -1021,14 +1049,23 @@ func (e *Element) SelectElement(tag string) *Element {
 // SelectElements returns a slice of all child elements with the given 'tag'
 // (i.e., name). The tag may include a namespace prefix followed by a colon.
 func (e *Element) SelectElements(tag string) []*Element {
-	space, stag := spaceDecompose(tag)
-	var elements []*Element
-	for _, t := range e.Child {
-		if c, ok := t.(*Element); ok && spaceMatch(space, c.Space) && stag == c.Tag {
-			elements = append(elements, c)
+	return slices.Collect(e.SelectElementsSeq(tag))
+}
+
+// SelectElementsSeq returns an iterator over all child elements with the
+// given 'tag' (i.e., name). The tag may include a namespace prefix followed
+// by a colon.
+func (e *Element) SelectElementsSeq(tag string) iter.Seq[*Element] {
+	return func(yield func(*Element) bool) {
+		space, stag := spaceDecompose(tag)
+		for _, t := range e.Child {
+			if c, ok := t.(*Element); ok && spaceMatch(space, c.Space) && stag == c.Tag {
+				if !yield(c) {
+					return
+				}
+			}
 		}
 	}
-	return elements
 }
 
 // FindElement returns the first element matched by the XPath-like 'path'
@@ -1041,10 +1078,8 @@ func (e *Element) FindElement(path string) *Element {
 // FindElementPath returns the first element matched by the 'path' object. The
 // function returns nil if no element is found using the path.
 func (e *Element) FindElementPath(path Path) *Element {
-	p := newPather()
-	elements := p.traverse(e, path)
-	if len(elements) > 0 {
-		return elements[0]
+	for element := range path.traverse(e) {
+		return element
 	}
 	return nil
 }
@@ -1053,13 +1088,26 @@ func (e *Element) FindElementPath(path Path) *Element {
 // string. The function returns nil if no child element is found using the
 // path. It panics if an invalid path string is supplied.
 func (e *Element) FindElements(path string) []*Element {
-	return e.FindElementsPath(MustCompilePath(path))
+	return slices.Collect(e.FindElementsSeq(path))
+}
+
+// FindElementsSeq returns an iterator over elements matched by the XPath-like
+// 'path' string. This function uses Go's iterator support for
+// memory-efficient traversal. It panics if an invalid path string is
+// supplied.
+func (e *Element) FindElementsSeq(path string) iter.Seq[*Element] {
+	return e.FindElementsPathSeq(MustCompilePath(path))
 }
 
 // FindElementsPath returns a slice of elements matched by the 'path' object.
 func (e *Element) FindElementsPath(path Path) []*Element {
-	p := newPather()
-	return p.traverse(e, path)
+	return slices.Collect(e.FindElementsPathSeq(path))
+}
+
+// FindElementsPathSeq returns an iterator over elements matched by the 'path'
+// object.
+func (e *Element) FindElementsPathSeq(path Path) iter.Seq[*Element] {
+	return path.traverse(e)
 }
 
 // NotNil returns the receiver element if it isn't nil; otherwise, it returns
@@ -1463,7 +1511,7 @@ func (a *Attr) WriteTo(w Writer, s *WriteSettings) {
 		w.WriteString(`="`)
 	}
 	var m escapeMode
-	if s.CanonicalAttrVal {
+	if s.CanonicalAttrVal && !s.AttrSingleQuote {
 		m = escapeCanonicalAttr
 	} else {
 		m = escapeNormal
