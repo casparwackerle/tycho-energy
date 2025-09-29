@@ -15,11 +15,11 @@ jobs:
   unit_test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: Install Dependencies
@@ -37,7 +37,7 @@ jobs:
         run: |
           make VERBOSE=1 test
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v5.4.0
+        uses: codecov/codecov-action@v5.5.1
         with:
           fail_ci_if_error: false # because codecov updates occasionally fail
           files: ./coverage.out

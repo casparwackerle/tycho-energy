@@ -35,7 +35,7 @@ jobs:
     outputs:
       src: ${{ steps.changes.outputs.src }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dorny/paths-filter@v3
         id: changes
         with:
@@ -60,7 +60,7 @@ jobs:
     outputs:
       src: ${{ steps.changes_baseimage.outputs.src }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dorny/paths-filter@v3
         id: changes_baseimage
         with:
