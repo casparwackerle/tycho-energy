@@ -79,6 +79,8 @@ type AppConfig struct {
 	TLSFilePath                  string
 }
 
+var tychoEmpty = flag.Bool("tycho-empty", false, "start with Tycho empty baseline (no sensors, no eBPF, no manager)")
+
 func newAppConfig() *AppConfig {
 	// Initialize flags
 	cfg := &AppConfig{}
@@ -158,20 +160,28 @@ func main() {
 	}
 
 	config.LogConfigs()
-
-	components.InitPowerImpl()
-	defer components.StopPower()
-	platform.InitPowerImpl()
-	defer platform.StopPower()
-
-	if config.IsGPUEnabled() {
-		r := accelerator.GetRegistry()
-		if a, err := accelerator.New(config.GPU, true); err == nil {
-			r.MustRegister(a) // Register the accelerator with the registry
-		} else {
-			klog.Errorf("failed to init GPU accelerators: %v", err)
+	if !*tychoEmpty {
+		components.InitPowerImpl()
+		defer components.StopPower()
+		platform.InitPowerImpl()
+		defer platform.StopPower()
+	} else {
+		// In empty mode, ensure nothing tries to read HW power:
+		config.SetEnabledHardwareCounterMetrics(false)
+		config.SetEnabledMSR(false)
+		config.SetEnableAPIServer(false) // optional: avoid kube API deps early on
+		config.SetEnabledGPU(false)
+	}
+	if !*tychoEmpty && config.IsGPUEnabled() {
+		if config.IsGPUEnabled() {
+			r := accelerator.GetRegistry()
+			if a, err := accelerator.New(config.GPU, true); err == nil {
+				r.MustRegister(a) // Register the accelerator with the registry
+			} else {
+				klog.Errorf("failed to init GPU accelerators: %v", err)
+			}
+			defer accelerator.Shutdown()
 		}
-		defer accelerator.Shutdown()
 	}
 
 	bpfExporter, err := bpf.NewExporter()

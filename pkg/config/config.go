@@ -66,6 +66,7 @@ type KeplerConfig struct {
 	MachineSpecFilePath          string
 	ExcludeSwapperProcess        bool
 }
+
 type MetricsConfig struct {
 	CoreUsageMetric    string
 	DRAMUsageMetric    string
@@ -102,6 +103,36 @@ type HostConfig struct {
 	SysDir  string
 }
 
+type TychoTimingConfig struct {
+	TimebaseQuantumMs int // resampling grid for aligned series
+	BufferWindowSec   int
+	RaplPollMs        int
+	RaplDelayMs       int
+	BpfPollMs         int
+	BpfDelayMs        int
+	GpuPollMs         int
+	GpuDelayMs        int
+	RedfishPollMs     int // note: Redfish.RedfishProbeIntervalInSeconds still exists; this overrides if >0
+	RedfishDelayMs    int
+}
+
+type TychoAnalysisConfig struct {
+	Trigger            string // "redfish" | "timer"
+	TriggerInterval    int    // used for "timer"
+	DetectLongestDelay bool
+	DelayAfterMs       int // used for "redfish"
+}
+
+type TychoCollectorConfig struct {
+	EnableRapl    bool
+	EnableBpf     bool // eBPF/software counters collection gate (separate from Kepler.ExposeBPFMetrics)
+	EnableGpu     bool // separate from Kepler.EnabledGPU to distinguish model vs collector
+	EnableRedfish bool
+	// RAPL specifics
+	PowercapBasePath string
+	RaplDomains      string // comma list: package,core,dram,psys
+}
+
 type Config struct {
 	ModelServerService     string
 	KernelVersion          float32
@@ -113,6 +144,9 @@ type Config struct {
 	Libvirt                LibvirtConfig
 	Host                   HostConfig
 	DCGMHostEngineEndpoint string
+	TychoTiming            TychoTimingConfig
+	TychoAnalysis          TychoAnalysisConfig
+	TychoCollector         TychoCollectorConfig
 }
 
 // newConfig creates and returns a new Config instance.
@@ -148,6 +182,9 @@ func newConfig() (*Config, error) {
 		DCGMHostEngineEndpoint: getConfig("NVIDIA_HOSTENGINE_ENDPOINT", defaultDCGMHostEngineEndpoint),
 		KernelVersion:          float32(0),
 		Host:                   getHostConfig(),
+		TychoTiming:            getTychoTimingConfig(),
+		TychoAnalysis:          getTychoAnalysisConfig(),
+		TychoCollector:         getTychoCollectorConfig(),
 	}, nil
 }
 
@@ -189,6 +226,40 @@ func getKeplerConfig() KeplerConfig {
 		EstimatorSelectFilter:        getConfig("ESTIMATOR_SELECT_FILTER", defaultMetricValue), // no filter
 		CPUArchOverride:              getConfig("CPU_ARCH_OVERRIDE", defaultCPUArchOverride),
 		ExcludeSwapperProcess:        getBoolConfig("EXCLUDE_SWAPPER_PROCESS", defaultExcludeSwapperProcess),
+	}
+}
+
+func getTychoTimingConfig() TychoTimingConfig {
+	return TychoTimingConfig{
+		TimebaseQuantumMs: getIntConfig("TYCHO_TIMEBASE_QUANTUM_MS", defaultTychoTimebaseQuantumMs),
+		BufferWindowSec:   getIntConfig("TYCHO_BUFFER_WINDOW_SEC", defaultTychoBufferWindowSec),
+		RaplPollMs:        getIntConfig("TYCHO_RAPL_POLL_MS", defaultTychoRaplPollMs),
+		RaplDelayMs:       getIntConfig("TYCHO_RAPL_DELAY_MS", defaultTychoRaplDelayMs),
+		BpfPollMs:         getIntConfig("TYCHO_BPF_POLL_MS", defaultTychoBpfPollMs),
+		BpfDelayMs:        getIntConfig("TYCHO_BPF_DELAY_MS", defaultTychoBpfDelayMs),
+		GpuPollMs:         getIntConfig("TYCHO_GPU_POLL_MS", defaultTychoGpuPollMs),
+		GpuDelayMs:        getIntConfig("TYCHO_GPU_DELAY_MS", defaultTychoGpuDelayMs),
+		RedfishPollMs:     getIntConfig("TYCHO_REDFISH_POLL_MS", defaultTychoRedfishPollMs),
+		RedfishDelayMs:    getIntConfig("TYCHO_REDFISH_DELAY_MS", defaultTychoRedfishDelayMs),
+	}
+}
+
+func getTychoAnalysisConfig() TychoAnalysisConfig {
+	return TychoAnalysisConfig{
+		Trigger:            getConfig("TYCHO_ANALYSIS_TRIGGER", defaultTychoTrigger),
+		TriggerInterval:    getIntConfig("TYCHO_ANALYSIS_EVERY_SEC", defaultTychoTriggerInterval),
+		DetectLongestDelay: getBoolConfig("TYCHO_ANALYSIS_DETECT_LONGEST_DELAY", defaultTychoDetectLongestDelay),
+		DelayAfterMs:       getIntConfig("TYCHO_ANALYSIS_DELAY_AFTER_MS", defaultTychoDelayAfterMs),
+	}
+}
+func getTychoCollectorConfig() TychoCollectorConfig {
+	return TychoCollectorConfig{
+		EnableRapl:       getBoolConfig("TYCHO_COLLECTOR_ENABLE_RAPL", defaultTychoEnableRapl),
+		EnableBpf:        getBoolConfig("TYCHO_COLLECTOR_ENABLE_BPF", defaultTychoEnableBpf),
+		EnableGpu:        getBoolConfig("TYCHO_COLLECTOR_ENABLE_GPU", defaultTychoEnableGpu),
+		EnableRedfish:    getBoolConfig("TYCHO_COLLECTOR_ENABLE_REDFISH", defaultTychoEnableRedfish),
+		PowercapBasePath: getConfig("TYCHO_COLLECTOR_POWERCAP_BASE_PATH", defaultTychoPowercapBasePath),
+		RaplDomains:      getConfig("TYCHO_COLLECTOR_RAPL_DOMAINS", defaultTychoRaplDomains),
 	}
 }
 
@@ -314,9 +385,34 @@ func logBoolConfigs() {
 	}
 }
 
+func logTychoConfigs() {
+	klog.V(5).Infof("START TYCHO CONFIGS: ----------------------------------------")
+	klog.V(5).Infof("TYCHO_TIMEBASE_QUANTUM_MS: %d", instance.TychoTiming.TimebaseQuantumMs)
+	klog.V(5).Infof("TYCHO_BUFFER_WINDOW_SEC: %d", instance.TychoTiming.BufferWindowSec)
+	klog.V(5).Infof("TYCHO_POLL/DELAY: RAPL: %d/%d, BPF: %d/%d, GPU: %d/%d, REDFISH: %d/%d",
+		instance.TychoTiming.RaplPollMs, instance.TychoTiming.RaplDelayMs,
+		instance.TychoTiming.BpfPollMs, instance.TychoTiming.BpfDelayMs,
+		instance.TychoTiming.GpuPollMs, instance.TychoTiming.GpuDelayMs,
+		instance.TychoTiming.RedfishPollMs, instance.TychoTiming.RedfishDelayMs)
+	klog.V(5).Infof("TYCHO_ANALYSIS_TRIGGER: %s", instance.TychoAnalysis.Trigger)
+	klog.V(5).Infof("TYCHO_ANALYSIS_EVERY_SEC: %d", instance.TychoAnalysis.TriggerInterval)
+	klog.V(5).Infof("TYCHO_ANALYSIS_DETECT_LONGEST_DELAY: %t", instance.TychoAnalysis.DetectLongestDelay)
+	klog.V(5).Infof("TYCHO_ANALYSIS_DELAY_AFTER_MS: %d", instance.TychoAnalysis.DelayAfterMs)
+	klog.V(5).Infof("TYCHO_COLLECTOR_ENABLED: RAPL: %t, BPF: %t, GPU: %t, REDFISH: %T",
+		instance.TychoCollector.EnableRapl,
+		instance.TychoCollector.EnableBpf,
+		instance.TychoCollector.EnableGpu,
+		instance.TychoCollector.EnableRedfish)
+	klog.V(5).Infof("TYCHO_COLLECTOR_POWERCAP_BASE_PATH: %s", instance.TychoCollector.PowercapBasePath)
+	klog.V(5).Infof("TYCHO_COLLECTOR_RAPL_DOMAINS: %s", instance.TychoCollector.RaplDomains)
+	klog.V(5).Infof("STOP TYCHO CONFIGS: ----------------------------------------")
+
+}
+
 func LogConfigs() {
 	klog.V(5).Infof("config-dir: %s", BaseDir)
 	logBoolConfigs()
+	logTychoConfigs()
 }
 
 func SetRedfishCredFilePath(credFilePath string) {
@@ -595,6 +691,86 @@ func IsGPUEnabled() bool {
 
 func SamplePeriodSec() uint64 {
 	return instance.SamplePeriodSec
+}
+
+func TimebaseQuantumMs() int {
+	return instance.TychoTiming.TimebaseQuantumMs
+}
+
+func BufferWindowSec() int {
+	return instance.TychoTiming.BufferWindowSec
+}
+
+func RaplPollMs() int {
+	return instance.TychoTiming.RaplPollMs
+}
+
+func RaplDelayMs() int {
+	return instance.TychoTiming.RaplDelayMs
+}
+
+func BpfPollMs() int {
+	return instance.TychoTiming.BpfPollMs
+}
+
+func BpfDelayMs() int {
+	return instance.TychoTiming.BpfDelayMs
+}
+
+func GpuPollMs() int {
+	return instance.TychoTiming.GpuPollMs
+}
+
+func GpuDelayMs() int {
+	return instance.TychoTiming.GpuDelayMs
+}
+
+func RedfishPollMs() int {
+	return instance.TychoTiming.RedfishPollMs
+}
+
+func RedfishDelayMs() int {
+	return instance.TychoTiming.RedfishDelayMs
+}
+
+func Trigger() string {
+	return instance.TychoAnalysis.Trigger
+}
+
+func TriggerInterval() int {
+	return instance.TychoAnalysis.TriggerInterval
+}
+
+func DetectLongestDelay() bool {
+	return instance.TychoAnalysis.DetectLongestDelay
+}
+
+func DelayAfterMs() int {
+	return instance.TychoAnalysis.DelayAfterMs
+}
+
+func EnableRapl() bool {
+	return instance.TychoCollector.EnableRapl
+}
+
+func EnableBpf() bool {
+	return instance.TychoCollector.EnableBpf
+}
+
+func EnableGpu() bool {
+	return instance.TychoCollector.EnableGpu
+}
+
+func EnableRedfish() bool {
+	return instance.TychoCollector.EnableRedfish
+}
+
+func PowercapBasePath() string {
+	return instance.TychoCollector.PowercapBasePath
+}
+
+func RaplDomains() string {
+	return instance.TychoCollector.RaplDomains
 }
 
 func CoreUsageMetric() string {

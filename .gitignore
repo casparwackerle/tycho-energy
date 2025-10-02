@@ -46,3 +46,6 @@ coverage.out
 
 # old libbpf-based binaries
 bpfassets/
+
+# old kepler reference files
+reference/
