@@ -1,6 +1,6 @@
 <mxfile host="65bd71144e" scale="3" border="0">
     <diagram name="Page-1" id="ocs8DF9MuHszCAL341tP">
-        <mxGraphModel dx="2211" dy="1016" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" background="none" math="0" shadow="0">
+        <mxGraphModel dx="884" dy="406" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" background="none" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -788,7 +788,7 @@
                     </mxGeometry>
                 </mxCell>
                 <mxCell id="453" value="&lt;font style=&quot;font-size: 20px; color: rgb(195, 154, 29);&quot;&gt;other packages&lt;/font&gt;" style="text;align=center;fontStyle=1;verticalAlign=middle;spacingLeft=3;spacingRight=3;strokeColor=none;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;html=1;" vertex="1" parent="1">
-                    <mxGeometry x="1250" y="40" width="80" height="26" as="geometry"/>
+                    <mxGeometry x="1235" y="40" width="80" height="26" as="geometry"/>
                 </mxCell>
                 <mxCell id="470" style="edgeStyle=none;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeWidth=2;" edge="1" parent="1" source="454" target="431">
                     <mxGeometry relative="1" as="geometry">
@@ -909,7 +909,7 @@
                 <mxCell id="492" value="&amp;nbsp;Period:&lt;br&gt;&amp;nbsp;50 ms" style="shape=note;size=20;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;" vertex="1" parent="1">
                     <mxGeometry x="367.5" y="300" width="87.5" height="40" as="geometry"/>
                 </mxCell>
-                <mxCell id="493" value="&amp;nbsp;Hot buffers are continuously filled with&lt;br&gt;&amp;nbsp;data, while cold buffers (containing data&lt;br&gt;&amp;nbsp;from the last measurement period) are&lt;br&gt;&amp;nbsp;used to calculate/model energy metrics&lt;br&gt;&amp;nbsp;of the last measurement period." style="shape=note;size=20;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;" vertex="1" parent="1">
+                <mxCell id="493" value="&amp;nbsp;Hot buffers are continuously filled&lt;br&gt;&amp;nbsp;with&amp;nbsp;data, while cold buffers (containing&lt;br&gt;&amp;nbsp;data&amp;nbsp;from the last measurement period)&lt;br&gt;&amp;nbsp;are&amp;nbsp;used to calculate/model energy&lt;br&gt;&amp;nbsp;metrics of the last measurement period." style="shape=note;size=20;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;" vertex="1" parent="1">
                     <mxGeometry x="950" y="75" width="220" height="85" as="geometry"/>
                 </mxCell>
                 <mxCell id="494" value="&amp;nbsp;redfish is polled every &lt;br&gt;&amp;nbsp;second, even though redfish&lt;br&gt;&amp;nbsp;publish intervals are longer" style="shape=note;size=20;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;" vertex="1" parent="1">
