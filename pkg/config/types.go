@@ -122,7 +122,7 @@ const (
 	defaultTychoTrigger            = "redfish" // "redfish" | "timer"
 	defaultTychoTriggerInterval    = 5         // only used if trigger=timer
 	defaultTychoDetectLongestDelay = false
-	defaultTychoDelayAfterMs       = 200
+	defaultTychoDelayAfterMs       = 200 //will be overwritten if there is a metric delay that is longer
 
 	// Tycho Collector Config
 	defaultTychoEnableRapl       = true

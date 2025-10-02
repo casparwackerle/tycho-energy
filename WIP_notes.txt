@@ -25,6 +25,6 @@ start implementation
                 func Trigger() string {
                     return instance.TychoAnalysis.Trigger
                 }
-            add logging
+            add logging in config.go
                 klog.V(5).Infof("TYCHO_ANALYSIS_TRIGGER: %s", instance.TychoAnalysis.Trigger)
             
