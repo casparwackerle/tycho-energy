@@ -1,0 +1,11 @@
+installing goplantuml to generate uml diagrams
+    did not currently run right
+
+installing go-callvis
+    go install github.com/ofabry/go-callvis@latest
+    write scripts for easy execution in doc_tycho
+    
+
+install gotraceui (target: execution tracing)
+    sudo apt install gcc pkg-config libwayland-dev libx11-dev libx11-xcb-dev libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev libffi-dev libxcursor-dev libvulkan-dev
+    install via unofficial flatpak https://github.com/hdonnay/co.honnef.Gotraceui

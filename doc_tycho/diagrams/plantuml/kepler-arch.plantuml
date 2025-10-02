@@ -1,0 +1,71 @@
+@startuml
+
+
+|Manager|
+:Start() parse flags, init config;
+fork
+  :spawn Ticker(samplePeriod);
+fork again
+  :start HTTP server (/metrics, /pprof);
+end fork
+
+|Manager|
+repeat 
+
+  :<-ticker.C;
+  note right
+    configurable ticker
+    every "SamplePeriodSec"
+  end note
+  :Lock PromCollector;
+
+  |StatsCollector|
+    partition "Update()" {
+      :resetDeltaValue();
+      note right
+        reset the previous collected value because
+        not all process will have new data
+      end note
+
+      partition "updateResourceUtilizationMetrics()" {
+          partition "updateProcessResourceUtilizationMetrics" {
+            :UpdateProcessBPFMetrics();
+            note right
+              calls package "bpf":
+              read process utilization metrics
+            end note
+            :UpdateProcessGPUUtilizationMetrics();
+            note right
+              calls package "accelerator":
+              read GPU utilization metrics
+            end note
+            
+        }
+        :AggregateProcessResourceUtilizationMetrics();
+        note right
+          attribute untilization to containers, VMs, nodes
+        end note
+      }
+
+      partition "UpdateEnergyUtilizationMetrics()" {
+        :UpdateNodeEnergyUtilizationMetrics();
+          note right
+            calls package "node_energy" (connected to sensor packages):
+            read all RAPL anbd GPU energy metrics
+            re-calculate node idle energy
+          end note        
+        :UpdateProcessEnergyUtilizationMetrics();
+          note right
+            calls package "process_energy" (connected to "model" package)
+            estimate process energy using process resources
+          end note             
+        :AggregateProcessEnergyUtilizationMetrics();
+          note right
+            aggregate processes' metrics to contains and VMs.
+          end note                     
+      }
+    }
+  |Manager|
+  :Unlock PromCollector;
+repeat while (true)
+@enduml
