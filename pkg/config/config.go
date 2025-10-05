@@ -104,21 +104,23 @@ type HostConfig struct {
 }
 
 type TychoTimingConfig struct {
-	TimebaseQuantumMs int // resampling grid for aligned series
-	BufferWindowSec   int
-	RaplPollMs        int
-	RaplDelayMs       int
-	BpfPollMs         int
-	BpfDelayMs        int
-	GpuPollMs         int
-	GpuDelayMs        int
-	RedfishPollMs     int // note: Redfish.RedfishProbeIntervalInSeconds still exists; this overrides if >0
-	RedfishDelayMs    int
+	TimebaseQuantumMs       int // resampling grid for aligned series
+	BufferWindowSec         int
+	BufferMarginCycles      int
+	RaplPollMs              int
+	RaplDelayMs             int
+	BpfPollMs               int
+	BpfDelayMs              int
+	GpuPollMs               int
+	GpuDelayMs              int
+	RedfishPollMs           int // note: Redfish.RedfishProbeIntervalInSeconds still exists; this overrides if >0
+	RedfishDelayMs          int
+	RedfishExpectedChangeMs int
 }
 
 type TychoAnalysisConfig struct {
 	Trigger            string // "redfish" | "timer"
-	TriggerInterval    int    // used for "timer"
+	TriggerIntervalSec int    // used for "timer"
 	DetectLongestDelay bool
 	DelayAfterMs       int // used for "redfish"
 }
@@ -199,6 +201,8 @@ func Initialize(baseDir string) (*Config, error) {
 	once.Do(func() {
 		BaseDir = baseDir
 		instance, err = newConfig()
+		validateTychoQuick()
+		normalizeTycho()
 	})
 	return instance, err
 }
@@ -231,23 +235,25 @@ func getKeplerConfig() KeplerConfig {
 
 func getTychoTimingConfig() TychoTimingConfig {
 	return TychoTimingConfig{
-		TimebaseQuantumMs: getIntConfig("TYCHO_TIMEBASE_QUANTUM_MS", defaultTychoTimebaseQuantumMs),
-		BufferWindowSec:   getIntConfig("TYCHO_BUFFER_WINDOW_SEC", defaultTychoBufferWindowSec),
-		RaplPollMs:        getIntConfig("TYCHO_RAPL_POLL_MS", defaultTychoRaplPollMs),
-		RaplDelayMs:       getIntConfig("TYCHO_RAPL_DELAY_MS", defaultTychoRaplDelayMs),
-		BpfPollMs:         getIntConfig("TYCHO_BPF_POLL_MS", defaultTychoBpfPollMs),
-		BpfDelayMs:        getIntConfig("TYCHO_BPF_DELAY_MS", defaultTychoBpfDelayMs),
-		GpuPollMs:         getIntConfig("TYCHO_GPU_POLL_MS", defaultTychoGpuPollMs),
-		GpuDelayMs:        getIntConfig("TYCHO_GPU_DELAY_MS", defaultTychoGpuDelayMs),
-		RedfishPollMs:     getIntConfig("TYCHO_REDFISH_POLL_MS", defaultTychoRedfishPollMs),
-		RedfishDelayMs:    getIntConfig("TYCHO_REDFISH_DELAY_MS", defaultTychoRedfishDelayMs),
+		TimebaseQuantumMs:       getIntConfig("TYCHO_TIMEBASE_QUANTUM_MS", defaultTychoTimebaseQuantumMs),
+		BufferWindowSec:         getIntConfig("TYCHO_BUFFER_WINDOW_SEC", defaultTychoBufferWindowSec),
+		BufferMarginCycles:      getIntConfig("TYCHO_BUFFER_MARGIN_CYCLES", detaultTychoBufferMarginCycles),
+		RaplPollMs:              getIntConfig("TYCHO_RAPL_POLL_MS", defaultTychoRaplPollMs),
+		RaplDelayMs:             getIntConfig("TYCHO_RAPL_DELAY_MS", defaultTychoRaplDelayMs),
+		BpfPollMs:               getIntConfig("TYCHO_BPF_POLL_MS", defaultTychoBpfPollMs),
+		BpfDelayMs:              getIntConfig("TYCHO_BPF_DELAY_MS", defaultTychoBpfDelayMs),
+		GpuPollMs:               getIntConfig("TYCHO_GPU_POLL_MS", defaultTychoGpuPollMs),
+		GpuDelayMs:              getIntConfig("TYCHO_GPU_DELAY_MS", defaultTychoGpuDelayMs),
+		RedfishPollMs:           getIntConfig("TYCHO_REDFISH_POLL_MS", defaultTychoRedfishPollMs),
+		RedfishDelayMs:          getIntConfig("TYCHO_REDFISH_DELAY_MS", defaultTychoRedfishDelayMs),
+		RedfishExpectedChangeMs: getIntConfig("TYCHO_REDFISH_EXPECTED_CHANGE_MS", detaultTychoRedfishExpectedChangeMs),
 	}
 }
 
 func getTychoAnalysisConfig() TychoAnalysisConfig {
 	return TychoAnalysisConfig{
 		Trigger:            getConfig("TYCHO_ANALYSIS_TRIGGER", defaultTychoTrigger),
-		TriggerInterval:    getIntConfig("TYCHO_ANALYSIS_EVERY_SEC", defaultTychoTriggerInterval),
+		TriggerIntervalSec: getIntConfig("TYCHO_ANALYSIS_EVERY_SEC", defaultTychoTriggerIntervalSec),
 		DetectLongestDelay: getBoolConfig("TYCHO_ANALYSIS_DETECT_LONGEST_DELAY", defaultTychoDetectLongestDelay),
 		DelayAfterMs:       getIntConfig("TYCHO_ANALYSIS_DELAY_AFTER_MS", defaultTychoDelayAfterMs),
 	}
@@ -389,16 +395,18 @@ func logTychoConfigs() {
 	klog.V(5).Infof("START TYCHO CONFIGS: ----------------------------------------")
 	klog.V(5).Infof("TYCHO_TIMEBASE_QUANTUM_MS: %d", instance.TychoTiming.TimebaseQuantumMs)
 	klog.V(5).Infof("TYCHO_BUFFER_WINDOW_SEC: %d", instance.TychoTiming.BufferWindowSec)
+	klog.V(5).Infof("TYCHO_BUFFER_MARGIN_CYCLES: %d", instance.TychoTiming.BufferMarginCycles)
 	klog.V(5).Infof("TYCHO_POLL/DELAY: RAPL: %d/%d, BPF: %d/%d, GPU: %d/%d, REDFISH: %d/%d",
 		instance.TychoTiming.RaplPollMs, instance.TychoTiming.RaplDelayMs,
 		instance.TychoTiming.BpfPollMs, instance.TychoTiming.BpfDelayMs,
 		instance.TychoTiming.GpuPollMs, instance.TychoTiming.GpuDelayMs,
 		instance.TychoTiming.RedfishPollMs, instance.TychoTiming.RedfishDelayMs)
+	klog.V(5).Infof("TYCHO_REDFISH_EXPECTED_CHANGE_MS: %d", instance.TychoTiming.RedfishExpectedChangeMs)
 	klog.V(5).Infof("TYCHO_ANALYSIS_TRIGGER: %s", instance.TychoAnalysis.Trigger)
-	klog.V(5).Infof("TYCHO_ANALYSIS_EVERY_SEC: %d", instance.TychoAnalysis.TriggerInterval)
+	klog.V(5).Infof("TYCHO_ANALYSIS_EVERY_SEC: %d", instance.TychoAnalysis.TriggerIntervalSec)
 	klog.V(5).Infof("TYCHO_ANALYSIS_DETECT_LONGEST_DELAY: %t", instance.TychoAnalysis.DetectLongestDelay)
 	klog.V(5).Infof("TYCHO_ANALYSIS_DELAY_AFTER_MS: %d", instance.TychoAnalysis.DelayAfterMs)
-	klog.V(5).Infof("TYCHO_COLLECTOR_ENABLED: RAPL: %t, BPF: %t, GPU: %t, REDFISH: %T",
+	klog.V(5).Infof("TYCHO_COLLECTOR_ENABLED: RAPL: %t, BPF: %t, GPU: %t, REDFISH: %t",
 		instance.TychoCollector.EnableRapl,
 		instance.TychoCollector.EnableBpf,
 		instance.TychoCollector.EnableGpu,
@@ -407,6 +415,163 @@ func logTychoConfigs() {
 	klog.V(5).Infof("TYCHO_COLLECTOR_RAPL_DOMAINS: %s", instance.TychoCollector.RaplDomains)
 	klog.V(5).Infof("STOP TYCHO CONFIGS: ----------------------------------------")
 
+}
+
+func validateTychoQuick() {
+	t := &instance.TychoTiming
+	a := &instance.TychoAnalysis
+	c := &instance.TychoCollector
+
+	// basic bounds
+	if t.TimebaseQuantumMs <= 0 {
+		klog.Fatalf("TYCHO: timebaseQuantumMs must be > 0 (got %d)", t.TimebaseQuantumMs)
+	}
+	clampNonNegative := func(p *int, name string) {
+		if *p < 0 {
+			klog.V(2).Infof("TYCHO: %s < 0 (%d) -> clamping to 0", name, *p)
+			*p = 0
+		}
+	}
+	for _, fld := range []struct {
+		p *int
+		n string
+	}{
+		{&t.RaplPollMs, "RaplPollMs"}, {&t.RaplDelayMs, "RaplDelayMs"},
+		{&t.BpfPollMs, "BpfPollMs"}, {&t.BpfDelayMs, "BpfDelayMs"},
+		{&t.GpuPollMs, "GpuPollMs"}, {&t.GpuDelayMs, "GpuDelayMs"},
+		{&t.RedfishPollMs, "RedfishPollMs"}, {&t.RedfishDelayMs, "RedfishDelayMs"},
+		{&t.RedfishExpectedChangeMs, "RedfishExpectedChangeMs"},
+		{&t.BufferWindowSec, "BufferWindowSec"}, {&t.BufferMarginCycles, "BufferMarginCycles"},
+		{&a.DelayAfterMs, "DelayAfterMs"},
+	} {
+		clampNonNegative(fld.p, fld.n)
+	}
+	if t.BufferWindowSec == 0 {
+		t.BufferWindowSec = 1
+	}
+
+	// trigger coherence
+	if a.Trigger == "redfish" && !c.EnableRedfish {
+		klog.V(2).Infof("TYCHO: trigger=redfish but redfish disabled -> switching to timer")
+		a.Trigger = "timer"
+	}
+	if a.Trigger == "timer" {
+		if a.TriggerIntervalSec <= 0 {
+			klog.V(2).Infof("TYCHO: trigger=timer but interval<=0 -> defaulting to 5s")
+			a.TriggerIntervalSec = 5
+		}
+	} else if a.Trigger != "redfish" {
+		klog.V(2).Infof("TYCHO: unknown trigger=%q -> defaulting to redfish", a.Trigger)
+		a.Trigger = "redfish"
+	}
+
+	// redfish cadence sanity
+	if t.RedfishExpectedChangeMs < t.RedfishPollMs {
+		klog.V(2).Infof("TYCHO: RedfishExpectedChangeMs (%d) < RedfishPollMs (%d) -> raising to poll",
+			t.RedfishExpectedChangeMs, t.RedfishPollMs)
+		t.RedfishExpectedChangeMs = t.RedfishPollMs
+	}
+
+	// at-least-one collector
+	if !(c.EnableRapl || c.EnableBpf || c.EnableGpu || c.EnableRedfish) {
+		klog.V(1).Infof("TYCHO: no collectors enabled; the agent will not collect telemetry")
+	}
+
+	// filesystem hint (non-fatal)
+	if c.EnableRapl {
+		if _, err := os.Stat(defaultTychoPowercapBasePath); err != nil {
+			klog.V(1).Infof("TYCHO: powercap base path %q not found (RAPL may fail): %v",
+				defaultTychoPowercapBasePath, err)
+		}
+	}
+}
+
+// Ensure plausible configuration values, adjust if necessary
+func normalizeTycho() {
+	t := &instance.TychoTiming
+	a := &instance.TychoAnalysis
+	c := &instance.TychoCollector
+
+	// helpers
+	align := func(ms, q int) int {
+		if q <= 0 {
+			return ms
+		}
+		if r := ms % q; r != 0 {
+			return ms + (q - r)
+		}
+		return ms
+	}
+	max := func(vals ...int) int {
+		m := vals[0]
+		for _, v := range vals[1:] {
+			if v > m {
+				m = v
+			}
+		}
+		return m
+	}
+
+	// Align everything to quantum
+	q := t.TimebaseQuantumMs
+	t.RaplPollMs = align(t.RaplPollMs, q)
+	t.RaplDelayMs = align(t.RaplDelayMs, q)
+	t.BpfPollMs = align(t.BpfPollMs, q)
+	t.BpfDelayMs = align(t.BpfDelayMs, q)
+	t.GpuPollMs = align(t.GpuPollMs, q)
+	t.GpuDelayMs = align(t.GpuDelayMs, q)
+	t.RedfishPollMs = align(t.RedfishPollMs, q)
+	t.RedfishDelayMs = align(t.RedfishDelayMs, q)
+	t.RedfishExpectedChangeMs = align(t.RedfishExpectedChangeMs, q)
+	a.DelayAfterMs = align(a.DelayAfterMs, q)
+	if t.BufferMarginCycles < 0 {
+		t.BufferMarginCycles = 0
+	}
+
+	// Ensure DelayAfterMs ≥ longest per-source delay
+	longestDelay := max(t.RaplDelayMs, t.BpfDelayMs, t.GpuDelayMs, t.RedfishDelayMs)
+	if a.DelayAfterMs < longestDelay {
+		klog.V(2).Infof("TYCHO: auto-increasing DelayAfterMs from %d to %d (longest source delay)",
+			a.DelayAfterMs, longestDelay)
+		a.DelayAfterMs = longestDelay
+	}
+
+	// Compute fast-sources requirement (acquisition + analysis fire)
+	fastSourcesMs := max(
+		t.RaplPollMs+t.RaplDelayMs,
+		t.BpfPollMs+t.BpfDelayMs,
+		t.GpuPollMs+t.GpuDelayMs,
+		t.RedfishPollMs+t.RedfishDelayMs,
+	)
+	requiredMs := fastSourcesMs + a.DelayAfterMs
+
+	// Compute Redfish coverage if enabled (slow publisher coverage)
+	if c.EnableRedfish {
+		if t.RedfishExpectedChangeMs > requiredMs {
+			requiredMs = t.RedfishExpectedChangeMs + a.DelayAfterMs
+		}
+	}
+
+	// Final buffer requirement: required + small safety
+	minBufMs := (requiredMs * (1 + t.BufferMarginCycles)) + 100 // 100 ms safety
+	if t.BufferWindowSec*1000 < minBufMs {
+		newSec := (minBufMs + 999) / 1000 // ceil ms→s
+		klog.V(2).Infof(
+			"TYCHO: auto-increasing BufferWindowSec from %ds to %ds (required=%dms, fast+delayAfter=%dms, redfishCov=%dms, quantum=%dms)",
+			t.BufferWindowSec, newSec, minBufMs, fastSourcesMs+a.DelayAfterMs, t.RedfishExpectedChangeMs, q,
+		)
+		t.BufferWindowSec = newSec
+		klog.V(2).Infof("TYCHO buffer calc: fast=%dms, delayAfter=%dms, redfishCov=%dms, safety=100ms => minBufMs=%dms -> %ds",
+			fastSourcesMs, a.DelayAfterMs, t.RedfishExpectedChangeMs, minBufMs, newSec)
+	}
+
+	// Optional compact summary
+	klog.V(2).Infof(
+		"TYCHO EFFECTIVE: poll={rapl:%dms,bpf:%dms,gpu:%dms,redfish:%dms} delay={rapl:%d,bpf:%d,gpu:%d,redfish:%d} fireDelay=%dms buffer=%ds quantum=%dms trigger=%s",
+		t.RaplPollMs, t.BpfPollMs, t.GpuPollMs, t.RedfishPollMs,
+		t.RaplDelayMs, t.BpfDelayMs, t.GpuDelayMs, t.RedfishDelayMs,
+		a.DelayAfterMs, t.BufferWindowSec, q, a.Trigger,
+	)
 }
 
 func LogConfigs() {
@@ -701,6 +866,10 @@ func BufferWindowSec() int {
 	return instance.TychoTiming.BufferWindowSec
 }
 
+func BufferMarginCycles() int {
+	return instance.TychoTiming.BufferMarginCycles
+}
+
 func RaplPollMs() int {
 	return instance.TychoTiming.RaplPollMs
 }
@@ -733,12 +902,16 @@ func RedfishDelayMs() int {
 	return instance.TychoTiming.RedfishDelayMs
 }
 
+func RedfishExpectedChangeMs() int {
+	return instance.TychoTiming.RedfishExpectedChangeMs
+}
+
 func Trigger() string {
 	return instance.TychoAnalysis.Trigger
 }
 
-func TriggerInterval() int {
-	return instance.TychoAnalysis.TriggerInterval
+func TriggerIntervalSec() int {
+	return instance.TychoAnalysis.TriggerIntervalSec
 }
 
 func DetectLongestDelay() bool {

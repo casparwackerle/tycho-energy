@@ -22,9 +22,12 @@ start implementation
             add loader in config.go
                 Trigger:            getConfig("TYCHO_ANALYSIS_TRIGGER", defaultTychoTrigger),
             add getter in config.go
-                func Trigger() string {
-                    return instance.TychoAnalysis.Trigger
-                }
+                func Trigger() string {return instance.TychoAnalysis.Trigger}
             add logging in config.go
                 klog.V(5).Infof("TYCHO_ANALYSIS_TRIGGER: %s", instance.TychoAnalysis.Trigger)
             
+
+write normalizeTycho function to protect against bad configurations
+    ensure the longest delay is used everythere
+    If redish is enabled ensure that the expected publish interval is used to calculate buffer size
+    ensure buffer margin is 0 or higher -> at least one full cycle buffer
