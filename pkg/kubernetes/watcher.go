@@ -34,10 +34,10 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 
-	"github.com/sustainable-computing-io/kepler/pkg/bpf"
-	"github.com/sustainable-computing-io/kepler/pkg/collector/stats"
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/node"
+	"github.com/casparwackerle/tycho-energy/pkg/bpf"
+	"github.com/casparwackerle/tycho-energy/pkg/collector/stats"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/node"
 )
 
 const (

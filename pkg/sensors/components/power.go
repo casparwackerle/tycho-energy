@@ -19,8 +19,8 @@ package components
 import (
 	"k8s.io/klog/v2"
 
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/components/source"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/components/source"
 )
 
 type powerInterface interface {

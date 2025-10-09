@@ -5,7 +5,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sustainable-computing-io/kepler/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
 )
 
 func TestPower(t *testing.T) {

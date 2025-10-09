@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sustainable-computing-io/kepler/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"golang.org/x/exp/maps"
 	"k8s.io/klog/v2"
 )

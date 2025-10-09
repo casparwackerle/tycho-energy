@@ -19,11 +19,11 @@ package manager
 import (
 	"time"
 
-	"github.com/sustainable-computing-io/kepler/pkg/bpf"
-	"github.com/sustainable-computing-io/kepler/pkg/collector"
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/kubernetes"
-	exporter "github.com/sustainable-computing-io/kepler/pkg/metrics"
+	"github.com/casparwackerle/tycho-energy/pkg/bpf"
+	"github.com/casparwackerle/tycho-energy/pkg/collector"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/kubernetes"
+	exporter "github.com/casparwackerle/tycho-energy/pkg/metrics"
 	"k8s.io/klog/v2"
 )
 

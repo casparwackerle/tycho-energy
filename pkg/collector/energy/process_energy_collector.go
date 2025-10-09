@@ -17,8 +17,8 @@ limitations under the License.
 package energy
 
 import (
-	"github.com/sustainable-computing-io/kepler/pkg/collector/stats"
-	"github.com/sustainable-computing-io/kepler/pkg/model"
+	"github.com/casparwackerle/tycho-energy/pkg/collector/stats"
+	"github.com/casparwackerle/tycho-energy/pkg/model"
 )
 
 // UpdateProcessEnergy matches the process resource usage with the node energy consumption

@@ -29,10 +29,10 @@ import (
 	"time"
 
 	"github.com/jaypipes/ghw"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/components"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/components/source"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/platform"
-	"github.com/sustainable-computing-io/kepler/pkg/utils"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/components"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/components/source"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/platform"
+	"github.com/casparwackerle/tycho-energy/pkg/utils"
 )
 
 const (

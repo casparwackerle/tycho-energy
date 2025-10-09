@@ -67,7 +67,7 @@ GOARCH := $(shell go env GOARCH)
 GOENV = GO111MODULE="" \
 				GOOS=$(GOOS) \
 				GOARCH=$(GOARCH)
-PKG_BUILD="github.com/sustainable-computing-io/kepler/pkg/build"
+PKG_BUILD="github.com/casparwackerle/tycho-energy/pkg/build"
 LDFLAGS := $(LDFLAGS) \
 		-X $(PKG_BUILD).Version=$(VERSION) \
 		-X $(PKG_BUILD).Revision=$(GIT_SHA) \

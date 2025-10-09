@@ -21,15 +21,15 @@ import (
 	"os"
 	"time"
 
-	"github.com/sustainable-computing-io/kepler/pkg/cgroup"
-	"github.com/sustainable-computing-io/kepler/pkg/collector/stats"
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/libvirt"
-	acc "github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator"
-	dev "github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator/devices"
+	"github.com/casparwackerle/tycho-energy/pkg/cgroup"
+	"github.com/casparwackerle/tycho-energy/pkg/collector/stats"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/libvirt"
+	acc "github.com/casparwackerle/tycho-energy/pkg/sensors/accelerator"
+	dev "github.com/casparwackerle/tycho-energy/pkg/sensors/accelerator/devices"
 	"k8s.io/klog/v2"
 
-	"github.com/sustainable-computing-io/kepler/pkg/utils"
+	"github.com/casparwackerle/tycho-energy/pkg/utils"
 )
 
 // lastUtilizationTimestamp represents the CPU timestamp in microseconds at which utilization samples were last read

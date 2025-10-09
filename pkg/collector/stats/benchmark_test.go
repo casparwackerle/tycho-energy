@@ -18,11 +18,11 @@ package stats_test
 import (
 	"testing"
 
-	"github.com/sustainable-computing-io/kepler/pkg/bpf"
-	"github.com/sustainable-computing-io/kepler/pkg/collector"
-	"github.com/sustainable-computing-io/kepler/pkg/collector/stats"
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/model"
+	"github.com/casparwackerle/tycho-energy/pkg/bpf"
+	"github.com/casparwackerle/tycho-energy/pkg/collector"
+	"github.com/casparwackerle/tycho-energy/pkg/collector/stats"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/model"
 )
 
 func benchmarkNtesting(b *testing.B, processNumber int) {

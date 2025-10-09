@@ -23,8 +23,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/nodecred"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/nodecred"
 
 	"k8s.io/klog/v2"
 )

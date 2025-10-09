@@ -29,14 +29,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sustainable-computing-io/kepler/pkg/bpf"
-	"github.com/sustainable-computing-io/kepler/pkg/build"
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/manager"
-	"github.com/sustainable-computing-io/kepler/pkg/metrics"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/components"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/platform"
+	"github.com/casparwackerle/tycho-energy/internal/tycho/engine"
+	"github.com/casparwackerle/tycho-energy/pkg/bpf"
+	"github.com/casparwackerle/tycho-energy/pkg/build"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/metrics"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/accelerator"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/components"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/platform"
 	"gopkg.in/yaml.v3"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -122,6 +122,7 @@ func main() {
 
 	klog.Infof("Kepler running on version: %s", build.Version)
 
+	// prometheus
 	registry := metrics.GetRegistry()
 	registry.MustRegister(prometheus.NewGaugeFunc(
 		prometheus.GaugeOpts{
@@ -183,23 +184,64 @@ func main() {
 			defer accelerator.Shutdown()
 		}
 	}
-
+	// new eBPF exporter
 	bpfExporter, err := bpf.NewExporter()
 	if err != nil {
 		klog.Fatalf("failed to create eBPF exporter: %v", err)
 	}
 	defer bpfExporter.Detach()
 
-	m := manager.New(bpfExporter)
-	if m == nil {
+	//new eBPF exporter manager
+	collMgr := engine.New(bpfExporter)
+	if collMgr == nil {
 		klog.Fatal("could not create a collector manager")
 	}
-	defer m.Stop()
+	defer collMgr.Stop()
+
+	// Tycho owns scheduling
+	if err := collMgr.StatsCollector.Initialize(); err != nil {
+		klog.Fatalf("failed to init stats collector: %v", err)
+	}
+
+	eng := engine.NewManager()
+	_ = eng.Register("bpf", time.Duration(config.BpfPollMs())*time.Millisecond, config.EnableBpf(), bpfCollector.Collect)
+	_ = eng.Register("rapl", time.Duration(config.RaplPollMs())*time.Millisecond, config.EnableRapl(), raplCollector.Collect)
+	_ = eng.Register("redfish", time.Duration(config.RedfishPollMs())*time.Millisecond, config.EnableRedfish(), redfishCollector.Collect)
+	_ = eng.Register("gpu", time.Duration(config.GpuPollMs())*time.Millisecond, config.EnableGpu(), gpuCollector.Collect)
+
+	tycho_ctx, tycho_cancel := context.WithCancel(context.Background())
+	go func() { _ = eng.Start(tycho_ctx) }()
+	defer tycho_cancel()
+	//-------------
+	tychoMgr = engine.NewManager(*tychoPeriodMs, collMgr)
+	go func() {
+		if err := tychoMgr.Start(tychoCtx); err != nil {
+			klog.Errorf("Tycho engine error: %v", err)
+		}
+	}()
+
+	//--------------------------------------------------------------------------------
+	// --- Tycho smoke test (remove later) ---
+	// This ensures the new internal package is referenced and builds.
+	// Start() is a no-op for now, so this won't change behavior.
+	// tm := engine.NewManager(100)
+
+	// // use a short-lived context; Start currently returns immediately anyway
+	// tycho_ctx, tycho_cancel := context.WithCancel(context.Background())
+	// defer tycho_cancel()
+
+	// if err := tm.Start(tycho_ctx); err != nil {
+	// 	klog.Errorf("Tycho smoke test: manager Start() error: %v", err)
+	// } else {
+	// 	klog.Infof("Tycho smoke test: manager Start() called (no-op)")
+	// }
+
+	//--------------------------------------------------------------------------------
 
 	// starting a CollectorManager instance to collect data and report metrics
-	if startErr := m.Start(); startErr != nil {
-		klog.Infof("%s", fmt.Sprintf("failed to start : %v", startErr))
-	}
+	// if startErr := m.Start(); startErr != nil {
+	// 	klog.Infof("%s", fmt.Sprintf("failed to start : %v", startErr))
+	// }
 	metricPathConfig := config.GetMetricPath(appConfig.MetricsPath)
 	bindAddressConfig := config.GetBindAddress(appConfig.Address)
 

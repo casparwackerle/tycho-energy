@@ -31,7 +31,7 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/jaypipes/ghw"
-	"github.com/sustainable-computing-io/kepler/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"

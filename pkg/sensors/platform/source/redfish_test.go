@@ -23,7 +23,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/sustainable-computing-io/kepler/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
 )
 
 func TestRedFishClient_IsPowerSupported(t *testing.T) {

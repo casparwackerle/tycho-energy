@@ -17,7 +17,7 @@ limitations under the License.
 package consts
 
 import (
-	"github.com/sustainable-computing-io/kepler/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
 )
 
 const (

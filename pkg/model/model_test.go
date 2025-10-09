@@ -22,12 +22,12 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sustainable-computing-io/kepler/pkg/collector/stats"
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/model/utils"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/components"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/components/source"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/platform"
+	"github.com/casparwackerle/tycho-energy/pkg/collector/stats"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/model/utils"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/components"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/components/source"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/platform"
 )
 
 var _ = Describe("Test Model Unit", func() {

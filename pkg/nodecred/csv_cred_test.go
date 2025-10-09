@@ -20,7 +20,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/sustainable-computing-io/kepler/pkg/node"
+	"github.com/casparwackerle/tycho-energy/pkg/node"
 )
 
 func TestGetNodeCredByNodeName(t *testing.T) {

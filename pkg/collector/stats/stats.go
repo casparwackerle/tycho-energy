@@ -20,9 +20,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sustainable-computing-io/kepler/pkg/collector/stats/types"
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	acc "github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator"
+	"github.com/casparwackerle/tycho-energy/pkg/collector/stats/types"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	acc "github.com/casparwackerle/tycho-energy/pkg/sensors/accelerator"
 	"k8s.io/klog/v2"
 )
 

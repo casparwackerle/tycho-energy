@@ -9,7 +9,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	"github.com/sustainable-computing-io/kepler/pkg/utils"
+	"github.com/casparwackerle/tycho-energy/pkg/utils"
 )
 
 const rhelContainerd = `

@@ -4,15 +4,15 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/sustainable-computing-io/kepler/pkg/bpf"
-	"github.com/sustainable-computing-io/kepler/pkg/cgroup"
-	"github.com/sustainable-computing-io/kepler/pkg/collector/stats"
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/model"
+	"github.com/casparwackerle/tycho-energy/pkg/bpf"
+	"github.com/casparwackerle/tycho-energy/pkg/cgroup"
+	"github.com/casparwackerle/tycho-energy/pkg/collector/stats"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/model"
 
-	acc "github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/components"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/platform"
+	acc "github.com/casparwackerle/tycho-energy/pkg/sensors/accelerator"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/components"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/platform"
 )
 
 func newMockCollector(mockAttacher bpf.Exporter) *Collector {

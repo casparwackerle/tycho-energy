@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/sustainable-computing-io/kepler/pkg/node"
+	"github.com/casparwackerle/tycho-energy/pkg/node"
 
 	"k8s.io/klog/v2"
 )

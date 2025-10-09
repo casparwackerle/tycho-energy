@@ -20,13 +20,13 @@ import (
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/sustainable-computing-io/kepler/pkg/bpf"
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/metrics/consts"
-	modeltypes "github.com/sustainable-computing-io/kepler/pkg/model/types"
-	acc "github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/components"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/platform"
+	"github.com/casparwackerle/tycho-energy/pkg/bpf"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/metrics/consts"
+	modeltypes "github.com/casparwackerle/tycho-energy/pkg/model/types"
+	acc "github.com/casparwackerle/tycho-energy/pkg/sensors/accelerator"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/components"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/platform"
 	"k8s.io/klog/v2"
 )
 

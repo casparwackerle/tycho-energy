@@ -17,11 +17,11 @@ limitations under the License.
 package collector
 
 import (
-	"github.com/sustainable-computing-io/kepler/pkg/cgroup"
-	"github.com/sustainable-computing-io/kepler/pkg/collector/stats"
-	"github.com/sustainable-computing-io/kepler/pkg/utils"
+	"github.com/casparwackerle/tycho-energy/pkg/cgroup"
+	"github.com/casparwackerle/tycho-energy/pkg/collector/stats"
+	"github.com/casparwackerle/tycho-energy/pkg/utils"
 
-	"github.com/sustainable-computing-io/kepler/pkg/kubernetes"
+	"github.com/casparwackerle/tycho-energy/pkg/kubernetes"
 )
 
 // this function is only called with the watcher delayed to sync and update the container info or if the watcher is not enabled

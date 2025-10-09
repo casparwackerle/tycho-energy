@@ -24,8 +24,8 @@ package local
 import (
 	"math"
 
-	"github.com/sustainable-computing-io/kepler/pkg/model/types"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/components/source"
+	"github.com/casparwackerle/tycho-energy/pkg/model/types"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/components/source"
 )
 
 // The ratio features list follows this order

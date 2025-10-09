@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator/devices"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/accelerator/devices"
 	"k8s.io/klog/v2"
 )
 

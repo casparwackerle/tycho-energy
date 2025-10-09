@@ -21,9 +21,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sustainable-computing-io/kepler/pkg/model/types"
+	"github.com/casparwackerle/tycho-energy/pkg/model/types"
 
-	"github.com/sustainable-computing-io/kepler/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
 )
 
 var (

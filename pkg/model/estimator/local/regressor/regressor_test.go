@@ -31,9 +31,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/model/types"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/components/source"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/model/types"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/components/source"
 )
 
 var (

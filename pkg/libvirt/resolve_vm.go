@@ -26,8 +26,8 @@ import (
 	"github.com/beevik/etree"
 	"github.com/digitalocean/go-libvirt"
 
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/utils"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/utils"
 )
 
 const (

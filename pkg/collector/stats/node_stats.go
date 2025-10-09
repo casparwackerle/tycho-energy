@@ -19,10 +19,10 @@ package stats
 import (
 	"fmt"
 
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/node"
-	acc "github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator"
-	"github.com/sustainable-computing-io/kepler/pkg/utils"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/node"
+	acc "github.com/casparwackerle/tycho-energy/pkg/sensors/accelerator"
+	"github.com/casparwackerle/tycho-energy/pkg/utils"
 )
 
 type NodeStats struct {

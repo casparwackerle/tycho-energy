@@ -27,9 +27,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/kubelet"
-	"github.com/sustainable-computing-io/kepler/pkg/utils"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/kubelet"
+	"github.com/casparwackerle/tycho-energy/pkg/utils"
 	corev1 "k8s.io/api/core/v1"
 )
 

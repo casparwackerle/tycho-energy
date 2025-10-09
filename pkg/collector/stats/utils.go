@@ -19,8 +19,8 @@ package stats
 import (
 	"k8s.io/klog/v2"
 
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	acc "github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	acc "github.com/casparwackerle/tycho-energy/pkg/sensors/accelerator"
 )
 
 func GetProcessFeatureNames() []string {

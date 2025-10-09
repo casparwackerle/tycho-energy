@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sustainable-computing-io/kepler/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"k8s.io/klog/v2"
 )
 

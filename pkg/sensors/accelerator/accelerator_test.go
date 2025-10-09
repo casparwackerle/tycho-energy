@@ -18,8 +18,8 @@ package accelerator
 import (
 	"testing"
 
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator/devices"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/accelerator/devices"
 )
 
 func newMockDevice() devices.Device {

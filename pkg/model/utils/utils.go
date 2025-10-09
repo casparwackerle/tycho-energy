@@ -20,7 +20,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/components/source"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/components/source"
 )
 
 const (

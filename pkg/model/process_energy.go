@@ -19,14 +19,14 @@ package model
 import (
 	"fmt"
 
-	"github.com/sustainable-computing-io/kepler/pkg/bpf"
-	"github.com/sustainable-computing-io/kepler/pkg/collector/stats"
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/model/types"
-	"github.com/sustainable-computing-io/kepler/pkg/node"
-	acc "github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/components/source"
-	"github.com/sustainable-computing-io/kepler/pkg/utils"
+	"github.com/casparwackerle/tycho-energy/pkg/bpf"
+	"github.com/casparwackerle/tycho-energy/pkg/collector/stats"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/model/types"
+	"github.com/casparwackerle/tycho-energy/pkg/node"
+	acc "github.com/casparwackerle/tycho-energy/pkg/sensors/accelerator"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/components/source"
+	"github.com/casparwackerle/tycho-energy/pkg/utils"
 	"k8s.io/klog/v2"
 )
 

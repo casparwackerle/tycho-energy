@@ -20,13 +20,13 @@ import (
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/sustainable-computing-io/kepler/pkg/bpf"
-	"github.com/sustainable-computing-io/kepler/pkg/collector/stats"
-	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/metrics/container"
-	"github.com/sustainable-computing-io/kepler/pkg/metrics/node"
-	"github.com/sustainable-computing-io/kepler/pkg/metrics/process"
-	"github.com/sustainable-computing-io/kepler/pkg/metrics/virtualmachine"
+	"github.com/casparwackerle/tycho-energy/pkg/bpf"
+	"github.com/casparwackerle/tycho-energy/pkg/collector/stats"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/metrics/container"
+	"github.com/casparwackerle/tycho-energy/pkg/metrics/node"
+	"github.com/casparwackerle/tycho-energy/pkg/metrics/process"
+	"github.com/casparwackerle/tycho-energy/pkg/metrics/virtualmachine"
 	"k8s.io/klog/v2"
 )
 
