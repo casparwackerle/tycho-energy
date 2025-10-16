@@ -29,6 +29,10 @@ import (
 	"syscall"
 	"time"
 
+	bpfCollector "github.com/casparwackerle/tycho-energy/internal/tycho/collectors/bpf"
+	gpuCollector "github.com/casparwackerle/tycho-energy/internal/tycho/collectors/gpu"
+	raplCollector "github.com/casparwackerle/tycho-energy/internal/tycho/collectors/rapl"
+	redfishCollector "github.com/casparwackerle/tycho-energy/internal/tycho/collectors/redfish"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/engine"
 	"github.com/casparwackerle/tycho-energy/pkg/bpf"
 	"github.com/casparwackerle/tycho-energy/pkg/build"
@@ -204,21 +208,27 @@ func main() {
 	}
 
 	eng := engine.NewManager()
-	_ = eng.Register("bpf", time.Duration(config.BpfPollMs())*time.Millisecond, config.EnableBpf(), bpfCollector.Collect)
-	_ = eng.Register("rapl", time.Duration(config.RaplPollMs())*time.Millisecond, config.EnableRapl(), raplCollector.Collect)
-	_ = eng.Register("redfish", time.Duration(config.RedfishPollMs())*time.Millisecond, config.EnableRedfish(), redfishCollector.Collect)
-	_ = eng.Register("gpu", time.Duration(config.GpuPollMs())*time.Millisecond, config.EnableGpu(), gpuCollector.Collect)
+	b := bpfCollector.New(bpfCollector.Config{})
+	r := raplCollector.New(raplCollector.Config{})
+	rf := redfishCollector.New(redfishCollector.Config{})
+	g := gpuCollector.New(gpuCollector.Config{})
+
+	_ = eng.Register("bpf", time.Duration(config.BpfPollMs())*time.Millisecond, config.EnableBpf(), b.Collect)
+	_ = eng.Register("rapl", time.Duration(config.RaplPollMs())*time.Millisecond, config.EnableRapl(), r.Collect)
+	_ = eng.Register("redfish", time.Duration(config.RedfishPollMs())*time.Millisecond, config.EnableRedfish(), rf.Collect)
+	_ = eng.Register("gpu", time.Duration(config.GpuPollMs())*time.Millisecond, config.EnableGpu(), g.Collect)
 
 	tycho_ctx, tycho_cancel := context.WithCancel(context.Background())
 	go func() { _ = eng.Start(tycho_ctx) }()
 	defer tycho_cancel()
+
 	//-------------
-	tychoMgr = engine.NewManager(*tychoPeriodMs, collMgr)
-	go func() {
-		if err := tychoMgr.Start(tychoCtx); err != nil {
-			klog.Errorf("Tycho engine error: %v", err)
-		}
-	}()
+	// tychoMgr = engine.NewManager(*tychoPeriodMs, collMgr)
+	// go func() {
+	// 	if err := tychoMgr.Start(tychoCtx); err != nil {
+	// 		klog.Errorf("Tycho engine error: %v", err)
+	// 	}
+	// }()
 
 	//--------------------------------------------------------------------------------
 	// --- Tycho smoke test (remove later) ---
@@ -238,10 +248,11 @@ func main() {
 
 	//--------------------------------------------------------------------------------
 
-	// starting a CollectorManager instance to collect data and report metrics
+	//starting a CollectorManager instance to collect data and report metrics
 	// if startErr := m.Start(); startErr != nil {
 	// 	klog.Infof("%s", fmt.Sprintf("failed to start : %v", startErr))
 	// }
+
 	metricPathConfig := config.GetMetricPath(appConfig.MetricsPath)
 	bindAddressConfig := config.GetBindAddress(appConfig.Address)
 
@@ -272,7 +283,7 @@ func main() {
 	}
 
 	handler := http.ServeMux{}
-	reg := m.PrometheusCollector.RegisterMetrics()
+	reg := collMgr.PrometheusCollector.RegisterMetrics()
 	handler.Handle(metricPathConfig, promhttp.HandlerFor(
 		reg,
 		promhttp.HandlerOpts{
