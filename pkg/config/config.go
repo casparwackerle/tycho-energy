@@ -441,7 +441,7 @@ func validateTychoQuick() {
 		{&t.GpuPollMs, "GpuPollMs"}, {&t.GpuDelayMs, "GpuDelayMs"},
 		{&t.RedfishPollMs, "RedfishPollMs"}, {&t.RedfishDelayMs, "RedfishDelayMs"},
 		{&t.RedfishExpectedChangeMs, "RedfishExpectedChangeMs"},
-		{&t.BufferWindowSec, "BufferWindowSec"}, {&t.BufferMarginCycles, "BufferMarginCycles"},
+		{&t.BufferWindowSec, "BufferWindowSec"}, {&t.BufferWindowSec, "BufferWindowSec"},
 		{&a.DelayAfterMs, "DelayAfterMs"},
 	} {
 		clampNonNegative(fld.p, fld.n)
@@ -502,12 +502,22 @@ func normalizeTycho() {
 		}
 		return ms
 	}
-	max := func(vals ...int) int {
-		m := vals[0]
-		for _, v := range vals[1:] {
-			if v > m {
-				m = v
+	enabledMax := func(pairs ...struct {
+		en bool
+		v  int
+	}) int {
+		m := 0
+		set := false
+		for _, p := range pairs {
+			if !p.en {
+				continue
 			}
+			if !set || p.v > m {
+				m, set = p.v, true
+			}
+		}
+		if !set {
+			return 0
 		}
 		return m
 	}
@@ -529,7 +539,25 @@ func normalizeTycho() {
 	}
 
 	// Ensure DelayAfterMs ≥ longest per-source delay
-	longestDelay := max(t.RaplDelayMs, t.BpfDelayMs, t.GpuDelayMs, t.RedfishDelayMs)
+	// longest per-source delay (enabled only)
+	longestDelay := enabledMax(
+		struct {
+			en bool
+			v  int
+		}{c.EnableRapl, t.RaplDelayMs},
+		struct {
+			en bool
+			v  int
+		}{c.EnableBpf, t.BpfDelayMs},
+		struct {
+			en bool
+			v  int
+		}{c.EnableGpu, t.GpuDelayMs},
+		struct {
+			en bool
+			v  int
+		}{c.EnableRedfish, t.RedfishDelayMs},
+	)
 	if a.DelayAfterMs < longestDelay {
 		klog.V(2).Infof("TYCHO: auto-increasing DelayAfterMs from %d to %d (longest source delay)",
 			a.DelayAfterMs, longestDelay)
@@ -537,11 +565,24 @@ func normalizeTycho() {
 	}
 
 	// Compute fast-sources requirement (acquisition + analysis fire)
-	fastSourcesMs := max(
-		t.RaplPollMs+t.RaplDelayMs,
-		t.BpfPollMs+t.BpfDelayMs,
-		t.GpuPollMs+t.GpuDelayMs,
-		t.RedfishPollMs+t.RedfishDelayMs,
+	// acquisition duration: period + delay, enabled only
+	fastSourcesMs := enabledMax(
+		struct {
+			en bool
+			v  int
+		}{c.EnableRapl, t.RaplPollMs + t.RaplDelayMs},
+		struct {
+			en bool
+			v  int
+		}{c.EnableBpf, t.BpfPollMs + t.BpfDelayMs},
+		struct {
+			en bool
+			v  int
+		}{c.EnableGpu, t.GpuPollMs + t.GpuDelayMs},
+		struct {
+			en bool
+			v  int
+		}{c.EnableRedfish, t.RedfishPollMs + t.RedfishDelayMs},
 	)
 	requiredMs := fastSourcesMs + a.DelayAfterMs
 
@@ -554,7 +595,7 @@ func normalizeTycho() {
 
 	// Final buffer requirement: required + small safety
 	minBufMs := (requiredMs * (1 + t.BufferMarginCycles)) + 100 // 100 ms safety
-	if t.BufferWindowSec*1000 < minBufMs {
+	if t.BufferWindowSec < minBufMs*1000 {
 		newSec := (minBufMs + 999) / 1000 // ceil ms→s
 		klog.V(2).Infof(
 			"TYCHO: auto-increasing BufferWindowSec from %ds to %ds (required=%dms, fast+delayAfter=%dms, redfishCov=%dms, quantum=%dms)",
