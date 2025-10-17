@@ -64,6 +64,33 @@ extraEnvVars:
   REDFISH_PROBE_INTERVAL_IN_SECONDS: "60"
   REDFISH_SKIP_SSL_VERIFY: "true"
 
+  # Enable flags
+  TYCHO_COLLECTOR_ENABLE_BPF: "true"
+  TYCHO_COLLECTOR_ENABLE_RAPL: "true"
+  TYCHO_COLLECTOR_ENABLE_GPU: "false"
+  TYCHO_COLLECTOR_ENABLE_REDFISH: "true"
+
+  # Measurement Periods (milliseconds)
+  TYCHO_BPF_POLL_MS: "50"
+  TYCHO_RAPL_POLL_MS: "50"
+  TYCHO_GPU_POLL_MS: "200"
+  TYCHO_REDFISH_POLL_MS: "1000"
+
+  # Optional timing extras you already support
+  TYCHO_BPF_DELAY_MS: "0"
+  TYCHO_RAPL_DELAY_MS: "0"
+  TYCHO_GPU_DELAY_MS: "200"
+  TYCHO_REDFISH_DELAY_MS: "0"
+  TYCHO_TIMEBASE_QUANTUM_MS: "1"
+  TYCHO_BUFFER_WINDOW_SEC: "60"
+  TYCHO_BUFFER_MARGIN_CYCLES: "2"
+  TYCHO_REDFISH_EXPECTED_CHANGE_MS: "15000"
+
+  # Optional analysis knobs you already wired
+  TYCHO_ANALYSIS_TRIGGER: "redfish"
+  TYCHO_ANALYSIS_EVERY_SEC: "5"
+  TYCHO_ANALYSIS_DETECT_LONGEST_DELAY: "false"
+
 canMount:
   usrSrc: true  # /usr/src may not available, ie GKE
 
