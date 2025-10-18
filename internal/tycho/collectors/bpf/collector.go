@@ -4,23 +4,44 @@ import (
 	"context"
 	"time"
 
-	"k8s.io/klog/v2"
+	"github.com/casparwackerle/tycho-energy/internal/tycho/clock"
+	"github.com/casparwackerle/tycho-energy/internal/tycho/ring"
 )
 
 // Config holds dependencies/settings for the BPF collector (placeholder for now).
-type Config struct{}
+type Config struct {
+	Buf  *ring.Sync[ring.BpfSample]
+	Mono *clock.Mono
+	// ...
+}
 
 // Collector performs BPF collection (placeholder).
 type Collector struct {
-	cfg  Config
+	buf  *ring.Sync[ring.BpfSample]
+	mono *clock.Mono
 	name string
+
+	// ... drivers/handles
 }
 
 func New(cfg Config) *Collector {
-	return &Collector{cfg: cfg, name: "bpf"}
+	return &Collector{buf: cfg.Buf, mono: cfg.Mono}
 }
 
-// Collect is called by the engine at the scheduled tick timestamp.
 func (c *Collector) Collect(ctx context.Context, ts time.Time) {
-	klog.Infof("Tycho collect[%s]: tick @ %s", c.name, ts.Format(time.RFC3339Nano))
+
+	// ... gather pkg/core/dram/uncore (and take *their* device timestamps if you want)
+	cycles := uint64(1)
+	instructions := uint64(2)
+	cachemiss := uint64(3)
+	pagecachehit := uint64(4)
+
+	sample := ring.BpfSample{
+		SampleMeta:   ring.SampleMeta{Mono: c.mono.From(ts)}, // <- monotonic tick
+		CPUCycles:    cycles,
+		CPUInstr:     instructions,
+		CacheMiss:    cachemiss,
+		PageCacheHit: pagecachehit,
+	}
+	c.buf.Push(sample) // O(1), thread-safe via Sync wrapper
 }

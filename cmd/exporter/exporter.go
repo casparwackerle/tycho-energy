@@ -29,11 +29,10 @@ import (
 	"syscall"
 	"time"
 
-	bpfCollector "github.com/casparwackerle/tycho-energy/internal/tycho/collectors/bpf"
-	gpuCollector "github.com/casparwackerle/tycho-energy/internal/tycho/collectors/gpu"
-	raplCollector "github.com/casparwackerle/tycho-energy/internal/tycho/collectors/rapl"
+	"github.com/casparwackerle/tycho-energy/internal/tycho/clock"
 	redfishCollector "github.com/casparwackerle/tycho-energy/internal/tycho/collectors/redfish"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/engine"
+	"github.com/casparwackerle/tycho-energy/internal/tycho/ring"
 	"github.com/casparwackerle/tycho-energy/pkg/bpf"
 	"github.com/casparwackerle/tycho-energy/pkg/build"
 	"github.com/casparwackerle/tycho-energy/pkg/config"
@@ -207,16 +206,36 @@ func main() {
 		klog.Fatalf("failed to init stats collector: %v", err)
 	}
 
-	eng := engine.NewManager()
-	b := bpfCollector.New(bpfCollector.Config{})
-	r := raplCollector.New(raplCollector.Config{})
-	rf := redfishCollector.New(redfishCollector.Config{})
-	g := gpuCollector.New(gpuCollector.Config{})
+	// Central buffer manager
+	bufMgr := ring.NewManager()
 
-	_ = eng.Register("bpf", time.Duration(config.BpfPollMs())*time.Millisecond, config.EnableBpf(), b.Collect)
-	_ = eng.Register("rapl", time.Duration(config.RaplPollMs())*time.Millisecond, config.EnableRapl(), r.Collect)
+	// Compute per-metric sizes (use your config getters)
+	winSec := config.BufferWindowSec() // e.g., 5.0
+	//bpfSz := ring.SizeForWindow(winSec, config.BpfPollMs())
+	//raplSz := ring.SizeForWindow(winSec, config.RaplPollMs())
+	rfSz := ring.SizeForWindow(winSec, config.RedfishPollMs())
+	//gpuSz := ring.SizeForWindow(winSec, config.GpuPollMs())
+
+	// Create synchronized typed rings
+	//bpfBuf := ring.GetOrCreateSync[ring.BpfSample](bufMgr, "bpf", bpfSz)
+	//raplBuf := ring.GetOrCreateSync[ring.RaplSample](bufMgr, "rapl", raplSz)
+	rfBuf := ring.GetOrCreateSync[ring.RedfishSample](bufMgr, "redfish", rfSz)
+	//gpuBuf := ring.GetOrCreateSync[ring.GpuSample](bufMgr, "gpu", gpuSz)
+
+	//start monotonic time
+	mono := clock.NewMono(clock.DefaultSource, time.Duration(config.TimebaseQuantumMs())*time.Millisecond)
+
+	// Start Engine
+	eng := engine.NewManager()
+	// b := bpfCollector.New(bpfCollector.Config{Buf: bpfBuf, Mono: mono})
+	// r := raplCollector.New(raplCollector.Config{Buf: raplBuf, Mono: mono})
+	rf := redfishCollector.New(redfishCollector.Config{Buf: rfBuf, Mono: mono})
+	// g := gpuCollector.New(gpuCollector.Config{Buf: gpuBuf, Mono: mono})
+
+	// _ = eng.Register("bpf", time.Duration(config.BpfPollMs())*time.Millisecond, config.EnableBpf(), b.Collect)
+	// _ = eng.Register("rapl", time.Duration(config.RaplPollMs())*time.Millisecond, config.EnableRapl(), r.Collect)
 	_ = eng.Register("redfish", time.Duration(config.RedfishPollMs())*time.Millisecond, config.EnableRedfish(), rf.Collect)
-	_ = eng.Register("gpu", time.Duration(config.GpuPollMs())*time.Millisecond, config.EnableGpu(), g.Collect)
+	// _ = eng.Register("gpu", time.Duration(config.GpuPollMs())*time.Millisecond, config.EnableGpu(), g.Collect)
 
 	tycho_ctx, tycho_cancel := context.WithCancel(context.Background())
 	go func() { _ = eng.Start(tycho_ctx) }()
