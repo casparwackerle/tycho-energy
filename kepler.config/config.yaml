@@ -55,7 +55,7 @@ extraEnvVars:
   ENABLE_GPU: "false"
   ENABLE_QAT: "false"
   ENABLE_EBPF_CGROUPID: "true"
-  EXPOSE_HW_COUNTER_METRICS: "false" # temporarily changed
+  EXPOSE_HW_COUNTER_METRICS: "true"
   EXPOSE_IRQ_COUNTER_METRICS: "true"
   EXPOSE_CGROUP_METRICS: "true"
   ENABLE_PROCESS_METRICS: "true"
@@ -65,10 +65,10 @@ extraEnvVars:
   REDFISH_SKIP_SSL_VERIFY: "true"
 
   # Enable flags
-  TYCHO_COLLECTOR_ENABLE_BPF: "true"
+  TYCHO_COLLECTOR_ENABLE_BPF: "false"
   TYCHO_COLLECTOR_ENABLE_RAPL: "true"
   TYCHO_COLLECTOR_ENABLE_GPU: "false"
-  TYCHO_COLLECTOR_ENABLE_REDFISH: "true"
+  TYCHO_COLLECTOR_ENABLE_REDFISH: "false"
 
   # Measurement Periods (milliseconds)
   TYCHO_BPF_POLL_MS: "50"
