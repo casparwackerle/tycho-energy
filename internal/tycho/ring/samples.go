@@ -7,6 +7,13 @@ type SampleMeta struct {
 	Mono uint64
 }
 
+type RaplDomainCounters struct {
+	Pkg    uint64 // mJ raw counter (monotonic, wraps)
+	Core   uint64 // mJ
+	Uncore uint64 // mJ
+	DRAM   uint64 // mJ
+}
+
 // Example metric-specific sample types. These are just examples to demonstrate
 // typed rings; adjust fields as your engine requires.
 
@@ -19,11 +26,9 @@ type BpfSample struct {
 }
 
 type RaplSample struct {
-	SampleMeta
-	Package_uJ uint64
-	Core_uJ    uint64
-	DRAM_uJ    uint64
-	Uncore_uJ  uint64
+	SampleMeta SampleMeta
+	Source     string                     // components.GetSourceName()
+	Sockets    map[int]RaplDomainCounters // per-socket raw counters
 }
 
 type RedfishSample struct {
