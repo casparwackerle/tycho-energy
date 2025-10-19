@@ -2,7 +2,9 @@ package raplCollector
 
 import (
 	"context"
-	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/casparwackerle/tycho-energy/internal/tycho/clock"
@@ -80,20 +82,32 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 		Sockets:    sockets,
 	}
 
-	// --- DEBUG LOG ----------------------------------------------------------
-	// Prints one line per collection with per-socket raw counters.
-	// Example:
-	// I1019 12:34:56.789012 12345 rapl_collector.go:45] RAPL(sysfs): sockets=2 | [0] pkg=12345mJ core=6789mJ dram=100mJ uncore=500mJ | [1] pkg=...
-	// ------------------------------------------------------------------------
-	msg := ""
-	for id, s := range sample.Sockets {
-		msg +=
-			"\n\tSocket " + fmt.Sprintf("%d", id) +
-				fmt.Sprintf(": Pkg=%d Core=%d DRAM=%d Uncore=%d mJ", s.Pkg, s.Core, s.DRAM, s.Uncore)
-	}
-	klog.V(2).Infof("RAPL(%s): collected %d sockets%s",
-		sample.Source, len(sample.Sockets), msg)
-	// ------------------------------------------------------------------------
-
 	c.buf.Push(sample)
+}
+
+func PrintAvailableRaplDomains() {
+	// Only relevant for sysfs-backed collector
+	src := components.GetSourceName()
+	if src == "" {
+		src = "unknown"
+	}
+
+	// Try to locate powercap sysfs paths directly
+	root := "/sys/class/powercap"
+	matches, err := filepath.Glob(filepath.Join(root, "intel-rapl*"))
+	if err != nil || len(matches) == 0 {
+		klog.Warningf("RAPL(%s): no intel-rapl directories found under %s", src, root)
+		return
+	}
+
+	klog.Infof("RAPL(%s): discovered domains:", src)
+	for _, p := range matches {
+		nameFile := filepath.Join(p, "name")
+		data, err := os.ReadFile(nameFile)
+		if err != nil {
+			continue
+		}
+		name := strings.TrimSpace(string(data))
+		klog.Infof("  %s → name=%q", filepath.Base(p), name)
+	}
 }

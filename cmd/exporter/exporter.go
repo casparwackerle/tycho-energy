@@ -172,6 +172,7 @@ func main() {
 		defer components.StopPower()
 		platform.InitPowerImpl()
 		defer platform.StopPower()
+		raplCollector.PrintAvailableRaplDomains()
 	} else {
 		// In empty mode, ensure nothing tries to read HW power:
 		config.SetEnabledHardwareCounterMetrics(false)
