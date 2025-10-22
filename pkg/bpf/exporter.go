@@ -55,6 +55,13 @@ type exporter struct {
 	enabledSoftwareCounters sets.Set[string]
 }
 
+// CPUBinCounters mirrors the BPF struct cpu_bin_counters { u64 idle_ns; u64 irq_ns; u64 softirq_ns; }.
+type CPUBinCounters struct {
+	IdleNS    uint64
+	IRQNS     uint64
+	SoftirqNS uint64
+}
+
 func NewExporter() (Exporter, error) {
 	e := &exporter{
 		enabledHardwareCounters: sets.New[string](config.BPFHwCounters()...),
@@ -272,6 +279,39 @@ func (e *exporter) CollectProcesses() ([]ProcessMetrics, error) {
 
 ///////////////////////////////////////////////////////////////////////////
 // utility functions
+
+// CollectCPUBins reads & resets the per-CPU bin counters (idle/irq/softirq) for the current window.
+func (e *exporter) CollectCPUBins() (total CPUBinCounters, perCPU []CPUBinCounters, err error) {
+	start := time.Now()
+	key := uint32(0)
+
+	numCPU := getCPUCores()
+	perCPU = make([]CPUBinCounters, numCPU)
+
+	// Lookup the per-CPU values for key=0 from the PERCPU_ARRAY map.
+	// For per-CPU maps, cilium/ebpf expects a slice of length == #CPUs.
+	if err = e.bpfObjects.CpuBins.Lookup(key, &perCPU); err != nil {
+		return CPUBinCounters{}, nil, fmt.Errorf("lookup cpu_bins failed: %w", err)
+	}
+
+	// Sum totals across CPUs.
+	for i := 0; i < numCPU; i++ {
+		total.IdleNS += perCPU[i].IdleNS
+		total.IRQNS += perCPU[i].IRQNS
+		total.SoftirqNS += perCPU[i].SoftirqNS
+	}
+
+	// Zero the per-CPU bin so the next collection window starts fresh.
+	zero := make([]CPUBinCounters, numCPU) // zero-initialized
+	if err = e.bpfObjects.CpuBins.Update(key, zero, ebpf.UpdateAny); err != nil {
+		return CPUBinCounters{}, nil, fmt.Errorf("reset cpu_bins failed: %w", err)
+	}
+
+	klog.V(5).Infof("collected cpu_bins in %v (idle=%d ns, irq=%d ns, softirq=%d ns)",
+		time.Since(start), total.IdleNS, total.IRQNS, total.SoftirqNS)
+
+	return total, perCPU, nil
+}
 
 func unixOpenPerfEvent(typ, conf, cpuCores int) ([]int, error) {
 	sysAttr := &unix.PerfEventAttr{

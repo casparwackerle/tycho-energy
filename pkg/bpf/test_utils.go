@@ -42,6 +42,11 @@ func (m *mockExporter) SupportedMetrics() SupportedMetrics {
 
 func (m *mockExporter) Detach() {}
 
+func (m *mockExporter) CollectCPUBins() (CPUBinCounters, []CPUBinCounters, error) {
+	// Return zero totals and nil per-CPU for tests that don't care.
+	return CPUBinCounters{}, nil, nil
+}
+
 func (m *mockExporter) CollectProcesses() ([]ProcessMetrics, error) {
 	return []ProcessMetrics{
 		{

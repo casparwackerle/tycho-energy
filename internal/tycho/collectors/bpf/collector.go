@@ -59,6 +59,24 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 		return
 	}
 
+	// Derive monotonic timestamp for this tick once (shared by all samples)
+	mono := c.mono.From(ts)
+
+	// 1) drain/reset per-CPU bin counters (idle/irq/softirq) for this tick
+	if binsTotal, _, err := c.exp.CollectCPUBins(); err != nil {
+		klog.Warningf("bpf: CollectCPUBins failed: %v", err)
+	} else {
+		// Emit a single per-tick bin sample (Pid/CgroupID left zero)
+		c.buf.Push(ring.BpfSample{
+			SampleMeta: ring.SampleMeta{Mono: mono},
+			IdleNS:     binsTotal.IdleNS,
+			IRQNS:      binsTotal.IRQNS,
+			SoftirqNS:  binsTotal.SoftirqNS,
+			// All process-specific fields remain zero in this record.
+		})
+	}
+
+	// 2) Existing: per-process deltas
 	rows, err := c.exp.CollectProcesses()
 	if err != nil {
 		klog.Warningf("bpf: CollectProcesses failed: %v", err)
@@ -66,7 +84,6 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 	}
 
 	sup := c.exp.SupportedMetrics()
-	mono := c.mono.From(ts)
 
 	for i := range rows {
 		ct := &rows[i]
@@ -80,6 +97,7 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 			IRQNetTX:     uint64(ct.VecNr[bpf.IRQNetTX]),
 			IRQNetRX:     uint64(ct.VecNr[bpf.IRQNetRX]),
 			IRQBlock:     uint64(ct.VecNr[bpf.IRQBlock]),
+			// IdleNS/IRQNS/SoftirqNS intentionally left zero in per-process rows.
 		}
 
 		if sup.HardwareCounters.Has("cpu_cycles") {

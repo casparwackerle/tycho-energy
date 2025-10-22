@@ -33,6 +33,11 @@ type BpfSample struct {
 	CPUCycles uint64
 	CPUInstr  uint64
 	CacheMiss uint64
+
+	// NEW: per-tick CPU bin totals (in nanoseconds)
+	IdleNS    uint64
+	IRQNS     uint64
+	SoftirqNS uint64
 }
 
 type RaplSample struct {

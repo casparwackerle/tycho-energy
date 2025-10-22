@@ -36,6 +36,7 @@ type Exporter interface {
 	SupportedMetrics() SupportedMetrics
 	Detach()
 	CollectProcesses() ([]ProcessMetrics, error)
+	CollectCPUBins() (CPUBinCounters, []CPUBinCounters, error)
 }
 
 type SupportedMetrics struct {
