@@ -12,9 +12,22 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type testCpuStateT struct {
+	LastTs         uint64
+	CurrentPid     uint32
+	_              [4]byte
+	IdleNs         uint64
+	IrqNs          uint64
+	SoftirqNs      uint64
+	IrqEntryTs     uint64
+	SoftirqEntryTs uint64
+}
+
 type testProcessMetricsT struct {
 	CgroupId       uint64
 	Pid            uint64
+	IsKthread      uint8
+	Pad            [7]uint8
 	ProcessRunTime uint64
 	CpuCycles      uint64
 	CpuInstr       uint64
@@ -81,6 +94,7 @@ type testMapSpecs struct {
 	CpuCyclesEventReader       *ebpf.MapSpec `ebpf:"cpu_cycles_event_reader"`
 	CpuInstructions            *ebpf.MapSpec `ebpf:"cpu_instructions"`
 	CpuInstructionsEventReader *ebpf.MapSpec `ebpf:"cpu_instructions_event_reader"`
+	CpuStates                  *ebpf.MapSpec `ebpf:"cpu_states"`
 	PidTimeMap                 *ebpf.MapSpec `ebpf:"pid_time_map"`
 	Processes                  *ebpf.MapSpec `ebpf:"processes"`
 }
@@ -110,6 +124,7 @@ type testMaps struct {
 	CpuCyclesEventReader       *ebpf.Map `ebpf:"cpu_cycles_event_reader"`
 	CpuInstructions            *ebpf.Map `ebpf:"cpu_instructions"`
 	CpuInstructionsEventReader *ebpf.Map `ebpf:"cpu_instructions_event_reader"`
+	CpuStates                  *ebpf.Map `ebpf:"cpu_states"`
 	PidTimeMap                 *ebpf.Map `ebpf:"pid_time_map"`
 	Processes                  *ebpf.Map `ebpf:"processes"`
 }
@@ -122,6 +137,7 @@ func (m *testMaps) Close() error {
 		m.CpuCyclesEventReader,
 		m.CpuInstructions,
 		m.CpuInstructionsEventReader,
+		m.CpuStates,
 		m.PidTimeMap,
 		m.Processes,
 	)

@@ -27,11 +27,11 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/jaypipes/ghw"
-	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
@@ -40,10 +40,14 @@ import (
 type exporter struct {
 	bpfObjects keplerObjects
 
-	schedSwitchLink link.Link
-	irqLink         link.Link
-	pageWriteLink   link.Link
-	pageReadLink    link.Link
+	schedSwitchLink  link.Link
+	irqEntryLink     link.Link
+	irqExitLink      link.Link
+	softirqEntryLink link.Link
+	softirqExitLink  link.Link
+	irqLink          link.Link
+	pageWriteLink    link.Link
+	pageReadLink     link.Link
 
 	perfEvents *hardwarePerfEvents
 
@@ -115,12 +119,38 @@ func (e *exporter) attach() error {
 	}
 
 	if config.ExposeIRQCounterMetrics() {
-		e.irqLink, err = link.AttachTracing(link.TracingOptions{
-			Program:    e.bpfObjects.KeplerIrqTrace,
+		// SoftIRQ entry/exit (vector counting + time attribution)
+		e.softirqEntryLink, err = link.AttachTracing(link.TracingOptions{
+			Program:    e.bpfObjects.KeplerSoftirqEntry,
 			AttachType: ebpf.AttachTraceRawTp,
 		})
 		if err != nil {
-			return fmt.Errorf("could not attach irq/softirq_entry: %w", err)
+			return fmt.Errorf("could not attach tp_btf/softirq_entry: %w", err)
+		}
+
+		e.softirqExitLink, err = link.AttachTracing(link.TracingOptions{
+			Program:    e.bpfObjects.KeplerSoftirqExit,
+			AttachType: ebpf.AttachTraceRawTp,
+		})
+		if err != nil {
+			return fmt.Errorf("could not attach tp_btf/softirq_exit: %w", err)
+		}
+
+		// Hard IRQ entry/exit (time attribution)
+		e.irqEntryLink, err = link.AttachTracing(link.TracingOptions{
+			Program:    e.bpfObjects.KeplerIrqEntry,
+			AttachType: ebpf.AttachTraceRawTp,
+		})
+		if err != nil {
+			return fmt.Errorf("could not attach tp_btf/irq_handler_entry: %w", err)
+		}
+
+		e.irqExitLink, err = link.AttachTracing(link.TracingOptions{
+			Program:    e.bpfObjects.KeplerIrqExit,
+			AttachType: ebpf.AttachTraceRawTp,
+		})
+		if err != nil {
+			return fmt.Errorf("could not attach tp_btf/irq_handler_exit: %w", err)
 		}
 	}
 
@@ -173,6 +203,26 @@ func (e *exporter) Detach() {
 	if e.irqLink != nil {
 		e.irqLink.Close()
 		e.irqLink = nil
+	}
+
+	if e.irqEntryLink != nil {
+		e.irqEntryLink.Close()
+		e.irqEntryLink = nil
+	}
+
+	if e.irqExitLink != nil {
+		e.irqExitLink.Close()
+		e.irqExitLink = nil
+	}
+
+	if e.softirqEntryLink != nil {
+		e.softirqEntryLink.Close()
+		e.softirqEntryLink = nil
+	}
+
+	if e.softirqExitLink != nil {
+		e.softirqExitLink.Close()
+		e.softirqExitLink = nil
 	}
 
 	if e.pageWriteLink != nil {

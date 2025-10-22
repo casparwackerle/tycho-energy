@@ -90,9 +90,51 @@ struct bpf_perf_event_value {
 	__u64 running;
 };
 
+/* ---- Kernel/thread classification ---- */
+/* PF_KTHREAD from linux/sched.h (bit 22). Using a literal keeps us BTF-agnostic. */
+#ifndef PF_KTHREAD
+#define PF_KTHREAD (0x00200000)
+#endif
+
+/* Optional special keys for system buckets if ever needed in a hash map */
+enum system_bucket_key {
+	SYS_IDLE    = 1,
+	SYS_IRQ     = 2,
+	SYS_SOFTIRQ = 3,
+	SYS_KTHREAD = 4,
+};
+
+/* ---- Per-CPU scheduler/IRQ state (hot path) ---- */
+struct cpu_state_t {
+	/* Timestamp (ns) of last sched_switch accounting on this CPU */
+	u64 last_ts;
+
+	/* Currently running pid on this CPU (0 == idle task) */
+	u32 current_pid;
+
+	/* Per-bin accumulators (ns) on this CPU */
+	u64 idle_ns;
+	u64 irq_ns;
+	u64 softirq_ns;
+
+	/* In-flight timing for IRQ and SoftIRQ on this CPU (ns) */
+	u64 irq_entry_ts;
+	u64 softirq_entry_ts;
+};
+
+/* One entry per CPU, no contention between CPUs */
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, u32);
+	__type(value, struct cpu_state_t);
+	__uint(max_entries, NUM_CPUS);
+} cpu_states SEC(".maps");
+
 typedef struct process_metrics_t {
 	u64 cgroup_id;
 	u64 pid; // pid is the kernel space view of the thread id
+	__u8 is_kthread;   /* 1 if PF_KTHREAD observed for this TGID at least once */
+	__u8 _pad_[7];     /* pad to 8-byte alignment for the next u64 */
 	u64 process_run_time;
 	u64 cpu_cycles;
 	u64 cpu_instr;
@@ -101,6 +143,7 @@ typedef struct process_metrics_t {
 	u16 vec_nr[10];
 	char comm[16];
 } process_metrics_t;
+
 
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);

@@ -12,9 +12,22 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type keplerCpuStateT struct {
+	LastTs         uint64
+	CurrentPid     uint32
+	_              [4]byte
+	IdleNs         uint64
+	IrqNs          uint64
+	SoftirqNs      uint64
+	IrqEntryTs     uint64
+	SoftirqEntryTs uint64
+}
+
 type keplerProcessMetricsT struct {
 	CgroupId       uint64
 	Pid            uint64
+	IsKthread      uint8
+	Pad            [7]uint8
 	ProcessRunTime uint64
 	CpuCycles      uint64
 	CpuInstr       uint64
@@ -66,9 +79,12 @@ type keplerSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type keplerProgramSpecs struct {
-	KeplerIrqTrace         *ebpf.ProgramSpec `ebpf:"kepler_irq_trace"`
+	KeplerIrqEntry         *ebpf.ProgramSpec `ebpf:"kepler_irq_entry"`
+	KeplerIrqExit          *ebpf.ProgramSpec `ebpf:"kepler_irq_exit"`
 	KeplerReadPageTrace    *ebpf.ProgramSpec `ebpf:"kepler_read_page_trace"`
 	KeplerSchedSwitchTrace *ebpf.ProgramSpec `ebpf:"kepler_sched_switch_trace"`
+	KeplerSoftirqEntry     *ebpf.ProgramSpec `ebpf:"kepler_softirq_entry"`
+	KeplerSoftirqExit      *ebpf.ProgramSpec `ebpf:"kepler_softirq_exit"`
 	KeplerWritePageTrace   *ebpf.ProgramSpec `ebpf:"kepler_write_page_trace"`
 }
 
@@ -82,6 +98,7 @@ type keplerMapSpecs struct {
 	CpuCyclesEventReader       *ebpf.MapSpec `ebpf:"cpu_cycles_event_reader"`
 	CpuInstructions            *ebpf.MapSpec `ebpf:"cpu_instructions"`
 	CpuInstructionsEventReader *ebpf.MapSpec `ebpf:"cpu_instructions_event_reader"`
+	CpuStates                  *ebpf.MapSpec `ebpf:"cpu_states"`
 	PidTimeMap                 *ebpf.MapSpec `ebpf:"pid_time_map"`
 	Processes                  *ebpf.MapSpec `ebpf:"processes"`
 }
@@ -111,6 +128,7 @@ type keplerMaps struct {
 	CpuCyclesEventReader       *ebpf.Map `ebpf:"cpu_cycles_event_reader"`
 	CpuInstructions            *ebpf.Map `ebpf:"cpu_instructions"`
 	CpuInstructionsEventReader *ebpf.Map `ebpf:"cpu_instructions_event_reader"`
+	CpuStates                  *ebpf.Map `ebpf:"cpu_states"`
 	PidTimeMap                 *ebpf.Map `ebpf:"pid_time_map"`
 	Processes                  *ebpf.Map `ebpf:"processes"`
 }
@@ -123,6 +141,7 @@ func (m *keplerMaps) Close() error {
 		m.CpuCyclesEventReader,
 		m.CpuInstructions,
 		m.CpuInstructionsEventReader,
+		m.CpuStates,
 		m.PidTimeMap,
 		m.Processes,
 	)
@@ -132,17 +151,23 @@ func (m *keplerMaps) Close() error {
 //
 // It can be passed to loadKeplerObjects or ebpf.CollectionSpec.LoadAndAssign.
 type keplerPrograms struct {
-	KeplerIrqTrace         *ebpf.Program `ebpf:"kepler_irq_trace"`
+	KeplerIrqEntry         *ebpf.Program `ebpf:"kepler_irq_entry"`
+	KeplerIrqExit          *ebpf.Program `ebpf:"kepler_irq_exit"`
 	KeplerReadPageTrace    *ebpf.Program `ebpf:"kepler_read_page_trace"`
 	KeplerSchedSwitchTrace *ebpf.Program `ebpf:"kepler_sched_switch_trace"`
+	KeplerSoftirqEntry     *ebpf.Program `ebpf:"kepler_softirq_entry"`
+	KeplerSoftirqExit      *ebpf.Program `ebpf:"kepler_softirq_exit"`
 	KeplerWritePageTrace   *ebpf.Program `ebpf:"kepler_write_page_trace"`
 }
 
 func (p *keplerPrograms) Close() error {
 	return _KeplerClose(
-		p.KeplerIrqTrace,
+		p.KeplerIrqEntry,
+		p.KeplerIrqExit,
 		p.KeplerReadPageTrace,
 		p.KeplerSchedSwitchTrace,
+		p.KeplerSoftirqEntry,
+		p.KeplerSoftirqExit,
 		p.KeplerWritePageTrace,
 	)
 }
