@@ -31,24 +31,6 @@ func New(cfg Config) *Collector {
 	return &Collector{buf: cfg.Buf, mono: cfg.Mono}
 }
 
-// func (c *Collector) Collect(ctx context.Context, ts time.Time) {
-
-// 	// ... gather pkg/core/dram/uncore (and take *their* device timestamps if you want)
-// 	pkg := uint64(1)
-// 	core := uint64(2)
-// 	dram := uint64(3)
-// 	uncore := uint64(4)
-
-// 	sample := ring.RaplSample{
-// 		SampleMeta: ring.SampleMeta{Mono: c.mono.From(ts)}, // <- monotonic tick
-// 		Package_uJ: pkg,
-// 		Core_uJ:    core,
-// 		DRAM_uJ:    dram,
-// 		Uncore_uJ:  uncore,
-// 	}
-// 	c.buf.Push(sample) // O(1), thread-safe via Sync wrapper
-// }
-
 // Collect reads raw RAPL counters (mJ) per socket and appends one sample to the ring.
 func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 	select {

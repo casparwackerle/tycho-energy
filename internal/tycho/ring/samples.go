@@ -19,10 +19,20 @@ type RaplDomainCounters struct {
 
 type BpfSample struct {
 	SampleMeta
-	CPUCycles    uint64
-	CPUInstr     uint64
-	CacheMiss    uint64
+	Pid      uint64
+	CgroupID uint64
+
+	// Software counters (deltas)
+	ProcessRunUs uint64 // µs from kernel; convert later if needed
 	PageCacheHit uint64
+	IRQNetTX     uint64
+	IRQNetRX     uint64
+	IRQBlock     uint64
+
+	// Hardware counters (deltas) – only populated if enabled
+	CPUCycles uint64
+	CPUInstr  uint64
+	CacheMiss uint64
 }
 
 type RaplSample struct {

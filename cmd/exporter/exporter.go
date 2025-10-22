@@ -231,7 +231,7 @@ func main() {
 
 	// Start Engine
 	eng := engine.NewManager()
-	b := bpfCollector.New(bpfCollector.Config{Buf: bpfBuf, Mono: mono})
+	b := bpfCollector.New(bpfCollector.Config{Buf: bpfBuf, Mono: mono, Exp: bpfExporter})
 	r := raplCollector.New(raplCollector.Config{Buf: raplBuf, Mono: mono})
 	rf := redfishCollector.New(redfishCollector.Config{Buf: rfBuf, Mono: mono})
 	g := gpuCollector.New(gpuCollector.Config{Buf: gpuBuf, Mono: mono})
