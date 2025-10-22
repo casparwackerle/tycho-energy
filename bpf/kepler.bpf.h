@@ -130,6 +130,30 @@ struct {
 	__uint(max_entries, NUM_CPUS);
 } cpu_states SEC(".maps");
 
+/* ---- Per-CPU bin counters (resettable by userspace) ----
+ * One entry (key=0), but PERCPU, so each CPU has its own copy.
+ * Userspace: read & zero every 50 ms (aligned to RAPL bin).
+ */
+struct cpu_bin_counters {
+	u64 idle_ns;
+	u64 irq_ns;
+	u64 softirq_ns;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, u32);
+	__type(value, struct cpu_bin_counters);
+	__uint(max_entries, 1);
+} cpu_bins SEC(".maps");
+
+/* Small helper to get this CPU's bin */
+static __always_inline struct cpu_bin_counters *get_cpu_bin(void)
+{
+	u32 zero = 0;
+	return bpf_map_lookup_elem(&cpu_bins, &zero);
+}
+
 typedef struct process_metrics_t {
 	u64 cgroup_id;
 	u64 pid; // pid is the kernel space view of the thread id
@@ -221,7 +245,9 @@ int counter_sched_switch = 0;
 struct task_struct {
 	int pid;
 	unsigned int tgid;
+	unsigned int flags;
 } __attribute__((preserve_access_index));
+
 
 static inline u64 calc_delta(u64 *prev_val, u64 val)
 {
@@ -360,19 +386,21 @@ static inline int do_kepler_sched_switch_trace(
 
 	cpu_id = bpf_get_smp_processor_id();
 
-	// Skip some samples to minimize overhead
+	// Skip some samples to minimize overhead (unchanged)
 	if (SAMPLE_RATE > 0) {
 		if (counter_sched_switch > 0) {
 			// update hardware counters to be used when sample is taken
 			if (counter_sched_switch == 1) {
-				collect_metrics_and_reset_counters(
-					&buf, prev_pid, curr_ts, cpu_id);
-				// Add task on-cpu running start time
-				bpf_map_update_elem(
-					&pid_time_map, &next_pid, &curr_ts,
-					BPF_ANY);
-				// create new process metrics
-				register_new_process_if_not_exist(next_tgid);
+				// collect deltas for the task that just ran (prev)
+				collect_metrics_and_reset_counters(&buf, prev_pid, curr_ts, cpu_id);
+
+				// Start timing for the task that is about to run (next)
+				bpf_map_update_elem(&pid_time_map, &next_pid, &curr_ts, BPF_ANY);
+
+				// IMPORTANT: Register the NEXT task with cgroup_id (ONLY next)
+				if (next_tgid != 0) {
+					register_new_process_if_not_exist(next_tgid);
+				}
 			}
 			counter_sched_switch--;
 			return 0;
@@ -380,31 +408,46 @@ static inline int do_kepler_sched_switch_trace(
 		counter_sched_switch = SAMPLE_RATE;
 	}
 
+	// Collect PMU deltas + on-CPU time for the task that just ran (prev)
 	collect_metrics_and_reset_counters(&buf, prev_pid, curr_ts, cpu_id);
 
-	// The process_run_time is 0 if we do not have the previous timestamp of
-	// the task or due to a clock issue. In either case, we skip collecting
-	// all metrics to avoid discrepancies between the hardware counter and CPU
-	// time.
+	// If we have valid on-CPU time, add it (and PMU deltas) to prev_tgid
 	if (buf.process_run_time > 0) {
 		prev_tgid_metrics = bpf_map_lookup_elem(&processes, &prev_tgid);
 		if (prev_tgid_metrics) {
 			prev_tgid_metrics->process_run_time += buf.process_run_time;
-			prev_tgid_metrics->cpu_cycles += buf.cpu_cycles;
-			prev_tgid_metrics->cpu_instr += buf.cpu_instr;
-			prev_tgid_metrics->cache_miss += buf.cache_miss;
+			prev_tgid_metrics->cpu_cycles       += buf.cpu_cycles;
+			prev_tgid_metrics->cpu_instr        += buf.cpu_instr;
+			prev_tgid_metrics->cache_miss       += buf.cache_miss;
+		} else {
+			/*
+			 * IMPORTANT: Do NOT call register_new_process_if_not_exist(prev_tgid)
+			 * here, because that helper uses bpf_get_current_cgroup_id(), which
+			 * at sched_switch refers to the *next* task’s cgroup. That would
+			 * mislabel the prev task.
+			 *
+			 * Instead, create a minimal slot for prev_tgid WITHOUT cgroup_id.
+			 * This allows us to accumulate on the next switch-out safely.
+			 */
+			struct process_metrics_t init = {};
+			init.pid = prev_tgid;   // leave cgroup_id as 0 (unknown)
+			// (We also skip comm here to avoid capturing the next task’s name.)
+			bpf_map_update_elem(&processes, &prev_tgid, &init, BPF_NOEXIST);
 		}
 	}
 
-	// create new process metrics
-	register_new_process_if_not_exist(prev_tgid);
+	// IMPORTANT: Register ONLY the NEXT task with cgroup_id (correct timing)
+	if (next_tgid != 0) {
+		register_new_process_if_not_exist(next_tgid);
+	}
 
-	// Add task on-cpu running start time
+	// Start timing for the task that is about to run (next)
 	curr_ts = bpf_ktime_get_ns();
 	bpf_map_update_elem(&pid_time_map, &next_pid, &curr_ts, BPF_ANY);
 
 	return 0;
 }
+
 
 static __always_inline void *
 bpf_map_lookup_or_try_init(void *map, const void *key, const void *init)

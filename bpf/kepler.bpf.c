@@ -12,37 +12,55 @@ static __always_inline struct cpu_state_t *get_cpu_state(void)
 SEC("tp_btf/sched_switch")
 int kepler_sched_switch_trace(u64 *ctx)
 {
-	/* BTF args: (prev, next) as task_struct* at ctx[1], ctx[2] */
 	struct task_struct *prev_task = (struct task_struct *)ctx[1];
 	struct task_struct *next_task = (struct task_struct *)ctx[2];
 
-	u32 prev_pid = (u32)prev_task->pid;
-	u32 next_pid = (u32)next_task->pid;
+	u32 prev_pid  = (u32)prev_task->pid;
+	u32 next_pid  = (u32)next_task->pid;
 	u32 prev_tgid = (u32)prev_task->tgid;
 	u32 next_tgid = (u32)next_task->tgid;
 
 	u64 now = bpf_ktime_get_ns();
 
+	/* --- Tag kernel threads (prev) --- */
+	if (prev_pid != 0) {
+		u64 flags = BPF_CORE_READ(prev_task, flags);
+		if (flags & PF_KTHREAD) {
+			struct process_metrics_t *pm = bpf_map_lookup_elem(&processes, &prev_tgid);
+			if (pm) {
+				pm->is_kthread = 1;
+			} else {
+				struct process_metrics_t init = {};
+				init.pid = prev_tgid;
+				init.is_kthread = 1;
+				bpf_map_update_elem(&processes, &prev_tgid, &init, BPF_NOEXIST);
+			}
+		}
+	}
+
 	/* --- Per-CPU state for idle/irq/softirq time accounting --- */
 	struct cpu_state_t *st = get_cpu_state();
 	if (st) {
-		/* Attribute time since last switch to whoever was running */
 		if (st->last_ts > 0) {
 			u64 dt = now - st->last_ts;
-			/* If the CPU was previously running idle task */
 			if (st->current_pid == 0) {
+				/* previously running idle → add to per-CPU bin */
+				struct cpu_bin_counters *bin = get_cpu_bin();
+				if (bin) bin->idle_ns += dt;
+
+				/* (keep internal running total if you want) */
 				st->idle_ns += dt;
 			}
-			/* else: user/kernel on-CPU time is handled by existing logic below */
+			/* else: user/kernel on-CPU time handled by existing logic */
 		}
-		/* Update current running entity and timestamp */
-		st->current_pid = next_pid;   /* 0 means entering idle */
+		st->current_pid = next_pid; /* 0 means entering idle */
 		st->last_ts = now;
 	}
 
-	/* --- Existing KEPLER logic (preserved) --- */
 	return do_kepler_sched_switch_trace(prev_pid, next_pid, prev_tgid, next_tgid);
 }
+
+
 
 /* SoftIRQ timing (entry/exit) + keep your existing vec count */
 SEC("tp_btf/softirq_entry")
@@ -73,7 +91,14 @@ int kepler_softirq_exit(u64 *ctx)
 	if (st && st->softirq_entry_ts) {
 		u64 now = bpf_ktime_get_ns();
 		u64 dt = now - st->softirq_entry_ts;
+
+		/* add to per-CPU bin */
+		struct cpu_bin_counters *bin = get_cpu_bin();
+		if (bin) bin->softirq_ns += dt;
+
+		/* (keep internal running total if you want) */
 		st->softirq_ns += dt;
+
 		st->softirq_entry_ts = 0;
 	}
 	return 0;
@@ -98,11 +123,19 @@ int kepler_irq_exit(u64 *ctx)
 	if (st && st->irq_entry_ts) {
 		u64 now = bpf_ktime_get_ns();
 		u64 dt = now - st->irq_entry_ts;
+
+		/* add to per-CPU bin */
+		struct cpu_bin_counters *bin = get_cpu_bin();
+		if (bin) bin->irq_ns += dt;
+
+		/* (keep internal running total if you want) */
 		st->irq_ns += dt;
+
 		st->irq_entry_ts = 0;
 	}
 	return 0;
 }
+
 
 /* count read page cache */
 SEC("fexit/mark_page_accessed")

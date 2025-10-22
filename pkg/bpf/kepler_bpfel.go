@@ -12,6 +12,12 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type keplerCpuBinCounters struct {
+	IdleNs    uint64
+	IrqNs     uint64
+	SoftirqNs uint64
+}
+
 type keplerCpuStateT struct {
 	LastTs         uint64
 	CurrentPid     uint32
@@ -94,6 +100,7 @@ type keplerProgramSpecs struct {
 type keplerMapSpecs struct {
 	CacheMiss                  *ebpf.MapSpec `ebpf:"cache_miss"`
 	CacheMissEventReader       *ebpf.MapSpec `ebpf:"cache_miss_event_reader"`
+	CpuBins                    *ebpf.MapSpec `ebpf:"cpu_bins"`
 	CpuCycles                  *ebpf.MapSpec `ebpf:"cpu_cycles"`
 	CpuCyclesEventReader       *ebpf.MapSpec `ebpf:"cpu_cycles_event_reader"`
 	CpuInstructions            *ebpf.MapSpec `ebpf:"cpu_instructions"`
@@ -124,6 +131,7 @@ func (o *keplerObjects) Close() error {
 type keplerMaps struct {
 	CacheMiss                  *ebpf.Map `ebpf:"cache_miss"`
 	CacheMissEventReader       *ebpf.Map `ebpf:"cache_miss_event_reader"`
+	CpuBins                    *ebpf.Map `ebpf:"cpu_bins"`
 	CpuCycles                  *ebpf.Map `ebpf:"cpu_cycles"`
 	CpuCyclesEventReader       *ebpf.Map `ebpf:"cpu_cycles_event_reader"`
 	CpuInstructions            *ebpf.Map `ebpf:"cpu_instructions"`
@@ -137,6 +145,7 @@ func (m *keplerMaps) Close() error {
 	return _KeplerClose(
 		m.CacheMiss,
 		m.CacheMissEventReader,
+		m.CpuBins,
 		m.CpuCycles,
 		m.CpuCyclesEventReader,
 		m.CpuInstructions,
