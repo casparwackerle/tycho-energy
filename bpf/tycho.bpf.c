@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 // Copyright 2021.
 
-#include "kepler.bpf.h"
+#include "tycho.bpf.h"
 
 static __always_inline struct cpu_state_t *get_cpu_state(void)
 {

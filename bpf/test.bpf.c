@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 // Copyright 2021.
 
-#include "kepler.bpf.h"
+#include "tycho.bpf.h"
 
 SEC("raw_tp")
 int test_kepler_write_page_trace(void *ctx)
