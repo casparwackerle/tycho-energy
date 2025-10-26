@@ -43,6 +43,8 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 		return
 	}
 
+	start := time.Now()
+
 	nodeE := components.GetAbsEnergyFromNodeComponents()
 	if len(nodeE) == 0 {
 		return
@@ -65,6 +67,8 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 	}
 
 	c.buf.Push(sample)
+
+	klog.V(5).Infof("rapl: pushed 1 sample (%d sockets) in %v", len(sockets), time.Since(start))
 }
 
 func PrintAvailableRaplDomains() {

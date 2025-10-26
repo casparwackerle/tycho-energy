@@ -63,20 +63,26 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 	mono := c.mono.From(ts)
 
 	// 1) drain/reset per-CPU bin counters (idle/irq/softirq) for this tick
-	if binsTotal, _, err := c.exp.CollectCPUBins(); err != nil {
-		klog.Warningf("bpf: CollectCPUBins failed: %v", err)
-	} else {
-		// Emit a single per-tick bin sample (Pid/CgroupID left zero)
-		c.buf.Push(ring.BpfSample{
-			SampleMeta: ring.SampleMeta{Mono: mono},
-			IdleNS:     binsTotal.IdleNS,
-			IRQNS:      binsTotal.IRQNS,
-			SoftirqNS:  binsTotal.SoftirqNS,
-			// All process-specific fields remain zero in this record.
-		})
+	{
+		start := time.Now()
+		if binsTotal, _, err := c.exp.CollectCPUBins(); err != nil {
+			klog.Warningf("bpf: CollectCPUBins failed: %v", err)
+		} else {
+			// Emit a single per-tick bin sample (Pid/CgroupID left zero)
+			c.buf.Push(ring.BpfSample{
+				SampleMeta: ring.SampleMeta{Mono: mono},
+				IdleNS:     binsTotal.IdleNS,
+				IRQNS:      binsTotal.IRQNS,
+				SoftirqNS:  binsTotal.SoftirqNS,
+				// All process-specific fields remain zero in this record.
+			})
+			klog.V(5).Infof("bpf: pushed 1 cpu_bins sample in %v (idle=%d ns, irq=%d ns, softirq=%d ns)",
+				time.Since(start), binsTotal.IdleNS, binsTotal.IRQNS, binsTotal.SoftirqNS)
+		}
 	}
 
-	// 2) Existing: per-process deltas
+	// 2) per-process deltas
+	start := time.Now()
 	rows, err := c.exp.CollectProcesses()
 	if err != nil {
 		klog.Warningf("bpf: CollectProcesses failed: %v", err)
@@ -85,6 +91,7 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 
 	sup := c.exp.SupportedMetrics()
 
+	var pushed int
 	for i := range rows {
 		ct := &rows[i]
 
@@ -92,7 +99,7 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 			SampleMeta:   ring.SampleMeta{Mono: mono},
 			Pid:          ct.Pid,
 			CgroupID:     ct.CgroupId,
-			ProcessRunUs: ct.ProcessRunTime, // micro-ss from kernel
+			ProcessRunUs: ct.ProcessRunTime, // microseconds from kernel
 			PageCacheHit: ct.PageCacheHit,
 			IRQNetTX:     uint64(ct.VecNr[bpf.IRQNetTX]),
 			IRQNetRX:     uint64(ct.VecNr[bpf.IRQNetRX]),
@@ -111,5 +118,8 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 		}
 
 		c.buf.Push(s)
+		pushed++
 	}
+
+	klog.V(5).Infof("bpf: pushed %d process samples in %v", pushed, time.Since(start))
 }

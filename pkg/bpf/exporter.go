@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"time"
 	"unsafe"
 
 	"github.com/casparwackerle/tycho-energy/pkg/config"
@@ -251,7 +250,6 @@ func (e *exporter) Detach() {
 }
 
 func (e *exporter) CollectProcesses() ([]ProcessMetrics, error) {
-	start := time.Now()
 	// Get the max number of entries in the map
 	maxEntries := e.bpfObjects.Processes.MaxEntries()
 	total := 0
@@ -273,7 +271,6 @@ func (e *exporter) CollectProcesses() ([]ProcessMetrics, error) {
 			return nil, fmt.Errorf("failed to batch lookup and delete: %v", err)
 		}
 	}
-	klog.V(5).Infof("collected %d process samples in %v", total, time.Since(start))
 	return deleteValues[:total], nil
 }
 
@@ -282,7 +279,6 @@ func (e *exporter) CollectProcesses() ([]ProcessMetrics, error) {
 
 // CollectCPUBins reads & resets the per-CPU bin counters (idle/irq/softirq) for the current window.
 func (e *exporter) CollectCPUBins() (total CPUBinCounters, perCPU []CPUBinCounters, err error) {
-	start := time.Now()
 	key := uint32(0)
 
 	numCPU := getCPUCores()
@@ -306,9 +302,6 @@ func (e *exporter) CollectCPUBins() (total CPUBinCounters, perCPU []CPUBinCounte
 	if err = e.bpfObjects.CpuBins.Update(key, zero, ebpf.UpdateAny); err != nil {
 		return CPUBinCounters{}, nil, fmt.Errorf("reset cpu_bins failed: %w", err)
 	}
-
-	klog.V(5).Infof("collected cpu_bins in %v (idle=%d ns, irq=%d ns, softirq=%d ns)",
-		time.Since(start), total.IdleNS, total.IRQNS, total.SoftirqNS)
 
 	return total, perCPU, nil
 }
