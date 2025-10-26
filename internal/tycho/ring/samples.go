@@ -23,7 +23,7 @@ type BpfSample struct {
 	CgroupID uint64
 
 	// Software counters (deltas)
-	ProcessRunUs uint64 // µs from kernel; convert later if needed
+	ProcessRunUs uint64 // micro-s from kernel; convert later if needed
 	PageCacheHit uint64
 	IRQNetTX     uint64
 	IRQNetRX     uint64
@@ -74,9 +74,9 @@ type GpuSample struct {
 	TempC         int      // GPU temperature (°C)
 
 	// --- Energy accounting (per tick) ---
-	// If the device exposes cumulative energy (mJ) we compute a delta and store it as μJ.
-	// Otherwise we integrate instantaneous power across dt (trapezoid) and store that as μJ.
-	EnergyMicroJ        uint64 // Energy delta for this tick (μJ)
+	// If the device exposes cumulative energy (mJ) we compute a delta and store it as microJ.
+	// Otherwise we integrate instantaneous power across dt (trapezoid) and store that as microJ.
+	EnergyMicroJ        uint64 // Energy delta for this tick (microJ)
 	HasCumulativeEnergy bool   // True when cumulative energy is used underneath
 
 	// --- Backend / topology hints (optional) ---

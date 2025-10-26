@@ -180,22 +180,22 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 			decPtr = &val
 		}
 
-		var dEμJ uint64
+		var dEmicroJ uint64
 		if state.HasCumulativeEnergy {
 			if mJ, ret := nv.GetTotalEnergyConsumption(); ret == nvml.SUCCESS {
 				var delta uint64
 				if mJ >= state.LastMilliJ {
 					delta = mJ - state.LastMilliJ
 				}
-				dEμJ = delta * 1000
+				dEmicroJ = delta * 1000
 				state.LastMilliJ = mJ
 			} else {
-				dEμJ = integrateTrapezoidMicroJ(state.LastMilliW, powerMw, dtMs)
+				dEmicroJ = integrateTrapezoidMicroJ(state.LastMilliW, powerMw, dtMs)
 			}
 		} else {
-			dEμJ = integrateTrapezoidMicroJ(state.LastMilliW, powerMw, dtMs)
+			dEmicroJ = integrateTrapezoidMicroJ(state.LastMilliW, powerMw, dtMs)
 		}
-		totalEnergy += dEμJ
+		totalEnergy += dEmicroJ
 
 		sample := ring.GpuSample{
 			SampleMeta:          ring.SampleMeta{Mono: nowMono},
@@ -213,7 +213,7 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 			SMClockMHz:          uint32(smClk),
 			MemClockMHz:         uint32(memClk),
 			TempC:               tempC,
-			EnergyMicroJ:        dEμJ,
+			EnergyMicroJ:        dEmicroJ,
 			HasCumulativeEnergy: state.HasCumulativeEnergy,
 			Backend:             c.backendStr,
 		}
@@ -221,18 +221,18 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 		state.LastMilliW = powerMw
 	}
 
-	klog.V(5).Infof("gpuCollector: collected %d GPU samples (totalEnergyΔ=%.3f mJ)",
+	klog.V(5).Infof("gpuCollector: collected %d GPU samples (totalEnergyDelta=%.3f mJ)",
 		len(c.devs), float64(totalEnergy)/1000.0)
 
 	c.lastMono = nowMono
 }
 
 func integrateTrapezoidMicroJ(prevMilliW, currMilliW int, dtMs float64) uint64 {
-	μJ := ((float64(prevMilliW) + float64(currMilliW)) / 2.0) * dtMs * 1000.0
-	if μJ < 0 {
+	microJ := ((float64(prevMilliW) + float64(currMilliW)) / 2.0) * dtMs * 1000.0
+	if microJ < 0 {
 		return 0
 	}
-	return uint64(math.Round(μJ))
+	return uint64(math.Round(microJ))
 }
 
 // cChar32ToString converts a C-style fixed-size [32]int8 array to a Go string.

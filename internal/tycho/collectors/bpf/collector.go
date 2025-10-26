@@ -92,7 +92,7 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 			SampleMeta:   ring.SampleMeta{Mono: mono},
 			Pid:          ct.Pid,
 			CgroupID:     ct.CgroupId,
-			ProcessRunUs: ct.ProcessRunTime, // µs from kernel
+			ProcessRunUs: ct.ProcessRunTime, // micro-ss from kernel
 			PageCacheHit: ct.PageCacheHit,
 			IRQNetTX:     uint64(ct.VecNr[bpf.IRQNetTX]),
 			IRQNetRX:     uint64(ct.VecNr[bpf.IRQNetRX]),
