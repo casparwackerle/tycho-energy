@@ -180,17 +180,16 @@ func main() {
 		config.SetEnableAPIServer(false) // optional: avoid kube API deps early on
 		config.SetEnabledGPU(false)
 	}
-	if !*tychoEmpty && config.IsGPUEnabled() {
-		if config.IsGPUEnabled() {
-			r := accelerator.GetRegistry()
-			if a, err := accelerator.New(config.GPU, true); err == nil {
-				r.MustRegister(a) // Register the accelerator with the registry
-			} else {
-				klog.Errorf("failed to init GPU accelerators: %v", err)
-			}
-			defer accelerator.Shutdown()
+	if !*tychoEmpty && config.EnableGpu() {
+		r := accelerator.GetRegistry()
+		if a, err := accelerator.New(config.GPU, true); err == nil {
+			r.MustRegister(a)
+		} else {
+			klog.Errorf("failed to init GPU accelerators: %v", err)
 		}
+		defer accelerator.Shutdown()
 	}
+
 	// new eBPF exporter
 	bpfExporter, err := bpf.NewExporter()
 	if err != nil {
@@ -235,6 +234,10 @@ func main() {
 	r := raplCollector.New(raplCollector.Config{Buf: raplBuf, Mono: mono})
 	rf := redfishCollector.New(redfishCollector.Config{Buf: rfBuf, Mono: mono})
 	g := gpuCollector.New(gpuCollector.Config{Buf: gpuBuf, Mono: mono})
+
+	if err := g.Init(context.Background()); err != nil {
+		klog.Errorf("gpuCollector init failed: %v", err)
+	}
 
 	_ = eng.Register("bpf", time.Duration(config.BpfPollMs())*time.Millisecond, config.EnableBpf(), b.Collect)
 	_ = eng.Register("rapl", time.Duration(config.RaplPollMs())*time.Millisecond, config.EnableRapl(), r.Collect)

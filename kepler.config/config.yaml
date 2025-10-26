@@ -65,9 +65,9 @@ extraEnvVars:
   REDFISH_SKIP_SSL_VERIFY: "true"
 
   # Enable flags
-  TYCHO_COLLECTOR_ENABLE_BPF: "true"
+  TYCHO_COLLECTOR_ENABLE_BPF: "false"
   TYCHO_COLLECTOR_ENABLE_RAPL: "false"
-  TYCHO_COLLECTOR_ENABLE_GPU: "false"
+  TYCHO_COLLECTOR_ENABLE_GPU: "true"
   TYCHO_COLLECTOR_ENABLE_REDFISH: "false"
 
   # Measurement Periods (milliseconds)

@@ -50,6 +50,9 @@ func nvmlCheck(r *Registry) {
 		klog.V(5).Infof("Error initializing nvml: %v", nvmlErrorString(err))
 		return
 	}
+	// NEW: don't keep NVML open here; close the probe handle.
+	_ = nvml.Shutdown()
+
 	klog.Info("Initializing nvml Successful")
 	nvmlType = NVML
 	if err := addDeviceInterface(r, nvmlType, nvmlHwType, nvmlDeviceStartup); err == nil {
@@ -110,7 +113,6 @@ func (n *gpuNvml) InitLib() (err error) {
 	n.libInited = true
 	return nil
 }
-
 func (n *gpuNvml) Init() (err error) {
 	if !n.libInited {
 		if err := n.InitLib(); err != nil {
@@ -120,37 +122,67 @@ func (n *gpuNvml) Init() (err error) {
 
 	count, ret := nvml.DeviceGetCount()
 	if ret != nvml.SUCCESS {
-		nvml.Shutdown()
 		n.collectionSupported = false
 		err = fmt.Errorf("failed to get nvml device count: %v", nvml.ErrorString(ret))
+		_ = nvml.Shutdown()
 		return err
 	}
-	klog.Infof("found %d gpu devices\n", count)
+
+	if count == 0 {
+		// No GPUs present; keep NVML initialized so shutdown follows normal lifecycle,
+		// but mark collection unsupported so callers skip this backend.
+		n.collectionSupported = false
+		klog.V(5).Info("nvml: device count is zero; collection not supported")
+		return nil
+	}
+
+	klog.Infof("found %d gpu devices", count)
 	n.devices = make(map[int]GPUDevice, count)
+
+	// Enumerate devices
 	for gpuID := 0; gpuID < count; gpuID++ {
-		nvmlDeviceHandler, ret := nvml.DeviceGetHandleByIndex(gpuID)
+		h, ret := nvml.DeviceGetHandleByIndex(gpuID)
 		if ret != nvml.SUCCESS {
-			nvml.Shutdown()
 			n.collectionSupported = false
-			err = fmt.Errorf("failed to get nvml device %d: %v ", gpuID, nvml.ErrorString(ret))
+			err = fmt.Errorf("failed to get nvml device %d: %v", gpuID, nvml.ErrorString(ret))
+			_ = nvml.Shutdown()
 			return err
 		}
-		name, _ := nvmlDeviceHandler.GetName()
-		uuid, _ := nvmlDeviceHandler.GetUUID()
-		klog.Infof("GPU %v %q %q", gpuID, name, uuid)
-		dev := GPUDevice{
-			DeviceHandler: nvmlDeviceHandler,
+		if name, _ := h.GetName(); name != "" {
+			if uuid, _ := h.GetUUID(); uuid != "" {
+				klog.Infof("GPU %d %q %q", gpuID, name, uuid)
+			} else {
+				klog.Infof("GPU %d %q", gpuID, name)
+			}
+		}
+
+		n.devices[gpuID] = GPUDevice{
+			DeviceHandler: h,
 			ID:            gpuID,
 			IsSubdevice:   false,
 		}
-		n.devices[gpuID] = dev
 	}
+
+	// One-time probe for per-process compute utilization support.
+	// SUCCESS means supported; NOT_FOUND just means "no procs now" → still supported.
+	for _, dev := range n.devices {
+		h := dev.DeviceHandler.(nvml.Device)
+		lastUS := uint64(time.Now().Add(-1*time.Second).UnixNano() / 1000) // microseconds
+		if _, ret := h.GetProcessUtilization(lastUS); ret == nvml.SUCCESS || ret == nvml.ERROR_NOT_FOUND {
+			n.processUtilizationSupported = true
+		}
+		break // probe only one device
+	}
+
 	n.collectionSupported = true
 	return nil
 }
 
 // Shutdown stops the GPU metric collector
 func (n *gpuNvml) Shutdown() bool {
+	if !n.libInited {
+		return true
+	}
 	n.libInited = false
 	return nvml.Shutdown() == nvml.SUCCESS
 }
@@ -165,13 +197,11 @@ func (n *gpuNvml) DevicesByID() map[int]interface{} {
 }
 
 func (n *gpuNvml) DevicesByName() map[string]any {
-	devices := make(map[string]interface{})
-	return devices
+	return make(map[string]any)
 }
 
-func (n *gpuNvml) DeviceInstances() map[int]map[int]interface{} {
-	var devices map[int]map[int]interface{}
-	return devices
+func (n *gpuNvml) DeviceInstances() map[int]map[int]any {
+	return make(map[int]map[int]any) // no MIG instances via pure NVML backend
 }
 
 // GetAbsEnergyFromGPU returns a map with mJ in each gpu device
@@ -278,6 +308,8 @@ func nvmlErrorString(errno nvml.Return) string {
 		return "SUCCESS"
 	case nvml.ERROR_LIBRARY_NOT_FOUND:
 		return "ERROR_LIBRARY_NOT_FOUND"
+	case nvml.ERROR_NOT_FOUND:
+		return "ERROR_NOT_FOUND"
 	}
 	return fmt.Sprintf("Error %d", errno)
 }
