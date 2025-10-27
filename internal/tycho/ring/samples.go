@@ -1,5 +1,7 @@
 package ring
 
+import "time"
+
 // SampleMeta is embedded in each metric-specific sample type.
 // Mono is Tycho's monotonic event index/tick.
 
@@ -48,7 +50,11 @@ type RaplSample struct {
 
 type RedfishSample struct {
 	SampleMeta
-	PowerWatts float64
+	ChassisID  string    // e.g., "1" from /redfish/v1/Chassis/<id>
+	PowerWatts float64   // instantaneous power reported by BMC
+	SourceETag string    // optional: HTTP ETag if captured (can be empty)
+	SourceTime time.Time // optional: HTTP Date header parsed, else zero
+	Seq        uint64    // increments whenever BMC emits a new sample
 }
 
 type GpuSample struct {

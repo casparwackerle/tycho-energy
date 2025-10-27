@@ -30,96 +30,97 @@ import (
 	"k8s.io/klog/v2"
 )
 
-func getRedfishModel(access RedfishAccessInfo, endpoint string, model interface{}) error {
+// getRedfishModel performs a single HTTP GET to the given endpoint and decodes JSON
+// into the provided model. It tolerates unknown fields and uses a bounded timeout.
+// NOTE: If you decide to capture headers (ETag/Date) later, this function can be
+// refactored to return http.Header without changing the higher-level logic.
+func getRedfishModel(access RedfishAccessInfo, endpoint string, model interface{}) (http.Header, error) {
 	username := access.Username
 	password := access.Password
 	host := access.Host
 
-	// Create a HTTP client and set up the basic authentication header
+	// Transport with optional TLS verify skip (for lab hardware / self-signed certs)
 	transport := &http.Transport{}
 	if config.GetRedfishSkipSSLVerify() {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
+
 	client := &http.Client{
 		Transport: transport,
+		// Hard cap to avoid hung sockets even if caller forgets a context timeout.
+		Timeout: 30 * time.Second,
 	}
+
 	url := host + endpoint
 	req, err := http.NewRequest("GET", url, http.NoBody)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
+
+	// Per-call timeout via context (in addition to client-level timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	req = req.WithContext(ctx)
 
-	// add additional header: 'OData-Version': '4.0'
+	// Headers
 	req.Header.Add("OData-Version", "4.0")
-	// add accept header: 'application/json'
 	req.Header.Add("Accept", "application/json")
-	// set User-Agent header
-	req.Header.Set("User-Agent", "kepler")
-	// set keep-alive header
+	req.Header.Set("User-Agent", "kepler") // keep for compatibility
 	req.Header.Set("Connection", "keep-alive")
-	// set basic auth
 	req.SetBasicAuth(username, password)
 
-	// Send the request and check the response
+	// Execute request
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() {
+		// Drain to allow connection reuse, then close.
 		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
 			klog.V(0).Infof("Failed to discard response body: %v", err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}()
 
-	// Check the response status code
+	// Status check
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("server returned status: %v", resp.Status)
+		return resp.Header, fmt.Errorf("server returned status: %v", resp.Status)
 	}
 
+	// Decode JSON strictly (unknown fields logged at V(6) and ignored)
 	dec := json.NewDecoder(resp.Body)
 	dec.DisallowUnknownFields()
 
 	var returnErr error
-	// Decode the response body into the provided model struct
-	decErr := dec.Decode(model)
-
-	// process the error and only return significant ones
-	if decErr != nil {
-		if strings.HasPrefix(decErr.Error(), "json: unknown field ") {
-			// ignore unknown field error
-			fieldName := strings.TrimPrefix(decErr.Error(), "json: unknown field ")
-			klog.V(6).Infof("Request body contains unknown field %s", fieldName)
+	if err := dec.Decode(model); err != nil {
+		if strings.HasPrefix(err.Error(), "json: unknown field ") {
+			// Ignore unknown fields but surface them at high verbosity for diagnostics.
+			fieldName := strings.TrimPrefix(err.Error(), "json: unknown field ")
+			klog.V(6).Infof("Redfish response contains unknown field %s at %s", fieldName, endpoint)
 		} else {
-			returnErr = decErr
-			klog.V(5).Infof("Failed to decode response: %v", decErr)
+			returnErr = err
+			klog.V(5).Infof("Failed to decode response at %s: %v", endpoint, err)
 		}
 	}
 
-	return returnErr
+	return resp.Header, returnErr
 }
 
 func getRedfishChassis(access RedfishAccessInfo) (*RedfishChassisModel, error) {
 	var chassis RedfishChassisModel
-	err := getRedfishModel(access, "/redfish/v1/Chassis", &chassis)
-	if err != nil {
+	if _, err := getRedfishModel(access, "/redfish/v1/Chassis", &chassis); err != nil {
 		klog.V(1).Infof("Failed to get chassis: %v", err)
 		return nil, err
 	}
-
 	return &chassis, nil
 }
 
-func getRedfishPower(access RedfishAccessInfo, chassis string) (*RedfishPowerModel, error) {
+func getRedfishPower(access RedfishAccessInfo, chassis string) (*RedfishPowerModel, http.Header, error) {
 	var power RedfishPowerModel
-	err := getRedfishModel(access, "/redfish/v1/Chassis/"+chassis+"/Power#/PowerControl", &power)
+	hdr, err := getRedfishModel(access, "/redfish/v1/Chassis/"+chassis+"/Power#/PowerControl", &power)
 	if err != nil {
 		klog.V(1).Infof("Failed to get power: %v", err)
-		return nil, err
+		return nil, hdr, err
 	}
-
-	return &power, nil
+	return &power, hdr, nil
 }
