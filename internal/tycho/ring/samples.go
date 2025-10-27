@@ -50,11 +50,12 @@ type RaplSample struct {
 
 type RedfishSample struct {
 	SampleMeta
-	ChassisID  string    // e.g., "1" from /redfish/v1/Chassis/<id>
-	PowerWatts float64   // instantaneous power reported by BMC
-	SourceETag string    // optional: HTTP ETag if captured (can be empty)
-	SourceTime time.Time // optional: HTTP Date header parsed, else zero
-	Seq        uint64    // increments whenever BMC emits a new sample
+	ChassisID     string    // e.g., "1" from /redfish/v1/Chassis/<id>
+	PowerWatts    float64   // instantaneous power reported by BMC
+	Seq           uint64    // increments whenever the BMC exposes a new state
+	SourceTime    time.Time // BMC-provided HTTP Date if present; zero if unknown
+	CollectorTime time.Time // local wall-clock when the sample was received/pushed
+	FreshnessMs   float64   // max(0, CollectorTime - SourceTime) in ms; 0 if SourceTime is zero
 }
 
 type GpuSample struct {

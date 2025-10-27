@@ -1,19 +1,3 @@
-/*
-Copyright 2023.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package source
 
 import (
@@ -26,11 +10,11 @@ import (
 
 	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"github.com/casparwackerle/tycho-energy/pkg/nodecred"
-
 	"k8s.io/klog/v2"
 )
 
-// RedfishChassisModel is the struct for the physical components of a system.
+// ---------- Redfish model types (float64-tolerant) ----------
+
 type RedfishChassisModel struct {
 	OdataContext string `json:"@odata.context"`
 	OdataID      string `json:"@odata.id"`
@@ -43,8 +27,6 @@ type RedfishChassisModel struct {
 	Name              string `json:"Name"`
 }
 
-// RedfishPowerModel is the struct for the power model
-// Generated from Redfish examples and normalized to tolerate floats from BMCs.
 type RedfishPowerModel struct {
 	OdataType     string          `json:"@odata.type,omitempty"`
 	ID            string          `json:"Id,omitempty"`
@@ -93,7 +75,7 @@ type PowerControl struct {
 	Status              Status        `json:"Status,omitempty"`
 }
 
-// NOTE: A number of BMCs report decimals for ranges/thresholds; prefer float64.
+// Many BMCs use decimals for thresholds/ranges → use float64 consistently.
 type Voltages struct {
 	OdataID                   string        `json:"@odata.id,omitempty"`
 	MemberID                  string        `json:"MemberId,omitempty"`
@@ -148,22 +130,23 @@ type Actions struct {
 	PowerPowerSupplyReset PowerPowerSupplyReset `json:"#Power.PowerSupplyReset,omitempty"`
 }
 
-// RedfishSystemPowerResult holds per-chassis cached power and metadata.
-// Tycho will drive polling via PollOnce(); no internal ticker here.
+// ---------- Cached system state (per chassis) ----------
+
 type RedfishSystemPowerResult struct {
 	chassis       string
 	consumedWatts float64
-	// timestamp is the last time Kepler's GetAbsEnergyFromPlatform() integrated this value.
+
+	// Last time GetAbsEnergyFromPlatform() integrated this value.
 	timestamp time.Time
-	// newness tracking for Tycho:
-	lastChange time.Time
-	seq        uint64
-	// Optional header metadata (populate if you decide to capture in redfish_util.go)
+
+	// Newness tracking for Tycho (header-driven preferred):
 	lastETag   string
 	sourceDate time.Time
+	lastChange time.Time
+	seq        uint64
 }
 
-// RedfishAccessInfo is the struct for the access model
+// Access credentials
 type RedfishAccessInfo struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -173,7 +156,7 @@ type RedfishAccessInfo struct {
 type RedFishClient struct {
 	accessInfo    RedfishAccessInfo
 	systems       []*RedfishSystemPowerResult
-	probeInterval time.Duration // retained for compatibility; not used for a ticker anymore
+	probeInterval time.Duration // retained for compatibility; no ticker used
 	mutex         sync.Mutex
 }
 
@@ -186,139 +169,134 @@ func NewRedfishClient() *RedFishClient {
 	if err := nodecred.InitNodeCredImpl(map[string]string{"redfish_cred_file_path": credPath}); err != nil {
 		klog.Infof("%s", fmt.Sprintf("failed to initialize node credential: %v", err))
 		return nil
-	} else {
-		klog.V(5).Infof("Initialized node credential")
-		nodeName := os.Getenv("NODE_NAME")
-		if nodeName == "" {
-			nodeName = "localhost"
-		}
-		redfishCred, err := nodecred.GetNodeCredByNodeName(nodeName, "redfish")
-		if err == nil {
-			userName := redfishCred["redfish_username"]
-			password := redfishCred["redfish_password"]
-			host := redfishCred["redfish_host"]
-			if host != "" {
-				klog.V(5).Infof("Initialized redfish credential")
-				probeInterval := config.GetRedfishProbeIntervalInSeconds()
-				interval := time.Duration(probeInterval) * time.Second
-				redfish := &RedFishClient{
-					accessInfo:    RedfishAccessInfo{Username: userName, Password: password, Host: host},
-					systems:       []*RedfishSystemPowerResult{},
-					probeInterval: interval,
-					mutex:         sync.Mutex{},
-				}
-				return redfish
-			}
-		} else {
-			klog.V(1).Infof("%s", fmt.Sprintf("failed to get node credential: %v", err))
-			return nil
-		}
 	}
-	return nil
+
+	klog.V(5).Infof("Initialized node credential")
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		nodeName = "localhost"
+	}
+	redfishCred, err := nodecred.GetNodeCredByNodeName(nodeName, "redfish")
+	if err != nil {
+		klog.V(1).Infof("%s", fmt.Sprintf("failed to get node credential: %v", err))
+		return nil
+	}
+
+	userName := redfishCred["redfish_username"]
+	password := redfishCred["redfish_password"]
+	host := redfishCred["redfish_host"]
+	if host == "" {
+		return nil
+	}
+
+	klog.V(5).Infof("Initialized redfish credential")
+	probeInterval := config.GetRedfishProbeIntervalInSeconds()
+	interval := time.Duration(probeInterval) * time.Second
+
+	return &RedFishClient{
+		accessInfo:    RedfishAccessInfo{Username: userName, Password: password, Host: host},
+		systems:       []*RedfishSystemPowerResult{},
+		probeInterval: interval,
+		mutex:         sync.Mutex{},
+	}
 }
 
-func (*RedFishClient) GetName() string {
-	return "redfish"
-}
+func (*RedFishClient) GetName() string { return "redfish" }
 
-// IsSystemCollectionSupported performs one-time discovery/fetch.
-// It no longer starts an internal ticker; Tycho owns polling.
+// One-time discovery. Tycho owns polling cadence.
 func (rf *RedFishClient) IsSystemCollectionSupported() bool {
 	chassis, err := getRedfishChassis(rf.accessInfo)
 	if err != nil {
-		klog.Infof("failed to get redfish chassis info: %v\n", err)
+		klog.Infof("failed to get redfish chassis info: %v", err)
 		return false
 	}
 
-	// iterate each "Members" in the chassis and get the initial power info
-	for index, member := range chassis.Members {
-		// split the OdataID by delimiter "/" and get the chassis ID
-		split := strings.Split(member.OdataID, "/")
-		if len(split) < 2 {
+	for _, member := range chassis.Members {
+		parts := strings.Split(member.OdataID, "/")
+		if len(parts) < 2 {
 			continue
 		}
-		id := split[len(split)-1]
-		res := RedfishSystemPowerResult{}
+		id := parts[len(parts)-1]
+
+		var res RedfishSystemPowerResult
 		power, hdr, err := getRedfishPower(rf.accessInfo, id)
-		if err == nil && len(power.PowerControl) > 0 {
-			val := power.PowerControl[0].PowerConsumedWatts
-			// capture header hints
-			etag := hdr.Get("ETag")
-			dateHdr := hdr.Get("Date")
-			var srcDate time.Time
-			if t, err := http.ParseTime(dateHdr); err == nil {
-				srcDate = t
-			}
-			if index < len(rf.systems) {
-				rf.systems[index].consumedWatts = val
-				rf.systems[index].timestamp = time.Now()
-				rf.systems[index].lastChange = rf.systems[index].timestamp
-				rf.systems[index].lastETag = etag
-				rf.systems[index].sourceDate = srcDate
-			} else {
-				res.chassis = id
-				res.consumedWatts = val
-				res.timestamp = time.Now()
-				res.lastChange = res.timestamp
-				res.lastETag = etag
-				res.sourceDate = srcDate
-				rf.systems = append(rf.systems, &res)
-			}
-			klog.V(5).Infof("power info: %+v\n", power)
-		} else {
-			klog.V(5).Infof("failed to get power info: %v\n", err)
+		if err != nil || len(power.PowerControl) == 0 {
+			klog.V(5).Infof("failed to get power info for chassis=%s: %v", id, err)
+			continue
 		}
+
+		val := power.PowerControl[0].PowerConsumedWatts
+		etag := hdr.Get("ETag")
+		dateHdr := hdr.Get("Date")
+		var srcDate time.Time
+		if t, err := http.ParseTime(dateHdr); err == nil {
+			srcDate = t
+		}
+
+		res.chassis = id
+		res.consumedWatts = val
+		res.timestamp = time.Now()
+		res.lastChange = res.timestamp
+		res.lastETag = etag
+		res.sourceDate = srcDate
+
+		rf.systems = append(rf.systems, &res)
+		klog.V(5).Infof("redfish init: chassis=%s watts=%.3f etag=%q date=%v", id, val, etag, srcDate)
 	}
+
 	return len(rf.systems) > 0
 }
 
 // PollOnce fetches current power for all discovered systems and updates the cache.
-// Tycho should call this at its desired cadence (e.g., every RedfishPollMs).
+// Tycho should call this at RedfishPollMs cadence.
 func (rf *RedFishClient) PollOnce() {
 	if rf == nil || rf.systems == nil {
 		return
 	}
+
 	for _, system := range rf.systems {
 		power, hdr, err := getRedfishPower(rf.accessInfo, system.chassis)
-		if err == nil && len(power.PowerControl) > 0 {
-			newWatts := power.PowerControl[0].PowerConsumedWatts
-			etag := hdr.Get("ETag")
-			dateHdr := hdr.Get("Date")
-			var srcDate time.Time
-			if t, err := http.ParseTime(dateHdr); err == nil {
-				srcDate = t
-			}
-
-			rf.mutex.Lock()
-			if newWatts != system.consumedWatts {
-				changed := false
-				// 1) Header-driven newness (preferred)
-				if etag != "" && etag != system.lastETag {
-					system.lastETag = etag
-					changed = true
-				} else if !srcDate.IsZero() && srcDate.After(system.sourceDate) {
-					system.sourceDate = srcDate
-					changed = true
-				}
-				// 2) Value-driven newness (fallback)
-				if !changed && newWatts != system.consumedWatts {
-					changed = true
-				}
-
-				if changed {
-					system.consumedWatts = newWatts
-					system.lastChange = time.Now()
-					system.seq++
-				}
-			}
-			rf.mutex.Unlock()
-		} else {
+		if err != nil || len(power.PowerControl) == 0 {
 			klog.V(5).Infof("redfish poll failed for chassis=%s: %v", system.chassis, err)
+			continue
 		}
+
+		newWatts := power.PowerControl[0].PowerConsumedWatts
+		etag := hdr.Get("ETag")
+		dateHdr := hdr.Get("Date")
+		var srcDate time.Time
+		if t, err := http.ParseTime(dateHdr); err == nil {
+			srcDate = t
+		}
+
+		rf.mutex.Lock()
+		changed := false
+
+		// 1) Header-driven newness
+		if etag != "" && etag != system.lastETag {
+			system.lastETag = etag
+			changed = true
+		}
+		if !srcDate.IsZero() && srcDate.After(system.sourceDate) {
+			system.sourceDate = srcDate
+			changed = true
+		}
+
+		// 2) Value-driven fallback
+		if !changed && newWatts != system.consumedWatts {
+			changed = true
+		}
+
+		if changed {
+			system.consumedWatts = newWatts
+			system.lastChange = time.Now()
+			system.seq++
+		}
+		rf.mutex.Unlock()
 	}
 }
 
-// ForEachSystem safely iterates over current systems under lock.
+// Safe iteration under lock
 func (rf *RedFishClient) ForEachSystem(f func(sys *RedfishSystemPowerResult)) {
 	rf.mutex.Lock()
 	defer rf.mutex.Unlock()
@@ -327,31 +305,31 @@ func (rf *RedFishClient) ForEachSystem(f func(sys *RedfishSystemPowerResult)) {
 	}
 }
 
-// GetAbsEnergyFromPlatform returns energy delta (mJ) by integrating held power.
-// This remains compatible with Kepler's integration path (if you still use it).
+// Kepler-compat energy integration (mJ) from cached instantaneous power.
 func (rf *RedFishClient) GetAbsEnergyFromPlatform() (map[string]float64, error) {
 	if rf.systems == nil {
 		return nil, nil
 	}
-	power := make(map[string]float64)
+	out := make(map[string]float64, len(rf.systems))
+	rf.mutex.Lock()
+	defer rf.mutex.Unlock()
+
+	now := time.Now()
 	for _, system := range rf.systems {
-		rf.mutex.Lock()
-		now := time.Now()
-		// elapsed time since the last integration in seconds
 		elapsed := now.Sub(system.timestamp).Seconds()
 		system.timestamp = now
-		klog.V(5).Infof("power info: %+v\n", system)
-		// consumedWatts is instantaneous W; convert to mW and multiply by seconds → mJ
-		power[system.chassis] = system.consumedWatts * 1000.0 * elapsed
-		rf.mutex.Unlock()
+		// W * 1000 * s = mJ
+		out[system.chassis] = system.consumedWatts * 1000.0 * elapsed
+		klog.V(5).Infof("redfish integrate: chassis=%s watts=%.3f elapsed=%.3fs", system.chassis, system.consumedWatts, elapsed)
 	}
-	return power, nil
+	return out, nil
 }
 
-// In pkg/sensors/platform/source/redfish.go
-func (s *RedfishSystemPowerResult) Chassis() string  { return s.chassis }
-func (s *RedfishSystemPowerResult) Sequence() uint64 { return s.seq }
-func (s *RedfishSystemPowerResult) Watts() float64   { return s.consumedWatts }
+// Lightweight getters used by Tycho's collector
+func (s *RedfishSystemPowerResult) Chassis() string       { return s.chassis }
+func (s *RedfishSystemPowerResult) Sequence() uint64      { return s.seq }
+func (s *RedfishSystemPowerResult) Watts() float64        { return s.consumedWatts }
+func (s *RedfishSystemPowerResult) SourceDate() time.Time { return s.sourceDate }
 
-// StopPower is a no-op now (no internal ticker).
+// No-op (no internal ticker anymore)
 func (rf *RedFishClient) StopPower() {}
