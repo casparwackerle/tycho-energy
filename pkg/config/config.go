@@ -109,13 +109,21 @@ type TychoTimingConfig struct {
 	BufferMarginCycles      int
 	RaplPollMs              int
 	RaplDelayMs             int
+	RaplPollAutoTune        bool
+	RaplDelayAutoTune       bool
 	BpfPollMs               int
 	BpfDelayMs              int
+	BpfPollAutoTune         bool
+	BpfDelayAutoTune        bool
 	GpuPollMs               int
 	GpuDelayMs              int
+	GpuPollAutoTune         bool
+	GpuDelayAutoTune        bool
 	RedfishPollMs           int // note: Redfish.RedfishProbeIntervalInSeconds still exists; this overrides if >0
 	RedfishDelayMs          int
 	RedfishExpectedChangeMs int
+	RedfishPollAutoTune     bool
+	RedfishDelayAutoTune    bool
 }
 
 type TychoAnalysisConfig struct {
@@ -240,13 +248,21 @@ func getTychoTimingConfig() TychoTimingConfig {
 		BufferMarginCycles:      getIntConfig("TYCHO_BUFFER_MARGIN_CYCLES", detaultTychoBufferMarginCycles),
 		RaplPollMs:              getIntConfig("TYCHO_RAPL_POLL_MS", defaultTychoRaplPollMs),
 		RaplDelayMs:             getIntConfig("TYCHO_RAPL_DELAY_MS", defaultTychoRaplDelayMs),
+		RaplPollAutoTune:        getBoolConfig("TYCHO_RAPL_POLL_AUTOTUNE", defaultTychoRaplPollAutotune),
+		RaplDelayAutoTune:       getBoolConfig("TYCHO_RAPL_DELAY_AUTOTUNE", defaultTychoRaplDelayAutotune),
 		BpfPollMs:               getIntConfig("TYCHO_BPF_POLL_MS", defaultTychoBpfPollMs),
 		BpfDelayMs:              getIntConfig("TYCHO_BPF_DELAY_MS", defaultTychoBpfDelayMs),
+		BpfPollAutoTune:         getBoolConfig("TYCHO_BPF_POLL_AUTOTUNE", defaultTychoBpfPollAutotune),
+		BpfDelayAutoTune:        getBoolConfig("TYCHO_BPF_DELAY_AUTOTUNE", defaultTychoBpfDelayAutotune),
 		GpuPollMs:               getIntConfig("TYCHO_GPU_POLL_MS", defaultTychoGpuPollMs),
 		GpuDelayMs:              getIntConfig("TYCHO_GPU_DELAY_MS", defaultTychoGpuDelayMs),
+		GpuPollAutoTune:         getBoolConfig("TYCHO_GPU_POLL_AUTOTUNE", defaultTychoGpuPollAutotune),
+		GpuDelayAutoTune:        getBoolConfig("TYCHO_GPU_DELAY_AUTOTUNE", defaultTychoGpuDelayAutotune),
 		RedfishPollMs:           getIntConfig("TYCHO_REDFISH_POLL_MS", defaultTychoRedfishPollMs),
 		RedfishDelayMs:          getIntConfig("TYCHO_REDFISH_DELAY_MS", defaultTychoRedfishDelayMs),
 		RedfishExpectedChangeMs: getIntConfig("TYCHO_REDFISH_EXPECTED_CHANGE_MS", detaultTychoRedfishExpectedChangeMs),
+		RedfishPollAutoTune:     getBoolConfig("TYCHO_REDFISH_POLL_AUTOTUNE", defaultTychoRedfishPollAutotune),
+		RedfishDelayAutoTune:    getBoolConfig("TYCHO_REDFISH_DELAY_AUTOTUNE", defaultTychoRedfishDelayAutotune),
 	}
 }
 
@@ -411,6 +427,16 @@ func logTychoConfigs() {
 		instance.TychoCollector.EnableBpf,
 		instance.TychoCollector.EnableGpu,
 		instance.TychoCollector.EnableRedfish)
+	klog.V(5).Infof("TYCHO_POLL_AUTOTUNE_ENABLED: RAPL: %t, BPF: %t, GPU: %t, REDFISH: %t",
+		instance.TychoTiming.RaplPollAutoTune,
+		instance.TychoTiming.BpfPollAutoTune,
+		instance.TychoTiming.GpuPollAutoTune,
+		instance.TychoTiming.RedfishPollAutoTune)
+	klog.V(5).Infof("TYCHO_DELAY_AUTOTUNE_ENABLED: RAPL: %t, BPF: %t, GPU: %t, REDFISH: %t",
+		instance.TychoTiming.RaplDelayAutoTune,
+		instance.TychoTiming.BpfDelayAutoTune,
+		instance.TychoTiming.GpuDelayAutoTune,
+		instance.TychoTiming.RedfishDelayAutoTune)
 	klog.V(5).Infof("TYCHO_COLLECTOR_POWERCAP_BASE_PATH: %s", instance.TychoCollector.PowercapBasePath)
 	klog.V(5).Infof("TYCHO_COLLECTOR_RAPL_DOMAINS: %s", instance.TychoCollector.RaplDomains)
 	klog.V(5).Infof("STOP TYCHO CONFIGS: ----------------------------------------")
@@ -919,6 +945,14 @@ func RaplDelayMs() int {
 	return instance.TychoTiming.RaplDelayMs
 }
 
+func EnableRaplPollAutoTune() bool {
+	return instance.TychoTiming.RaplPollAutoTune
+}
+
+func EnableRaplDelayAutoTune() bool {
+	return instance.TychoTiming.RaplDelayAutoTune
+}
+
 func BpfPollMs() int {
 	return instance.TychoTiming.BpfPollMs
 }
@@ -927,12 +961,28 @@ func BpfDelayMs() int {
 	return instance.TychoTiming.BpfDelayMs
 }
 
+func EnableBpfPollAutoTune() bool {
+	return instance.TychoTiming.BpfPollAutoTune
+}
+
+func EnableBpfDelayAutoTune() bool {
+	return instance.TychoTiming.BpfDelayAutoTune
+}
+
 func GpuPollMs() int {
 	return instance.TychoTiming.GpuPollMs
 }
 
 func GpuDelayMs() int {
 	return instance.TychoTiming.GpuDelayMs
+}
+
+func EnableGpuPollAutoTune() bool {
+	return instance.TychoTiming.GpuPollAutoTune
+}
+
+func EnableGpuDelayAutoTune() bool {
+	return instance.TychoTiming.GpuDelayAutoTune
 }
 
 func RedfishPollMs() int {
@@ -945,6 +995,14 @@ func RedfishDelayMs() int {
 
 func RedfishExpectedChangeMs() int {
 	return instance.TychoTiming.RedfishExpectedChangeMs
+}
+
+func EnableRedfishPollAutoTune() bool {
+	return instance.TychoTiming.RedfishPollAutoTune
+}
+
+func EnableRedfishDelayAutoTune() bool {
+	return instance.TychoTiming.RedfishDelayAutoTune
 }
 
 func Trigger() string {

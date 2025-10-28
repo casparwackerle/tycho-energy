@@ -110,15 +110,23 @@ const (
 	defaultTychoBufferWindowSec    = 5 // will be overwritten if too shoft. length of the buffer in seconds. must be longer than longest measurement inverval (likely redfish)
 	detaultTychoBufferMarginCycles = 3 // must be at least 1
 
-	defaultTychoRaplPollMs              = 50    //must be equal or multiple of defaultTychoRaplPollMs
-	defaultTychoRaplDelayMs             = 0     //must be equal or multiple of defaultTychoRaplPollMs, assumed to be 0
-	defaultTychoBpfPollMs               = 50    //must be equal or multiple of defaultTychoRaplPollMs
-	defaultTychoBpfDelayMs              = 0     //must be equal or multiple of defaultTychoRaplPollMs, assumed to be 0
-	defaultTychoGpuPollMs               = 200   //must be equal or multiple of defaultTychoRaplPollMs
-	defaultTychoGpuDelayMs              = 200   //must be equal or multiple of defaultTychoRaplPollMs
+	defaultTychoRaplPollMs              = 50 //must be equal or multiple of defaultTychoRaplPollMs
+	defaultTychoRaplDelayMs             = 0  //must be equal or multiple of defaultTychoRaplPollMs, assumed to be 0
+	defaultTychoRaplPollAutotune        = false
+	defaultTychoRaplDelayAutotune       = false
+	defaultTychoBpfPollMs               = 50 //must be equal or multiple of defaultTychoRaplPollMs
+	defaultTychoBpfDelayMs              = 0  //must be equal or multiple of defaultTychoRaplPollMs, assumed to be 0
+	defaultTychoBpfPollAutotune         = false
+	defaultTychoBpfDelayAutotune        = false
+	defaultTychoGpuPollMs               = 200 //must be equal or multiple of defaultTychoRaplPollMs
+	defaultTychoGpuDelayMs              = 200 //must be equal or multiple of defaultTychoRaplPollMs
+	defaultTychoGpuPollAutotune         = false
+	defaultTychoGpuDelayAutotune        = false
 	defaultTychoRedfishPollMs           = 1000  //must be equal or multiple of defaultTychoRaplPollMs. Realistically, Redfish publishes at much slower rates, often 15 or more seconds
 	defaultTychoRedfishDelayMs          = 0     //must be equal or multiple of defaultTychoRaplPollMs, assumed to be 0
 	detaultTychoRedfishExpectedChangeMs = 15000 //realistically possible redish update period, often 15-20 seconds
+	defaultTychoRedfishPollAutotune     = false
+	defaultTychoRedfishDelayAutotune    = false
 
 	// Tycho Analysis Config
 	defaultTychoTrigger            = "redfish" // "redfish" | "timer"
