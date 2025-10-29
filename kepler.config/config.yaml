@@ -74,19 +74,31 @@ extraEnvVars:
   TYCHO_BPF_POLL_MS: "50"
   TYCHO_RAPL_POLL_MS: "50"
   TYCHO_GPU_POLL_MS: "200"
-  TYCHO_REDFISH_POLL_MS: "1000"
+  TYCHO_REDFISH_POLL_MS: "1000" # Polling cadence (milliseconds). To catch every BMC publish, set this LOWER than the BMC’s actual cadence. If unknown, 1000 ms is a safe, low-overhead default for many servers.
 
-  # Optional timing extras you already support
+  # Optional timing extras: Metric delay (i.e. the delay between a workload change and it's representation in the metric). Insert if known, otherwise keep at 0.
+  TYCHO_TIMEBASE_QUANTUM_MS: "1"
   TYCHO_BPF_DELAY_MS: "0"
   TYCHO_RAPL_DELAY_MS: "0"
   TYCHO_GPU_DELAY_MS: "200"
-  TYCHO_REDFISH_DELAY_MS: "0"
-  TYCHO_TIMEBASE_QUANTUM_MS: "1"
-  TYCHO_REDFISH_EXPECTED_CHANGE_MS: "15000"
+  TYCHO_REDFISH_DELAY_MS: "0" 
+  TYCHO_REDFISH_HEARTBEAT_MAX_GAP_MS: "3000" # Heartbeat timeout (milliseconds). Set to 150% of the known BMC publishing frequency, if known. Otherwise set to 15000 as a safe, conservative default.
+
+  # Autotune settings
+  # POLL_AUTOTUNE: allows a calibration step to override TYCHO_<metric>_POLL_MS
+  # DELAY_AUTOTUNE: allows a calibration step to override TYCHO_<metric>_DELAY_MS
+  TYCHO_RAPL_POLL_AUTOTUNE: "false"
+  TYCHO_RAPL_DELAY_AUTOTUNE: "false"
+  TYCHO_BPF_POLL_AUTOTUNE: "false"
+  TYCHO_BPF_DELAY_AUTOTUNE: "false"
+  TYCHO_GPU_POLL_AUTOTUNE: "false"
+  TYCHO_GPU_DELAY_AUTOTUNE: "false"
+  TYCHO_REDFISH_POLL_AUTOTUNE: "false"
+  TYCHO_REDFISH_DELAY_AUTOTUNE: "false"
 
   # Optional analysis knobs you already wired
-  TYCHO_ANALYSIS_TRIGGER: "redfish"
-  TYCHO_ANALYSIS_EVERY_SEC: "5"
+  TYCHO_ANALYSIS_TRIGGER: "timer" # "redfish" | "timer"
+  TYCHO_ANALYSIS_EVERY_SEC: "15"
   TYCHO_ANALYSIS_DETECT_LONGEST_DELAY: "false"
 
 canMount:

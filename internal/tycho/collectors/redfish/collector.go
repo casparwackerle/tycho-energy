@@ -48,7 +48,7 @@ func New(cfg Config) *Collector {
 	c := &Collector{
 		buf:           cfg.Buf,
 		mono:          cfg.Mono,
-		expectFixed:   time.Duration(config.RedfishExpectedChangeMs()) * time.Millisecond,
+		expectFixed:   time.Duration(config.RedfishHeartbeatMs()) * time.Millisecond,
 		expectDyn:     map[string]time.Duration{},
 		lastSeq:       map[string]uint64{},
 		lastEmit:      map[string]time.Time{},
@@ -94,6 +94,7 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 	}
 
 	start := time.Now()
+	auto := config.EnableRedfishPollAutoTune()
 
 	// Update the passive cache with a single pull at Tycho cadence.
 	c.client.PollOnce()
@@ -105,33 +106,38 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 		watts := sys.Watts()
 		srcTime := sys.SourceDate() // zero if unknown
 
-		// If seq advanced, update inter-arrival stats (for adaptive heartbeat).
-		if prev, ok := c.lastSeq[chassis]; !ok || prev != seq {
-			// Inter-arrival measurement
-			if prevOK, ok2 := c.lastSeqTime[chassis]; ok2 {
-				ia := now.Sub(prevOK)
-				if ia > 0 {
-					list := c.interArrivals[chassis]
-					list = append(list, ia)
-					if len(list) > iaWindow {
-						list = list[len(list)-iaWindow:]
-					}
-					c.interArrivals[chassis] = list
+		// --- Adaptive learning only if auto-tune is enabled ---
+		if auto {
+			if prev, ok := c.lastSeq[chassis]; !ok || prev != seq {
+				// Inter-arrival measurement
+				if prevT, ok2 := c.lastSeqTime[chassis]; ok2 {
+					ia := now.Sub(prevT)
+					if ia > 0 {
+						list := c.interArrivals[chassis]
+						list = append(list, ia)
+						if len(list) > iaWindow {
+							list = list[len(list)-iaWindow:]
+						}
+						c.interArrivals[chassis] = list
 
-					// Recompute adaptive expect window as 1.5 × median
-					if med := medianDuration(list); med > 0 {
-						ad := clampDur(time.Duration(adaptFactor*float64(med)), expectMin, expectMax)
-						c.expectDyn[chassis] = ad
+						// Recompute adaptive expect window as 1.5 × median, clamped
+						if med := medianDuration(list); med > 0 {
+							ad := clampDur(time.Duration(adaptFactor*float64(med)), expectMin, expectMax)
+							c.expectDyn[chassis] = ad
+						}
 					}
 				}
+				c.lastSeqTime[chassis] = now
 			}
-			c.lastSeqTime[chassis] = now
 		}
+		// ------------------------------------------------------
 
-		// Determine the effective expect window for this chassis
+		// Determine the effective expect window for this chassis.
 		expect := c.expectFixed
-		if d, ok := c.expectDyn[chassis]; ok && d > 0 {
-			expect = d
+		if auto {
+			if d, ok := c.expectDyn[chassis]; ok && d > 0 {
+				expect = d
+			}
 		}
 		if expect <= 0 {
 			expect = 15 * time.Second // conservative default if config is zero

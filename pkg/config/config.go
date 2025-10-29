@@ -104,26 +104,26 @@ type HostConfig struct {
 }
 
 type TychoTimingConfig struct {
-	TimebaseQuantumMs       int // resampling grid for aligned series
-	BufferWindowSec         int
-	BufferMarginCycles      int
-	RaplPollMs              int
-	RaplDelayMs             int
-	RaplPollAutoTune        bool
-	RaplDelayAutoTune       bool
-	BpfPollMs               int
-	BpfDelayMs              int
-	BpfPollAutoTune         bool
-	BpfDelayAutoTune        bool
-	GpuPollMs               int
-	GpuDelayMs              int
-	GpuPollAutoTune         bool
-	GpuDelayAutoTune        bool
-	RedfishPollMs           int // note: Redfish.RedfishProbeIntervalInSeconds still exists; this overrides if >0
-	RedfishDelayMs          int
-	RedfishExpectedChangeMs int
-	RedfishPollAutoTune     bool
-	RedfishDelayAutoTune    bool
+	TimebaseQuantumMs    int // resampling grid for aligned series
+	BufferWindowSec      int
+	BufferMarginCycles   int
+	RaplPollMs           int
+	RaplDelayMs          int
+	RaplPollAutoTune     bool
+	RaplDelayAutoTune    bool
+	BpfPollMs            int
+	BpfDelayMs           int
+	BpfPollAutoTune      bool
+	BpfDelayAutoTune     bool
+	GpuPollMs            int
+	GpuDelayMs           int
+	GpuPollAutoTune      bool
+	GpuDelayAutoTune     bool
+	RedfishPollMs        int // note: Redfish.RedfishProbeIntervalInSeconds still exists; this overrides if >0
+	RedfishDelayMs       int
+	RedfishHeartbeatMs   int
+	RedfishPollAutoTune  bool
+	RedfishDelayAutoTune bool
 }
 
 type TychoAnalysisConfig struct {
@@ -243,26 +243,26 @@ func getKeplerConfig() KeplerConfig {
 
 func getTychoTimingConfig() TychoTimingConfig {
 	return TychoTimingConfig{
-		TimebaseQuantumMs:       getIntConfig("TYCHO_TIMEBASE_QUANTUM_MS", defaultTychoTimebaseQuantumMs),
-		BufferWindowSec:         getIntConfig("TYCHO_BUFFER_WINDOW_SEC", defaultTychoBufferWindowSec),
-		BufferMarginCycles:      getIntConfig("TYCHO_BUFFER_MARGIN_CYCLES", detaultTychoBufferMarginCycles),
-		RaplPollMs:              getIntConfig("TYCHO_RAPL_POLL_MS", defaultTychoRaplPollMs),
-		RaplDelayMs:             getIntConfig("TYCHO_RAPL_DELAY_MS", defaultTychoRaplDelayMs),
-		RaplPollAutoTune:        getBoolConfig("TYCHO_RAPL_POLL_AUTOTUNE", defaultTychoRaplPollAutotune),
-		RaplDelayAutoTune:       getBoolConfig("TYCHO_RAPL_DELAY_AUTOTUNE", defaultTychoRaplDelayAutotune),
-		BpfPollMs:               getIntConfig("TYCHO_BPF_POLL_MS", defaultTychoBpfPollMs),
-		BpfDelayMs:              getIntConfig("TYCHO_BPF_DELAY_MS", defaultTychoBpfDelayMs),
-		BpfPollAutoTune:         getBoolConfig("TYCHO_BPF_POLL_AUTOTUNE", defaultTychoBpfPollAutotune),
-		BpfDelayAutoTune:        getBoolConfig("TYCHO_BPF_DELAY_AUTOTUNE", defaultTychoBpfDelayAutotune),
-		GpuPollMs:               getIntConfig("TYCHO_GPU_POLL_MS", defaultTychoGpuPollMs),
-		GpuDelayMs:              getIntConfig("TYCHO_GPU_DELAY_MS", defaultTychoGpuDelayMs),
-		GpuPollAutoTune:         getBoolConfig("TYCHO_GPU_POLL_AUTOTUNE", defaultTychoGpuPollAutotune),
-		GpuDelayAutoTune:        getBoolConfig("TYCHO_GPU_DELAY_AUTOTUNE", defaultTychoGpuDelayAutotune),
-		RedfishPollMs:           getIntConfig("TYCHO_REDFISH_POLL_MS", defaultTychoRedfishPollMs),
-		RedfishDelayMs:          getIntConfig("TYCHO_REDFISH_DELAY_MS", defaultTychoRedfishDelayMs),
-		RedfishExpectedChangeMs: getIntConfig("TYCHO_REDFISH_EXPECTED_CHANGE_MS", detaultTychoRedfishExpectedChangeMs),
-		RedfishPollAutoTune:     getBoolConfig("TYCHO_REDFISH_POLL_AUTOTUNE", defaultTychoRedfishPollAutotune),
-		RedfishDelayAutoTune:    getBoolConfig("TYCHO_REDFISH_DELAY_AUTOTUNE", defaultTychoRedfishDelayAutotune),
+		TimebaseQuantumMs:    getIntConfig("TYCHO_TIMEBASE_QUANTUM_MS", defaultTychoTimebaseQuantumMs),
+		BufferWindowSec:      getIntConfig("TYCHO_BUFFER_WINDOW_SEC", defaultTychoBufferWindowSec),
+		BufferMarginCycles:   getIntConfig("TYCHO_BUFFER_MARGIN_CYCLES", detaultTychoBufferMarginCycles),
+		RaplPollMs:           getIntConfig("TYCHO_RAPL_POLL_MS", defaultTychoRaplPollMs),
+		RaplDelayMs:          getIntConfig("TYCHO_RAPL_DELAY_MS", defaultTychoRaplDelayMs),
+		RaplPollAutoTune:     getBoolConfig("TYCHO_RAPL_POLL_AUTOTUNE", defaultTychoRaplPollAutotune),
+		RaplDelayAutoTune:    getBoolConfig("TYCHO_RAPL_DELAY_AUTOTUNE", defaultTychoRaplDelayAutotune),
+		BpfPollMs:            getIntConfig("TYCHO_BPF_POLL_MS", defaultTychoBpfPollMs),
+		BpfDelayMs:           getIntConfig("TYCHO_BPF_DELAY_MS", defaultTychoBpfDelayMs),
+		BpfPollAutoTune:      getBoolConfig("TYCHO_BPF_POLL_AUTOTUNE", defaultTychoBpfPollAutotune),
+		BpfDelayAutoTune:     getBoolConfig("TYCHO_BPF_DELAY_AUTOTUNE", defaultTychoBpfDelayAutotune),
+		GpuPollMs:            getIntConfig("TYCHO_GPU_POLL_MS", defaultTychoGpuPollMs),
+		GpuDelayMs:           getIntConfig("TYCHO_GPU_DELAY_MS", defaultTychoGpuDelayMs),
+		GpuPollAutoTune:      getBoolConfig("TYCHO_GPU_POLL_AUTOTUNE", defaultTychoGpuPollAutotune),
+		GpuDelayAutoTune:     getBoolConfig("TYCHO_GPU_DELAY_AUTOTUNE", defaultTychoGpuDelayAutotune),
+		RedfishPollMs:        getIntConfig("TYCHO_REDFISH_POLL_MS", defaultTychoRedfishPollMs),
+		RedfishDelayMs:       getIntConfig("TYCHO_REDFISH_DELAY_MS", defaultTychoRedfishDelayMs),
+		RedfishHeartbeatMs:   getIntConfig("TYCHO_REDFISH_HEARTBEAT_MAX_GAP_MS", defaultTychoRedfishHeartbeatMs),
+		RedfishPollAutoTune:  getBoolConfig("TYCHO_REDFISH_POLL_AUTOTUNE", defaultTychoRedfishPollAutotune),
+		RedfishDelayAutoTune: getBoolConfig("TYCHO_REDFISH_DELAY_AUTOTUNE", defaultTychoRedfishDelayAutotune),
 	}
 }
 
@@ -417,7 +417,7 @@ func logTychoConfigs() {
 		instance.TychoTiming.BpfPollMs, instance.TychoTiming.BpfDelayMs,
 		instance.TychoTiming.GpuPollMs, instance.TychoTiming.GpuDelayMs,
 		instance.TychoTiming.RedfishPollMs, instance.TychoTiming.RedfishDelayMs)
-	klog.V(5).Infof("TYCHO_REDFISH_EXPECTED_CHANGE_MS: %d", instance.TychoTiming.RedfishExpectedChangeMs)
+	klog.V(5).Infof("TYCHO_REDFISH_HEARTBEAT_MAX_GAP_MS: %d", instance.TychoTiming.RedfishHeartbeatMs)
 	klog.V(5).Infof("TYCHO_ANALYSIS_TRIGGER: %s", instance.TychoAnalysis.Trigger)
 	klog.V(5).Infof("TYCHO_ANALYSIS_EVERY_SEC: %d", instance.TychoAnalysis.TriggerIntervalSec)
 	klog.V(5).Infof("TYCHO_ANALYSIS_DETECT_LONGEST_DELAY: %t", instance.TychoAnalysis.DetectLongestDelay)
@@ -466,7 +466,7 @@ func validateTychoQuick() {
 		{&t.BpfPollMs, "BpfPollMs"}, {&t.BpfDelayMs, "BpfDelayMs"},
 		{&t.GpuPollMs, "GpuPollMs"}, {&t.GpuDelayMs, "GpuDelayMs"},
 		{&t.RedfishPollMs, "RedfishPollMs"}, {&t.RedfishDelayMs, "RedfishDelayMs"},
-		{&t.RedfishExpectedChangeMs, "RedfishExpectedChangeMs"},
+		{&t.RedfishHeartbeatMs, "RedfishHeartbeatMs"},
 		{&t.BufferWindowSec, "BufferWindowSec"}, {&t.BufferWindowSec, "BufferWindowSec"},
 		{&a.DelayAfterMs, "DelayAfterMs"},
 	} {
@@ -492,10 +492,10 @@ func validateTychoQuick() {
 	}
 
 	// redfish cadence sanity
-	if t.RedfishExpectedChangeMs < t.RedfishPollMs {
-		klog.V(2).Infof("TYCHO: RedfishExpectedChangeMs (%d) < RedfishPollMs (%d) -> raising to poll",
-			t.RedfishExpectedChangeMs, t.RedfishPollMs)
-		t.RedfishExpectedChangeMs = t.RedfishPollMs
+	if t.RedfishHeartbeatMs < t.RedfishPollMs {
+		klog.V(2).Infof("TYCHO: RedfishHeartbeatMs (%d) < RedfishPollMs (%d) -> raising to poll",
+			t.RedfishHeartbeatMs, t.RedfishPollMs)
+		t.RedfishHeartbeatMs = t.RedfishPollMs * 2
 	}
 
 	// at-least-one collector
@@ -558,7 +558,7 @@ func normalizeTycho() {
 	t.GpuDelayMs = align(t.GpuDelayMs, q)
 	t.RedfishPollMs = align(t.RedfishPollMs, q)
 	t.RedfishDelayMs = align(t.RedfishDelayMs, q)
-	t.RedfishExpectedChangeMs = align(t.RedfishExpectedChangeMs, q)
+	t.RedfishHeartbeatMs = align(t.RedfishHeartbeatMs, q)
 	a.DelayAfterMs = align(a.DelayAfterMs, q)
 	if t.BufferMarginCycles < 0 {
 		t.BufferMarginCycles = 0
@@ -614,8 +614,8 @@ func normalizeTycho() {
 
 	// Compute Redfish coverage if enabled (slow publisher coverage)
 	if c.EnableRedfish {
-		if t.RedfishExpectedChangeMs > requiredMs {
-			requiredMs = t.RedfishExpectedChangeMs + a.DelayAfterMs
+		if t.RedfishHeartbeatMs > requiredMs {
+			requiredMs = t.RedfishHeartbeatMs + a.DelayAfterMs
 		}
 	}
 
@@ -625,11 +625,11 @@ func normalizeTycho() {
 		newSec := (minBufMs + 999) / 1000 // ceil ms→s
 		klog.V(2).Infof(
 			"TYCHO: auto-increasing BufferWindowSec from %ds to %ds (required=%dms, fast+delayAfter=%dms, redfishCov=%dms, quantum=%dms)",
-			t.BufferWindowSec, newSec, minBufMs, fastSourcesMs+a.DelayAfterMs, t.RedfishExpectedChangeMs, q,
+			t.BufferWindowSec, newSec, minBufMs, fastSourcesMs+a.DelayAfterMs, t.RedfishHeartbeatMs, q,
 		)
 		t.BufferWindowSec = newSec
 		klog.V(2).Infof("TYCHO buffer calc: fast=%dms, delayAfter=%dms, redfishCov=%dms, safety=100ms => minBufMs=%dms -> %ds",
-			fastSourcesMs, a.DelayAfterMs, t.RedfishExpectedChangeMs, minBufMs, newSec)
+			fastSourcesMs, a.DelayAfterMs, t.RedfishHeartbeatMs, minBufMs, newSec)
 	}
 
 	// Optional compact summary
@@ -993,8 +993,8 @@ func RedfishDelayMs() int {
 	return instance.TychoTiming.RedfishDelayMs
 }
 
-func RedfishExpectedChangeMs() int {
-	return instance.TychoTiming.RedfishExpectedChangeMs
+func RedfishHeartbeatMs() int {
+	return instance.TychoTiming.RedfishHeartbeatMs
 }
 
 func EnableRedfishPollAutoTune() bool {

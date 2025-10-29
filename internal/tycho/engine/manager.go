@@ -140,61 +140,6 @@ func (m *Manager) Start(ctx context.Context) error {
 // Stop is currently a no-op. Use context cancellation to stop Start().
 func (m *Manager) Stop() {}
 
-//----------------------------------------old code below
-
-// NewManager returns a minimal manager with a default period.
-// You can change the period later when we thread config through.
-// func NewManager(periodMs int) *Manager {
-// 	if periodMs <= 0 {
-// 		periodMs = 1000 // default 1000 ms
-// 	}
-// 	return &Manager{periodMs: time.Duration(periodMs) * time.Millisecond}
-// }
-
-// // Start spins an aligned ticker and periodically logs jitter.
-// // It returns when ctx is cancelled.
-// func (m *Manager) Start(ctx context.Context) error {
-// 	// Align to "now" for the skeleton; later we'll use a shared epoch.
-// 	t, err := clock.NewAlignedTicker(nil, m.periodMs, time.Time{})
-// 	if err != nil {
-// 		return err
-// 	}
-// 	defer t.Stop()
-
-// 	klog.Infof("Tycho engine: started ticker (period=%s)", m.periodMs)
-
-// 	var (
-// 		count  int64
-// 		maxJit time.Duration
-// 	)
-
-// 	for {
-// 		select {
-// 		case <-ctx.Done():
-// 			klog.Infof("Tycho engine: stopping (context cancelled)")
-// 			return nil
-
-// 		case ts := <-t.C():
-// 			// ts is the scheduled/aligned tick time; jitter is how late we are.
-// 			jitter := time.Since(ts)
-// 			if jitter > maxJit {
-// 				maxJit = jitter
-// 			}
-// 			count++
-
-// 			// Light logging: every 10 ticks, report status.
-// 			if count%100 == 0 {
-// 				klog.V(5).Infof("Tycho engine: ticks=%d last_jitter=%s max_jitter=%s", count, jitter, maxJit)
-// 				// reset max to see peaks per-window
-// 				maxJit = 0
-// 			}
-// 		}
-// 	}
-// }
-
-// // Stop is currently a no-op; Start exits on ctx cancellation.
-// func (m *Manager) Stop() {}
-
 type CollectorManager struct {
 	// StatsCollector is responsible to collect resource and energy consumption metrics and calculate them when needed
 	StatsCollector *collector.Collector
