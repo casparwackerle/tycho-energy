@@ -72,11 +72,6 @@ func PollProbeRedfish(ctx context.Context, mono *clock.Mono, budgetSec int, minM
 	return best, true
 }
 
-func MeasureDelayRedfish(ctx context.Context, _ *clock.Mono, budgetSec int) (delayMS int, ok bool) {
-	_ = budgetSec
-	return 0, false
-}
-
 func IdleBaselineRedfish(ctx context.Context, mono *clock.Mono, idleBudgetSec int, pollMs int) (p5 float64, ok bool) {
 	bufMgr := ring.NewManager()
 	rfSz := ring.SizeForWindow(idleBudgetSec, pollMs)

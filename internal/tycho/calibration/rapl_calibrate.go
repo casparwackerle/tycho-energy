@@ -10,12 +10,6 @@ import (
 	raplCollector "github.com/casparwackerle/tycho-energy/internal/tycho/collectors/rapl"
 )
 
-// MeasureDelayRAPL: placeholder
-func MeasureDelayRAPL(ctx context.Context, _ *clock.Mono, budgetSec int) (delayMS int, ok bool) {
-	_ = budgetSec
-	return 0, false
-}
-
 func IdleBaselineRAPL(ctx context.Context, mono *clock.Mono, idleBudgetSec int, pollMs int) (p5 float64, ok bool) {
 	bufMgr := ring.NewManager()
 	raplSz := ring.SizeForWindow(idleBudgetSec, pollMs)
