@@ -42,17 +42,6 @@ func Apply(res Results) {
 		klog.V(5).Info("TYCHO-CAL: Redfish PollProbe skipped or failed")
 	}
 
-	// // DELAY --> not viable, as no active load can be applied from within tycho. Only other option is continuously cross-referencing, or external measurement.
-	// if res.RaplDelayMS != nil && cfg.CalibrationRaplDelayEnabled() {
-	// 	cfg.SetRaplDelayMs(*res.RaplDelayMS)
-	// }
-	// if res.RedfishDelayMS != nil && cfg.CalibrationRedfishDelayEnabled() {
-	// 	cfg.SetRedfishDelayMs(*res.RedfishDelayMS)
-	// }
-	// if res.GpuDelayMS != nil && cfg.CalibrationGpuDelayEnabled() {
-	// 	cfg.SetGpuDelayMs(*res.GpuDelayMS)
-	// }
-
 	// === Idle baselines (RAPL, Redfish, GPU) ===
 	if res.RaplIdleP5 != nil && cfg.CalibrationRaplIdleEnabled() && cfg.EnableRapl() {
 		//cfg.TychoAnalysis.RaplIdleBaseline = *res.RaplIdleP5

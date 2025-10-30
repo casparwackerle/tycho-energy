@@ -86,11 +86,6 @@ func PollProbeGPU(ctx context.Context, mono *clock.Mono, budgetSec int, minMs in
 	return best, true
 }
 
-func MeasureDelayGPU(ctx context.Context, _ *clock.Mono, budgetSec int) (delayMS int, ok bool) {
-	_ = budgetSec
-	return 0, false
-}
-
 func IdleBaselineGPU(ctx context.Context, mono *clock.Mono, idleBudgetSec int, pollMs int) (p5 float64, ok bool) {
 	bufMgr := ring.NewManager()
 	gpuSz := ring.SizeForWindow(idleBudgetSec, pollMs)
