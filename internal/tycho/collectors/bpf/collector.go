@@ -27,24 +27,6 @@ func New(cfg Config) *Collector {
 	return &Collector{buf: cfg.Buf, mono: cfg.Mono, exp: cfg.Exp}
 }
 
-// func (c *Collector) Collect(ctx context.Context, ts time.Time) {
-
-// 	// ... gather pkg/core/dram/uncore (and take *their* device timestamps if you want)
-// 	cycles := uint64(1)
-// 	instructions := uint64(2)
-// 	cachemiss := uint64(3)
-// 	pagecachehit := uint64(4)
-
-// 	sample := ring.BpfSample{
-// 		SampleMeta:   ring.SampleMeta{Mono: c.mono.From(ts)}, // <- monotonic tick
-// 		CPUCycles:    cycles,
-// 		CPUInstr:     instructions,
-// 		CacheMiss:    cachemiss,
-// 		PageCacheHit: pagecachehit,
-// 	}
-// 	c.buf.Push(sample) // O(1), thread-safe via Sync wrapper
-// }
-
 // Collect drains per-process deltas from the eBPF map and appends samples to the ring.
 // CollectProcesses() returns deltas since the previous call (batch lookup+delete).
 func (c *Collector) Collect(ctx context.Context, ts time.Time) {

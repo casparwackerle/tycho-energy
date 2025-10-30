@@ -121,35 +121,24 @@ const (
 
 	// Tycho calibration config
 
-	defaultTychoCalibrationInitIdleBudgetSec = 10 // in sec: Duration of (general) idle testing
-	//RAPL init calibration
-	defaultTychoCalibrationInitRaplPollMinMs      = 50 // in ms: Poll intervals cannot be shorter
-	defaultTychoCalibrationInitRaplDelayEnabled   = false
-	defaultTychoCalibrationInitRaplDelayBudgetSec = 30 // in sec: Duration of Delay testing
-	defaultTychoCalibrationInitRaplIdleEnabled    = false
-	defaultTychoCalibrationInitRaplIdleBudgetSec  = 10 //in sec: Duration of idle testing
-	// redfish continuous calibration -> Heartbeat
+	defaultTychoCalibrationInitIdleBudgetSec                 = 10 // in sec: Duration of (general) idle testing
+	defaultTychoCalibrationInitRaplPollMinMs                 = 50 // in ms: Poll intervals cannot be shorter
+	defaultTychoCalibrationInitRaplDelayEnabled              = false
+	defaultTychoCalibrationInitRaplDelayBudgetSec            = 30 // in sec: Duration of Delay testing
+	defaultTychoCalibrationInitRaplIdleEnabled               = false
 	defaultTychoCalibrationRedfishContinuousHeartbeatEnabled = true // continuously adjusts Redfish Heartbeat
-	// redfish init calibration -> Polling
-	defaultTychoCalibrationInitRedfishPollEnabled   = false
-	defaultTychoCalibrationInitRedfishPollBudgetSec = 30  //in sec: Duration of Poll testing
-	defaultTychoCalibrationInitRedfishPollMinMs     = 500 // in ms: Poll intervals cannot be shorter
-	// redfish init calibration -> Delay
-	defaultTychoCalibrationInitRedfishDelayEnabled   = false
-	defaultTychoCalibrationInitRedfishDelayBudgetSec = 30 // in sec: Duration of Delay Testing
-	// redfish init calibration -> Idle
-	defaultTychoCalibrationInitRedfishIdleEnabled   = false
-	defaultTychoCalibrationInitRedfishIdleBudgetSec = 10 //in sec: Duration of idle testing
-	// GPU init calibration -> Polling
-	defaultTychoCalibrationInitGpuPollEnabled   = false
-	defaultTychoCalibrationInitGpuPollBudgetSec = 30  //in sec: Duration of Poll testing
-	defaultTychoCalibrationInitGpuPollMinMs     = 500 // in ms: Poll intervals cannot be shorter
-	// GPU init calibration -> Delay
-	defaultTychoCalibrationInitGpuDelayEnabled   = false
-	defaultTychoCalibrationInitGpuDelayBudgetSec = 30 // in sec: Duration of Delay Testing
-	// GPU init calibration -> Idle
-	defaultTychoCalibrationInitGpuIdleEnabled   = false
-	defaultTychoCalibrationInitGpuIdleBudgetSec = 10 //in sec: Duration of idle testing
+	defaultTychoCalibrationInitRedfishPollEnabled            = false
+	defaultTychoCalibrationInitRedfishPollBudgetSec          = 30  //in sec: Duration of Poll testing
+	defaultTychoCalibrationInitRedfishPollMinMs              = 500 // in ms: Poll intervals cannot be shorter
+	defaultTychoCalibrationInitRedfishDelayEnabled           = false
+	defaultTychoCalibrationInitRedfishDelayBudgetSec         = 30 // in sec: Duration of Delay Testing
+	defaultTychoCalibrationInitRedfishIdleEnabled            = false
+	defaultTychoCalibrationInitGpuPollEnabled                = false
+	defaultTychoCalibrationInitGpuPollBudgetSec              = 30  //in sec: Duration of Poll testing
+	defaultTychoCalibrationInitGpuPollMinMs                  = 500 // in ms: Poll intervals cannot be shorter
+	defaultTychoCalibrationInitGpuDelayEnabled               = false
+	defaultTychoCalibrationInitGpuDelayBudgetSec             = 30 // in sec: Duration of Delay Testing
+	defaultTychoCalibrationInitGpuIdleEnabled                = false
 
 	// Tycho Analysis Config
 	defaultTychoTrigger            = "timer" // "redfish" | "timer"
