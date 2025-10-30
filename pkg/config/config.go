@@ -109,21 +109,35 @@ type TychoTimingConfig struct {
 	BufferMarginCycles   int
 	RaplPollMs           int
 	RaplDelayMs          int
-	RaplPollAutoTune     bool
-	RaplDelayAutoTune    bool
 	BpfPollMs            int
 	BpfDelayMs           int
-	BpfPollAutoTune      bool
-	BpfDelayAutoTune     bool
 	GpuPollMs            int
 	GpuDelayMs           int
-	GpuPollAutoTune      bool
-	GpuDelayAutoTune     bool
 	RedfishPollMs        int // note: Redfish.RedfishProbeIntervalInSeconds still exists; this overrides if >0
 	RedfishDelayMs       int
 	RedfishHeartbeatMs   int
-	RedfishPollAutoTune  bool
-	RedfishDelayAutoTune bool
+	RedfishAutoHeartbeat bool
+}
+
+type TychoCalibrationConfig struct {
+	IdleBudgetSec                     int
+	RaplPollMinMs                     int
+	RaplDelayEnabled                  bool
+	RaplDelayBudgetSec                int
+	RaplIdleEnabled                   bool
+	RedfishContinuousHeartbeatEnabled bool
+	RedfishPollEnabled                bool
+	RedfishPollBudgetSec              int
+	RedfishPollMinMs                  int
+	RedfishDelayEnabled               bool
+	RedfishDelayBudgetSec             int
+	RedfishIdleEnabled                bool
+	GpuPollEnabled                    bool
+	GpuPollBudgetSec                  int
+	GpuPollMinMs                      int
+	GpuDelayEnabled                   bool
+	GpuDelayBudgetSec                 int
+	GpuIdleEnabled                    bool
 }
 
 type TychoAnalysisConfig struct {
@@ -155,6 +169,7 @@ type Config struct {
 	Host                   HostConfig
 	DCGMHostEngineEndpoint string
 	TychoTiming            TychoTimingConfig
+	TychoCalibration       TychoCalibrationConfig
 	TychoAnalysis          TychoAnalysisConfig
 	TychoCollector         TychoCollectorConfig
 }
@@ -193,6 +208,7 @@ func newConfig() (*Config, error) {
 		KernelVersion:          float32(0),
 		Host:                   getHostConfig(),
 		TychoTiming:            getTychoTimingConfig(),
+		TychoCalibration:       getTychoCalibrationConfig(),
 		TychoAnalysis:          getTychoAnalysisConfig(),
 		TychoCollector:         getTychoCollectorConfig(),
 	}, nil
@@ -243,26 +259,41 @@ func getKeplerConfig() KeplerConfig {
 
 func getTychoTimingConfig() TychoTimingConfig {
 	return TychoTimingConfig{
-		TimebaseQuantumMs:    getIntConfig("TYCHO_TIMEBASE_QUANTUM_MS", defaultTychoTimebaseQuantumMs),
-		BufferWindowSec:      getIntConfig("TYCHO_BUFFER_WINDOW_SEC", defaultTychoBufferWindowSec),
-		BufferMarginCycles:   getIntConfig("TYCHO_BUFFER_MARGIN_CYCLES", detaultTychoBufferMarginCycles),
-		RaplPollMs:           getIntConfig("TYCHO_RAPL_POLL_MS", defaultTychoRaplPollMs),
-		RaplDelayMs:          getIntConfig("TYCHO_RAPL_DELAY_MS", defaultTychoRaplDelayMs),
-		RaplPollAutoTune:     getBoolConfig("TYCHO_RAPL_POLL_AUTOTUNE", defaultTychoRaplPollAutotune),
-		RaplDelayAutoTune:    getBoolConfig("TYCHO_RAPL_DELAY_AUTOTUNE", defaultTychoRaplDelayAutotune),
-		BpfPollMs:            getIntConfig("TYCHO_BPF_POLL_MS", defaultTychoBpfPollMs),
-		BpfDelayMs:           getIntConfig("TYCHO_BPF_DELAY_MS", defaultTychoBpfDelayMs),
-		BpfPollAutoTune:      getBoolConfig("TYCHO_BPF_POLL_AUTOTUNE", defaultTychoBpfPollAutotune),
-		BpfDelayAutoTune:     getBoolConfig("TYCHO_BPF_DELAY_AUTOTUNE", defaultTychoBpfDelayAutotune),
-		GpuPollMs:            getIntConfig("TYCHO_GPU_POLL_MS", defaultTychoGpuPollMs),
-		GpuDelayMs:           getIntConfig("TYCHO_GPU_DELAY_MS", defaultTychoGpuDelayMs),
-		GpuPollAutoTune:      getBoolConfig("TYCHO_GPU_POLL_AUTOTUNE", defaultTychoGpuPollAutotune),
-		GpuDelayAutoTune:     getBoolConfig("TYCHO_GPU_DELAY_AUTOTUNE", defaultTychoGpuDelayAutotune),
-		RedfishPollMs:        getIntConfig("TYCHO_REDFISH_POLL_MS", defaultTychoRedfishPollMs),
-		RedfishDelayMs:       getIntConfig("TYCHO_REDFISH_DELAY_MS", defaultTychoRedfishDelayMs),
-		RedfishHeartbeatMs:   getIntConfig("TYCHO_REDFISH_HEARTBEAT_MAX_GAP_MS", defaultTychoRedfishHeartbeatMs),
-		RedfishPollAutoTune:  getBoolConfig("TYCHO_REDFISH_POLL_AUTOTUNE", defaultTychoRedfishPollAutotune),
-		RedfishDelayAutoTune: getBoolConfig("TYCHO_REDFISH_DELAY_AUTOTUNE", defaultTychoRedfishDelayAutotune),
+		TimebaseQuantumMs:  getIntConfig("TYCHO_TIMEBASE_QUANTUM_MS", defaultTychoTimebaseQuantumMs),
+		BufferWindowSec:    getIntConfig("TYCHO_BUFFER_WINDOW_SEC", defaultTychoBufferWindowSec),
+		BufferMarginCycles: getIntConfig("TYCHO_BUFFER_MARGIN_CYCLES", defaultTychoBufferMarginCycles),
+		RaplPollMs:         getIntConfig("TYCHO_RAPL_POLL_MS", defaultTychoRaplPollMs),
+		RaplDelayMs:        getIntConfig("TYCHO_RAPL_DELAY_MS", defaultTychoRaplDelayMs),
+		BpfPollMs:          getIntConfig("TYCHO_BPF_POLL_MS", defaultTychoBpfPollMs),
+		BpfDelayMs:         getIntConfig("TYCHO_BPF_DELAY_MS", defaultTychoBpfDelayMs),
+		GpuPollMs:          getIntConfig("TYCHO_GPU_POLL_MS", defaultTychoGpuPollMs),
+		GpuDelayMs:         getIntConfig("TYCHO_GPU_DELAY_MS", defaultTychoGpuDelayMs),
+		RedfishPollMs:      getIntConfig("TYCHO_REDFISH_POLL_MS", defaultTychoRedfishPollMs),
+		RedfishDelayMs:     getIntConfig("TYCHO_REDFISH_DELAY_MS", defaultTychoRedfishDelayMs),
+		RedfishHeartbeatMs: getIntConfig("TYCHO_REDFISH_HEARTBEAT_MAX_GAP_MS", defaultTychoRedfishHeartbeatMs),
+	}
+}
+
+func getTychoCalibrationConfig() TychoCalibrationConfig {
+	return TychoCalibrationConfig{
+		IdleBudgetSec:                     getIntConfig("TYCHO_CALIBRATION_IDLE_BUDGET_SEC", defaultTychoCalibrationInitIdleBudgetSec),
+		RaplPollMinMs:                     getIntConfig("TYCHO_CALIBRATION_RAPL_POLL_MIN_MS", defaultTychoCalibrationInitRaplPollMinMs),
+		RaplDelayEnabled:                  getBoolConfig("TYCHO_CALIBRATION_RAPL_DELAY_ENABLE", defaultTychoCalibrationInitRaplDelayEnabled),
+		RaplDelayBudgetSec:                getIntConfig("TYCHO_CALIBRATION_RAPL_DELAY_BUDGET_SEC", defaultTychoCalibrationInitRaplDelayBudgetSec),
+		RaplIdleEnabled:                   getBoolConfig("TYCHO_CALIBRATION_RAPL_IDLE_ENABLE", defaultTychoCalibrationInitRaplIdleEnabled),
+		RedfishContinuousHeartbeatEnabled: getBoolConfig("TYCHO_CALIBRATION_REDFISH_CONTINUOUS_HEARTBEAT_ENABLE", defaultTychoCalibrationRedfishContinuousHeartbeatEnabled),
+		RedfishPollEnabled:                getBoolConfig("TYCHO_CALIBRATION_REDFISH_POLL_ENABLE", defaultTychoCalibrationInitRedfishPollEnabled),
+		RedfishPollBudgetSec:              getIntConfig("TYCHO_CALIBRATION_REDFISH_POLL_BUDGET_SEC", defaultTychoCalibrationInitRedfishPollBudgetSec),
+		RedfishPollMinMs:                  getIntConfig("TYCHO_CALIBRATION_REDFISH_POLL_MIN_MS", defaultTychoCalibrationInitRedfishPollMinMs),
+		RedfishDelayEnabled:               getBoolConfig("TYCHO_CALIBRATION_REDFISH_DELAY_ENABLE", defaultTychoCalibrationInitRedfishDelayEnabled),
+		RedfishDelayBudgetSec:             getIntConfig("TYCHO_CALIBRATION_REDFISH_DELAY_BUDGET_SEC", defaultTychoCalibrationInitRedfishDelayBudgetSec),
+		RedfishIdleEnabled:                getBoolConfig("TYCHO_CALIBRATION_REDFISH_IDLE_ENABLE", defaultTychoCalibrationInitRedfishIdleEnabled),
+		GpuPollEnabled:                    getBoolConfig("TYCHO_CALIBRATION_GPU_POLL_ENABLE", defaultTychoCalibrationInitGpuPollEnabled),
+		GpuPollBudgetSec:                  getIntConfig("TYCHO_CALIBRATION_GPU_POLL_BUDGET_SEC", defaultTychoCalibrationInitGpuPollBudgetSec),
+		GpuPollMinMs:                      getIntConfig("TYCHO_CALIBRATION_GPU_POLL_MIN_MS", defaultTychoCalibrationInitGpuPollMinMs),
+		GpuDelayEnabled:                   getBoolConfig("TYCHO_CALIBRATION_GPU_DELAY_ENABLE", defaultTychoCalibrationInitGpuDelayEnabled),
+		GpuDelayBudgetSec:                 getIntConfig("TYCHO_CALIBRATION_GPU_DELAY_BUDGET_SEC", defaultTychoCalibrationInitGpuDelayBudgetSec),
+		GpuIdleEnabled:                    getBoolConfig("TYCHO_CALIBRATION_GPU_IDLE_ENABLE", defaultTychoCalibrationInitGpuIdleEnabled),
 	}
 }
 
@@ -427,18 +458,27 @@ func logTychoConfigs() {
 		instance.TychoCollector.EnableBpf,
 		instance.TychoCollector.EnableGpu,
 		instance.TychoCollector.EnableRedfish)
-	klog.V(5).Infof("TYCHO_POLL_AUTOTUNE_ENABLED: RAPL: %t, BPF: %t, GPU: %t, REDFISH: %t",
-		instance.TychoTiming.RaplPollAutoTune,
-		instance.TychoTiming.BpfPollAutoTune,
-		instance.TychoTiming.GpuPollAutoTune,
-		instance.TychoTiming.RedfishPollAutoTune)
-	klog.V(5).Infof("TYCHO_DELAY_AUTOTUNE_ENABLED: RAPL: %t, BPF: %t, GPU: %t, REDFISH: %t",
-		instance.TychoTiming.RaplDelayAutoTune,
-		instance.TychoTiming.BpfDelayAutoTune,
-		instance.TychoTiming.GpuDelayAutoTune,
-		instance.TychoTiming.RedfishDelayAutoTune)
 	klog.V(5).Infof("TYCHO_COLLECTOR_POWERCAP_BASE_PATH: %s", instance.TychoCollector.PowercapBasePath)
 	klog.V(5).Infof("TYCHO_COLLECTOR_RAPL_DOMAINS: %s", instance.TychoCollector.RaplDomains)
+	klog.V(5).Infof("START TYCHO CALIBRATION CONFIGS")
+	klog.V(5).Infof("IdleBudgetSec:%d", instance.TychoCalibration.IdleBudgetSec)
+	klog.V(5).Infof("RAPL:  DelayEnabled=%t, DelayBudgetSec=%d, IdleEnabled=%t",
+		instance.TychoCalibration.RaplDelayEnabled,
+		instance.TychoCalibration.RaplDelayBudgetSec,
+		instance.TychoCalibration.RaplIdleEnabled)
+	klog.V(5).Infof("REDFISH: ContinuousHeartbeatEnabled=%t, PollEnabled=%t, PollBudgetSec=%d, DelayEnabled=%t, DelayBudgetSec=%d, IdleEnabled=%t",
+		instance.TychoCalibration.RedfishContinuousHeartbeatEnabled,
+		instance.TychoCalibration.RedfishPollEnabled,
+		instance.TychoCalibration.RedfishPollBudgetSec,
+		instance.TychoCalibration.RedfishDelayEnabled,
+		instance.TychoCalibration.RedfishDelayBudgetSec,
+		instance.TychoCalibration.RedfishIdleEnabled)
+	klog.V(5).Infof("GPU: PollEnabled=%t, PollBudgetSec=%d, DelayEnabled=%t, DelayBudgetSec=%d, IdleEnabled=%t",
+		instance.TychoCalibration.GpuPollEnabled,
+		instance.TychoCalibration.GpuPollBudgetSec,
+		instance.TychoCalibration.GpuDelayEnabled,
+		instance.TychoCalibration.GpuDelayBudgetSec,
+		instance.TychoCalibration.GpuIdleEnabled)
 	klog.V(5).Infof("STOP TYCHO CONFIGS: ----------------------------------------")
 
 }
@@ -945,14 +985,6 @@ func RaplDelayMs() int {
 	return instance.TychoTiming.RaplDelayMs
 }
 
-func EnableRaplPollAutoTune() bool {
-	return instance.TychoTiming.RaplPollAutoTune
-}
-
-func EnableRaplDelayAutoTune() bool {
-	return instance.TychoTiming.RaplDelayAutoTune
-}
-
 func BpfPollMs() int {
 	return instance.TychoTiming.BpfPollMs
 }
@@ -961,28 +993,12 @@ func BpfDelayMs() int {
 	return instance.TychoTiming.BpfDelayMs
 }
 
-func EnableBpfPollAutoTune() bool {
-	return instance.TychoTiming.BpfPollAutoTune
-}
-
-func EnableBpfDelayAutoTune() bool {
-	return instance.TychoTiming.BpfDelayAutoTune
-}
-
 func GpuPollMs() int {
 	return instance.TychoTiming.GpuPollMs
 }
 
 func GpuDelayMs() int {
 	return instance.TychoTiming.GpuDelayMs
-}
-
-func EnableGpuPollAutoTune() bool {
-	return instance.TychoTiming.GpuPollAutoTune
-}
-
-func EnableGpuDelayAutoTune() bool {
-	return instance.TychoTiming.GpuDelayAutoTune
 }
 
 func RedfishPollMs() int {
@@ -997,12 +1013,76 @@ func RedfishHeartbeatMs() int {
 	return instance.TychoTiming.RedfishHeartbeatMs
 }
 
-func EnableRedfishPollAutoTune() bool {
-	return instance.TychoTiming.RedfishPollAutoTune
+func CalibrationIdleBudgetSec() int {
+	return instance.TychoCalibration.IdleBudgetSec
 }
 
-func EnableRedfishDelayAutoTune() bool {
-	return instance.TychoTiming.RedfishDelayAutoTune
+func CalibrationRaplPollMinMs() int {
+	return instance.TychoCalibration.RaplPollMinMs
+}
+
+func CalibrationRaplDelayEnabled() bool {
+	return instance.TychoCalibration.RaplDelayEnabled
+}
+
+func CalibrationRaplDelayBudgetSec() int {
+	return instance.TychoCalibration.RaplDelayBudgetSec
+}
+
+func CalibrationRaplIdleEnabled() bool {
+	return instance.TychoCalibration.RaplIdleEnabled
+}
+
+func EnableRedfishAutoHeartbeat() bool {
+	return instance.TychoTiming.RedfishAutoHeartbeat
+}
+
+func CalibrationRedfishPollEnabled() bool {
+	return instance.TychoCalibration.RedfishPollEnabled
+}
+
+func CalibrationRedfishPollBudgetSec() int {
+	return instance.TychoCalibration.RedfishPollBudgetSec
+}
+
+func CalibrationRedfishPollMinMs() int {
+	return instance.TychoCalibration.RedfishPollMinMs
+}
+
+func CalibrationRedfishDelayEnabled() bool {
+	return instance.TychoCalibration.RedfishDelayEnabled
+}
+
+func CalibrationRedfishDelayBudgetSec() int {
+	return instance.TychoCalibration.RedfishDelayBudgetSec
+}
+
+func CalibrationRedfishIdleEnabled() bool {
+	return instance.TychoCalibration.RedfishIdleEnabled
+}
+
+func CalibrationGpuPollEnabled() bool {
+	return instance.TychoCalibration.GpuPollEnabled
+}
+
+func CalibrationGpuPollBudgetSec() int {
+	return instance.TychoCalibration.GpuPollBudgetSec
+}
+
+func CalibrationGpuPollMinMs() int {
+	return instance.TychoCalibration.GpuPollMinMs
+}
+
+func CalibrationGpuDelayEnabled() bool {
+	return instance.TychoCalibration.GpuDelayEnabled
+}
+
+func CalibrationGpuDelayBudgetSec() int {
+	return instance.TychoCalibration.GpuDelayBudgetSec
+}
+
+func CalibrationGpuIdleEnabled() bool {
+	return instance.TychoCalibration.GpuIdleEnabled
 }
 
 func Trigger() string {
