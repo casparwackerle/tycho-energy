@@ -225,8 +225,8 @@ func Initialize(baseDir string) (*Config, error) {
 	once.Do(func() {
 		BaseDir = baseDir
 		instance, err = newConfig()
-		validateTychoQuick()
-		normalizeTycho()
+		ValidateTychoQuick()
+		NormalizeTycho()
 	})
 	return instance, err
 }
@@ -483,7 +483,7 @@ func logTychoConfigs() {
 
 }
 
-func validateTychoQuick() {
+func ValidateTychoQuick() {
 	t := &instance.TychoTiming
 	a := &instance.TychoAnalysis
 	c := &instance.TychoCollector
@@ -553,7 +553,7 @@ func validateTychoQuick() {
 }
 
 // Ensure plausible configuration values, adjust if necessary
-func normalizeTycho() {
+func NormalizeTycho() {
 	t := &instance.TychoTiming
 	a := &instance.TychoAnalysis
 	c := &instance.TychoCollector
@@ -985,6 +985,10 @@ func RaplDelayMs() int {
 	return instance.TychoTiming.RaplDelayMs
 }
 
+func SetRaplDelayMs(ms int) {
+	instance.TychoTiming.RaplDelayMs = ms
+}
+
 func BpfPollMs() int {
 	return instance.TychoTiming.BpfPollMs
 }
@@ -997,16 +1001,32 @@ func GpuPollMs() int {
 	return instance.TychoTiming.GpuPollMs
 }
 
+func SetGpuPollMs(ms int) {
+	instance.TychoTiming.GpuPollMs = ms
+}
+
 func GpuDelayMs() int {
 	return instance.TychoTiming.GpuDelayMs
+}
+
+func SetGpuDelayMs(ms int) {
+	instance.TychoTiming.GpuDelayMs = ms
 }
 
 func RedfishPollMs() int {
 	return instance.TychoTiming.RedfishPollMs
 }
 
+func SetRedfishPollMs(ms int) {
+	instance.TychoTiming.RedfishPollMs = ms
+}
+
 func RedfishDelayMs() int {
 	return instance.TychoTiming.RedfishDelayMs
+}
+
+func SetRedfishDelayMs(ms int) {
+	instance.TychoTiming.RedfishDelayMs = ms
 }
 
 func RedfishHeartbeatMs() int {
@@ -1033,7 +1053,7 @@ func CalibrationRaplIdleEnabled() bool {
 	return instance.TychoCalibration.RaplIdleEnabled
 }
 
-func EnableRedfishAutoHeartbeat() bool {
+func CalibrationREdfishContinuousHeartbeatEnabled() bool {
 	return instance.TychoTiming.RedfishAutoHeartbeat
 }
 

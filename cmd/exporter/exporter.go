@@ -29,6 +29,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/casparwackerle/tycho-energy/internal/tycho/calibration"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/clock"
 	bpfCollector "github.com/casparwackerle/tycho-energy/internal/tycho/collectors/bpf"
 	gpuCollector "github.com/casparwackerle/tycho-energy/internal/tycho/collectors/gpu"
@@ -207,6 +208,33 @@ func main() {
 	// Tycho owns scheduling
 	if err := collMgr.StatsCollector.Initialize(); err != nil {
 		klog.Fatalf("failed to init stats collector: %v", err)
+	}
+
+	// calibrate if necessary
+	needCal := config.CalibrationGpuPollEnabled() ||
+		config.CalibrationGpuDelayEnabled() ||
+		config.CalibrationGpuIdleEnabled() ||
+		config.CalibrationRedfishPollEnabled() ||
+		config.CalibrationRedfishDelayEnabled() ||
+		config.CalibrationRedfishIdleEnabled() ||
+		config.CalibrationRaplDelayEnabled() ||
+		config.CalibrationRaplIdleEnabled()
+
+	if needCal {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+
+		klog.V(2).Info("TYCHO-CAL: starting calibration")
+		res, err := calibration.Run(ctx) // uses its own temp mono/buffers/collectors
+		if err != nil {
+			klog.Errorf("TYCHO-CAL: calibration failed: %v", err)
+		} else {
+			calibration.Apply(res) // logs details at V(5) and updates config
+			klog.V(2).Info("TYCHO-CAL: calibration applied")
+		}
+
+		config.ValidateTychoQuick()
+		config.NormalizeTycho()
 	}
 
 	// Central buffer manager
