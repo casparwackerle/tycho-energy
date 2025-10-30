@@ -72,6 +72,6 @@ func Apply(res Results) {
 	} else {
 		klog.V(5).Info("TYCHO-CAL: GPU idle baseline skipped or unchanged")
 	}
-
+	klog.V(5).Infof("TYCHO-CAL: final pollMs: rapl=%d, redfish=%d, gpu=%d", cfg.RaplPollMs(), cfg.RedfishPollMs(), cfg.GpuPollMs())
 	klog.V(5).Info("TYCHO-CAL: configuration updated with calibrated values")
 }
