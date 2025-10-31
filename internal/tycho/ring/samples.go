@@ -16,30 +16,29 @@ type RaplDomainCounters struct {
 	DRAM   uint64 // mJ
 }
 
-// Example metric-specific sample types. These are just examples to demonstrate
-// typed rings; adjust fields as your engine requires.
+type BpfTick struct {
+	SampleMeta // Mono
+	IdleNS     uint64
+	IRQNS      uint64
+	SoftirqNS  uint64
 
-type BpfSample struct {
-	SampleMeta
-	Pid      uint64
-	CgroupID uint64
+	// Finalized, PID-sorted, read-only payload:
+	Procs []BpfProcDelta // sorted by PID (primary), with cgroup fields included
+}
 
-	// Software counters (deltas)
-	ProcessRunUs uint64 // micro-s from kernel; convert later if needed
+type BpfProcDelta struct {
+	PID         uint64
+	StartTimeNs uint64 // optional but recommended for cross-tick identity
+	CgroupID    uint64 // attribute, not key
+	// deltas for the tick:
+	ProcessRunUs uint64
 	PageCacheHit uint64
 	IRQNetTX     uint64
 	IRQNetRX     uint64
 	IRQBlock     uint64
-
-	// Hardware counters (deltas) – only populated if enabled
-	CPUCycles uint64
-	CPUInstr  uint64
-	CacheMiss uint64
-
-	// NEW: per-tick CPU bin totals (in nanoseconds)
-	IdleNS    uint64
-	IRQNS     uint64
-	SoftirqNS uint64
+	CPUCycles    uint64
+	CPUInstr     uint64
+	CacheMiss    uint64
 }
 
 type RaplSample struct {
