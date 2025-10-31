@@ -365,25 +365,61 @@ func probeGpuOnce(ctx context.Context, g *gpuCollector.Collector, gpuBuf interfa
 	return pp
 }
 
-func IdleBaselineGPU(ctx context.Context, mono *clock.Mono, idleBudgetSec int, pollMs int) (p5 float64, ok bool) {
-	bufMgr := ring.NewManager()
-	gpuSz := ring.SizeForWindow(idleBudgetSec, pollMs)
-	gpuBuf := ring.GetOrCreateSync[ring.GpuSample](bufMgr, "gpu-idle", gpuSz)
-	g := gpuCollector.New(gpuCollector.Config{Buf: gpuBuf, Mono: mono})
-	if err := g.Init(ctx); err != nil {
+// func IdleBaselineGPU(ctx context.Context, mono *clock.Mono, idleBudgetSec int, pollMs int) (p5 float64, ok bool) {
+// 	bufMgr := ring.NewManager()
+// 	gpuSz := ring.SizeForWindow(idleBudgetSec, pollMs)
+// 	gpuBuf := ring.GetOrCreateSync[ring.GpuSample](bufMgr, "gpu-idle", gpuSz)
+// 	g := gpuCollector.New(gpuCollector.Config{Buf: gpuBuf, Mono: mono})
+// 	if err := g.Init(ctx); err != nil {
+// 		return 0, false
+// 	}
+
+// 	values := make([]float64, 0, gpuSz)
+// 	per := time.Duration(pollMs) * time.Millisecond
+
+// 	BusyLoop(ctx, time.Duration(idleBudgetSec)*time.Second, per, func(ts time.Time) {
+// 		g.Collect(ctx, ts)
+// 		if s, ok := PeekOne(gpuBuf); ok {
+// 			// convert mW -> W if you want float watt stats
+// 			values = append(values, float64(s.PowerMilliW)/1000.0)
+// 		}
+// 	})
+
+// 	if len(values) == 0 {
+// 		return 0, false
+// 	}
+// 	return P5(values), true
+// }
+
+// IdleBaselineGPUFromSnap computes the GPU idle baseline (P5) from an already
+// collected snapshot of GPU samples. It does no collection or timing.
+// Input power is expected in milli-watts on GpuSample; output is watts.
+//
+// Returns (p5, true) on success, or (0, false) if there are no usable samples
+// or the context is canceled.
+func IdleBaselineGPUFromSnap(
+	ctx context.Context,
+	mono *clock.Mono, // kept for signature consistency with other analyzers; not used here
+	snap []ring.GpuSample,
+) (float64, bool) {
+	if len(snap) == 0 {
 		return 0, false
 	}
 
-	values := make([]float64, 0, gpuSz)
-	per := time.Duration(pollMs) * time.Millisecond
-
-	BusyLoop(ctx, time.Duration(idleBudgetSec)*time.Second, per, func(ts time.Time) {
-		g.Collect(ctx, ts)
-		if s, ok := PeekOne(gpuBuf); ok {
-			// convert mW -> W if you want float watt stats
-			values = append(values, float64(s.PowerMilliW)/1000.0)
+	values := make([]float64, 0, len(snap))
+	for i := 0; i < len(snap); i++ {
+		select {
+		case <-ctx.Done():
+			return 0, false
+		default:
 		}
-	})
+		s := snap[i]
+		// Accept zeros (true idle) but skip obviously invalid negatives.
+		if s.PowerMilliW < 0 {
+			continue
+		}
+		values = append(values, float64(s.PowerMilliW)/1000.0) // mW -> W
+	}
 
 	if len(values) == 0 {
 		return 0, false
