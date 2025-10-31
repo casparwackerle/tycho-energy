@@ -341,21 +341,57 @@ func maxInt(a, b int) int {
 	return b
 }
 
-func IdleBaselineRedfish(ctx context.Context, mono *clock.Mono, idleBudgetSec int, pollMs int) (p5 float64, ok bool) {
-	bufMgr := ring.NewManager()
-	rfSz := ring.SizeForWindow(idleBudgetSec, pollMs)
-	rfBuf := ring.GetOrCreateSync[ring.RedfishSample](bufMgr, "rf-idle", rfSz)
-	rf := rfCollector.New(rfCollector.Config{Buf: rfBuf, Mono: mono})
+// func IdleBaselineRedfish(ctx context.Context, mono *clock.Mono, idleBudgetSec int, pollMs int) (p5 float64, ok bool) {
+// 	bufMgr := ring.NewManager()
+// 	rfSz := ring.SizeForWindow(idleBudgetSec, pollMs)
+// 	rfBuf := ring.GetOrCreateSync[ring.RedfishSample](bufMgr, "rf-idle", rfSz)
+// 	rf := rfCollector.New(rfCollector.Config{Buf: rfBuf, Mono: mono})
 
-	values := make([]float64, 0, rfSz)
-	per := time.Duration(pollMs) * time.Millisecond
+// 	values := make([]float64, 0, rfSz)
+// 	per := time.Duration(pollMs) * time.Millisecond
 
-	BusyLoop(ctx, time.Duration(idleBudgetSec)*time.Second, per, func(ts time.Time) {
-		rf.Collect(ctx, ts)
-		if s, ok := PeekOne(rfBuf); ok {
-			values = append(values, float64(s.PowerWatts))
+// 	BusyLoop(ctx, time.Duration(idleBudgetSec)*time.Second, per, func(ts time.Time) {
+// 		rf.Collect(ctx, ts)
+// 		if s, ok := PeekOne(rfBuf); ok {
+// 			values = append(values, float64(s.PowerWatts))
+// 		}
+// 	})
+
+// 	if len(values) == 0 {
+// 		return 0, false
+// 	}
+// 	return P5(values), true
+// }
+
+// IdleBaselineRedfishFromSnap computes the Redfish idle baseline (P5) from an
+// already-collected snapshot of Redfish samples. It does no collection/timing.
+// Input power is expected in watts on RedfishSample.
+//
+// Returns (p5, true) on success, or (0, false) if there are no usable samples
+// or the context is canceled.
+func IdleBaselineRedfishFromSnap(
+	ctx context.Context,
+	mono *clock.Mono, // kept for signature parity; not used here
+	snap []ring.RedfishSample,
+) (float64, bool) {
+	if len(snap) == 0 {
+		return 0, false
+	}
+
+	values := make([]float64, 0, len(snap))
+	for i := 0; i < len(snap); i++ {
+		select {
+		case <-ctx.Done():
+			return 0, false
+		default:
 		}
-	})
+		s := snap[i]
+		// Accept zeros (true idle) but skip invalid negatives/NaN/Inf.
+		if s.PowerWatts < 0 || math.IsNaN(s.PowerWatts) || math.IsInf(s.PowerWatts, 0) {
+			continue
+		}
+		values = append(values, float64(s.PowerWatts))
+	}
 
 	if len(values) == 0 {
 		return 0, false

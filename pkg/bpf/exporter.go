@@ -333,10 +333,10 @@ func unixClosePerfEvents(fds []int) {
 
 func getCPUCores() int {
 	cores := runtime.NumCPU()
-	if cpu, err := ghw.CPU(); err == nil {
-		// we need to get the number of all CPUs,
-		// so if /proc/cpuinfo is available, we can get the number of all CPUs
-		cores = int(cpu.TotalThreads)
+	if cpu, err := ghw.CPU(ghw.WithDisableWarnings()); err == nil && cpu != nil {
+		if cpu.TotalThreads > 0 {
+			cores = int(cpu.TotalThreads)
+		}
 	}
 	return cores
 }
