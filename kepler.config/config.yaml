@@ -49,7 +49,7 @@ resources: {}
 
 # -- Extra environment variables
 extraEnvVars:
-  KEPLER_LOG_LEVEL: "5"           #reduce log level to 5 for finished builds
+  KEPLER_LOG_LEVEL: "2"           #reduce log level to 5 for finished builds
   # METRIC_PATH: "/metrics"
   # BIND_ADDRESS: "0.0.0.0:9102"
   ENABLE_GPU: "false"
@@ -72,9 +72,9 @@ extraEnvVars:
 
   # Measurement Periods (milliseconds)
   TYCHO_BPF_POLL_MS: "50"
-  TYCHO_RAPL_POLL_MS: "50"
+  TYCHO_RAPL_POLL_MS: "150"
   TYCHO_GPU_POLL_MS: "200"
-  TYCHO_REDFISH_POLL_MS: "1000" # Polling cadence (milliseconds). To catch every BMC publish, set this LOWER than the BMC’s actual cadence. If unknown, 1000 ms is a safe, low-overhead default for many servers.
+  TYCHO_REDFISH_POLL_MS: "8000" # Polling cadence (milliseconds). To catch every BMC publish, set this LOWER than the BMC’s actual cadence. If unknown, 1000 ms is a safe, low-overhead default for many servers.
 
   # Optional timing extras: Metric delay (i.e. the delay between a workload change and it's representation in the metric). Insert if known, otherwise keep at 0.
   TYCHO_TIMEBASE_QUANTUM_MS: "1"
@@ -93,7 +93,7 @@ extraEnvVars:
   TYCHO_CALIBRATION_REDFISH_POLL_ENABLE: "true"                 # enable Redfish poll-rate calibration
   TYCHO_CALIBRATION_REDFISH_POLL_BUDGET_SEC: "30"               # max duration for Redfish poll-rate probe
   TYCHO_CALIBRATION_REDFISH_DELAY_ENABLE: "true"                # enable Redfish delay measurement
-  TYCHO_CALIBRATION_REDFISH_DELAY_BUDGET_SEC: "60"              # max duration for Redfish delay test
+  TYCHO_CALIBRATION_REDFISH_DELAY_BUDGET_SEC: "90"              # max duration for Redfish delay test
   TYCHO_CALIBRATION_REDFISH_IDLE_ENABLE: "true"                 # measure Redfish idle baseline
   TYCHO_CALIBRATION_GPU_POLL_ENABLE: "true"                     # enable GPU poll-rate calibration
   TYCHO_CALIBRATION_GPU_POLL_BUDGET_SEC: "30"                   # max duration for GPU poll-rate probe
