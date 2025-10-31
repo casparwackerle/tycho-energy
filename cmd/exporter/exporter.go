@@ -276,7 +276,7 @@ func main() {
 	// ----- Force one idle calibration after engine is running --------------------
 	go func() {
 		// Warm-up so BPF has enough ticks for the guard window
-		const warmup = 80 * time.Second
+		const warmup = 20 * time.Second
 		time.Sleep(warmup)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)

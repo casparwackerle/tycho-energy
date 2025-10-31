@@ -68,7 +68,7 @@ extraEnvVars:
   TYCHO_COLLECTOR_ENABLE_BPF: "true"
   TYCHO_COLLECTOR_ENABLE_RAPL: "true"
   TYCHO_COLLECTOR_ENABLE_GPU: "false"
-  TYCHO_COLLECTOR_ENABLE_REDFISH: "false"
+  TYCHO_COLLECTOR_ENABLE_REDFISH: "true"
 
   # Measurement Periods (milliseconds)
   TYCHO_BPF_POLL_MS: "50"
@@ -86,18 +86,18 @@ extraEnvVars:
 
   # CalibrationRaplPollMinMs
   TYCHO_CALIBRATION_IDLE_BUDGET_SEC: "10"                       # total time allowed for initial idle check
-  TYCHO_CALIBRATION_RAPL_DELAY_ENABLE: "true"                   # enable RAPL delay calibration
+  TYCHO_CALIBRATION_RAPL_DELAY_ENABLE: "false"                   # enable RAPL delay calibration
   TYCHO_CALIBRATION_RAPL_DELAY_BUDGET_SEC: "30"                 # max duration for RAPL delay measurement
   TYCHO_CALIBRATION_RAPL_IDLE_ENABLE: "true"                    # measure RAPL idle baseline
-  TYCHO_CALIBRATION_REDFISH_CONTINUOUS_HEARTBEAT_ENABLE: "true" # keep Redfish connection alive during calibration
-  TYCHO_CALIBRATION_REDFISH_POLL_ENABLE: "true"                 # enable Redfish poll-rate calibration
+  TYCHO_CALIBRATION_REDFISH_CONTINUOUS_HEARTBEAT_ENABLE: "false" # keep Redfish connection alive during calibration
+  TYCHO_CALIBRATION_REDFISH_POLL_ENABLE: "false"                 # enable Redfish poll-rate calibration
   TYCHO_CALIBRATION_REDFISH_POLL_BUDGET_SEC: "30"               # max duration for Redfish poll-rate probe
-  TYCHO_CALIBRATION_REDFISH_DELAY_ENABLE: "true"                # enable Redfish delay measurement
+  TYCHO_CALIBRATION_REDFISH_DELAY_ENABLE: "false"                # enable Redfish delay measurement
   TYCHO_CALIBRATION_REDFISH_DELAY_BUDGET_SEC: "90"              # max duration for Redfish delay test
   TYCHO_CALIBRATION_REDFISH_IDLE_ENABLE: "true"                 # measure Redfish idle baseline
-  TYCHO_CALIBRATION_GPU_POLL_ENABLE: "true"                     # enable GPU poll-rate calibration
+  TYCHO_CALIBRATION_GPU_POLL_ENABLE: "false"                     # enable GPU poll-rate calibration
   TYCHO_CALIBRATION_GPU_POLL_BUDGET_SEC: "30"                   # max duration for GPU poll-rate probe
-  TYCHO_CALIBRATION_GPU_DELAY_ENABLE: "true"                    # enable GPU delay measurement
+  TYCHO_CALIBRATION_GPU_DELAY_ENABLE: "false"                    # enable GPU delay measurement
   TYCHO_CALIBRATION_GPU_DELAY_BUDGET_SEC: "30"                  # max duration for GPU delay test
   TYCHO_CALIBRATION_GPU_IDLE_ENABLE: "true"                     # measure GPU idle baseline
 
