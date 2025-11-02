@@ -248,7 +248,7 @@ func main() {
 	bpfBuf := ring.GetOrCreateSync[ring.BpfTick](bufMgr, "bpf", bpfSz)
 	raplBuf := ring.GetOrCreateSync[ring.RaplSample](bufMgr, "rapl", raplSz)
 	rfBuf := ring.GetOrCreateSync[ring.RedfishSample](bufMgr, "redfish", rfSz)
-	gpuBuf := ring.GetOrCreateSync[ring.GpuSample](bufMgr, "gpu", gpuSz)
+	gpuBuf := ring.GetOrCreateSync[ring.GpuTick](bufMgr, "gpu", gpuSz)
 
 	//start monotonic time
 	mono := clock.NewMono(clock.DefaultSource, time.Duration(config.TimebaseQuantumMs())*time.Millisecond)

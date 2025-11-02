@@ -31,13 +31,13 @@ func snapshotRedfishMono(buf *ring.Sync[ring.RedfishSample], m0, m1 uint64) []ri
 
 // ---- GPU -------------------------------------------------------------------
 
-func snapshotGpuAll(buf *ring.Sync[ring.GpuSample]) []ring.GpuSample {
+func snapshotGpuAll(buf *ring.Sync[ring.GpuTick]) []ring.GpuTick {
 	return buf.SnapshotChrono()
 }
 
-func snapshotGpuMono(buf *ring.Sync[ring.GpuSample], m0, m1 uint64) []ring.GpuSample {
+func snapshotGpuMono(buf *ring.Sync[ring.GpuTick], m0, m1 uint64) []ring.GpuTick {
 	src := buf.SnapshotChrono()
-	out := make([]ring.GpuSample, 0, len(src))
+	out := make([]ring.GpuTick, 0, len(src))
 	for i := range src {
 		m := src[i].SampleMeta.Mono
 		if m >= m0 && m <= m1 {

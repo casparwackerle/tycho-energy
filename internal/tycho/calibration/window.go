@@ -24,7 +24,7 @@ func hasWindowRedfishMono(buf *ring.Sync[ring.RedfishSample], m0, m1 uint64) boo
 	return first <= m0 && last >= m1
 }
 
-func hasWindowGpuMono(buf *ring.Sync[ring.GpuSample], m0, m1 uint64) bool {
+func hasWindowGpuMono(buf *ring.Sync[ring.GpuTick], m0, m1 uint64) bool {
 	src := buf.SnapshotChrono()
 	if len(src) == 0 {
 		return false
