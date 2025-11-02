@@ -67,13 +67,13 @@ func snapshotRaplMono(buf *ring.Sync[ring.RaplSample], m0, m1 uint64) []ring.Rap
 
 // ---- BPF -------------------------------------------------------------------
 
-func snapshotBpfAll(buf *ring.Sync[ring.BpfSample]) []ring.BpfSample {
+func snapshotBpfAll(buf *ring.Sync[ring.BpfTick]) []ring.BpfTick {
 	return buf.SnapshotChrono()
 }
 
-func snapshotBpfMono(buf *ring.Sync[ring.BpfSample], m0, m1 uint64) []ring.BpfSample {
+func snapshotBpfMono(buf *ring.Sync[ring.BpfTick], m0, m1 uint64) []ring.BpfTick {
 	src := buf.SnapshotChrono()
-	out := make([]ring.BpfSample, 0, len(src))
+	out := make([]ring.BpfTick, 0, len(src))
 	for i := range src {
 		m := src[i].SampleMeta.Mono
 		if m >= m0 && m <= m1 {
@@ -84,7 +84,7 @@ func snapshotBpfMono(buf *ring.Sync[ring.BpfSample], m0, m1 uint64) []ring.BpfSa
 }
 
 // Tail snapshot for guard window (e.g., last 10s)
-func snapshotBpfTailMono(buf *ring.Sync[ring.BpfSample], tail time.Duration, mono *clock.Mono) []ring.BpfSample {
+func snapshotBpfTailMono(buf *ring.Sync[ring.BpfTick], tail time.Duration, mono *clock.Mono) []ring.BpfTick {
 	m1 := mono.Now()
 	m0 := m1 - uint64(tail.Nanoseconds())
 	return snapshotBpfMono(buf, m0, m1)

@@ -245,7 +245,7 @@ func main() {
 	gpuSz := ring.SizeForWindow(winSec, config.GpuPollMs())
 
 	// Create synchronized typed rings
-	bpfBuf := ring.GetOrCreateSync[ring.BpfSample](bufMgr, "bpf", bpfSz)
+	bpfBuf := ring.GetOrCreateSync[ring.BpfTick](bufMgr, "bpf", bpfSz)
 	raplBuf := ring.GetOrCreateSync[ring.RaplSample](bufMgr, "rapl", raplSz)
 	rfBuf := ring.GetOrCreateSync[ring.RedfishSample](bufMgr, "redfish", rfSz)
 	gpuBuf := ring.GetOrCreateSync[ring.GpuSample](bufMgr, "gpu", gpuSz)
@@ -273,44 +273,44 @@ func main() {
 	go func() { _ = eng.Start(tycho_ctx) }()
 	defer tycho_cancel()
 
-	// ----- Force one idle calibration after engine is running --------------------
-	go func() {
-		// Warm-up so BPF has enough ticks for the guard window
-		const warmup = 20 * time.Second
-		time.Sleep(warmup)
+	// // ----- Force one idle calibration after engine is running --------------------
+	// go func() {
+	// 	// Warm-up so BPF has enough ticks for the guard window
+	// 	const warmup = 20 * time.Second
+	// 	time.Sleep(warmup)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancel()
-		resIdle, err := calibration.RunIdleCalibration(ctx, mono, bpfBuf, raplBuf, rfBuf, gpuBuf)
-		if err != nil {
-			klog.Errorf("TYCHO-CAL: initial idle calibration error: %v", err)
-			return
-		}
-		calibration.Apply(resIdle)
-		klog.V(2).Infof("TYCHO-CAL: initial idle calibration applied: status=%v notes=%v", resIdle.Status, resIdle.Notes)
-	}()
+	// 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	// 	defer cancel()
+	// 	resIdle, err := calibration.RunIdleCalibration(ctx, mono, bpfBuf, raplBuf, rfBuf, gpuBuf)
+	// 	if err != nil {
+	// 		klog.Errorf("TYCHO-CAL: initial idle calibration error: %v", err)
+	// 		return
+	// 	}
+	// 	calibration.Apply(resIdle)
+	// 	klog.V(2).Infof("TYCHO-CAL: initial idle calibration applied: status=%v notes=%v", resIdle.Status, resIdle.Notes)
+	// }()
 
-	// ----- Periodic re-calibration every 24h (idle-only) -------------------------
-	go func() {
-		ticker := time.NewTicker(24 * time.Hour)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-				resIdle, err := calibration.RunIdleCalibration(ctx, mono, bpfBuf, raplBuf, rfBuf, gpuBuf)
-				cancel()
-				if err != nil {
-					klog.Errorf("TYCHO-CAL: periodic idle calibration error: %v", err)
-					continue
-				}
-				calibration.Apply(resIdle)
-				klog.V(2).Infof("TYCHO-CAL: periodic idle calibration applied: status=%v notes=%v", resIdle.Status, resIdle.Notes)
-			case <-tycho_ctx.Done():
-				return
-			}
-		}
-	}()
+	// // ----- Periodic re-calibration every 24h (idle-only) -------------------------
+	// go func() {
+	// 	ticker := time.NewTicker(24 * time.Hour)
+	// 	defer ticker.Stop()
+	// 	for {
+	// 		select {
+	// 		case <-ticker.C:
+	// 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	// 			resIdle, err := calibration.RunIdleCalibration(ctx, mono, bpfBuf, raplBuf, rfBuf, gpuBuf)
+	// 			cancel()
+	// 			if err != nil {
+	// 				klog.Errorf("TYCHO-CAL: periodic idle calibration error: %v", err)
+	// 				continue
+	// 			}
+	// 			calibration.Apply(resIdle)
+	// 			klog.V(2).Infof("TYCHO-CAL: periodic idle calibration applied: status=%v notes=%v", resIdle.Status, resIdle.Notes)
+	// 		case <-tycho_ctx.Done():
+	// 			return
+	// 		}
+	// 	}
+	// }()
 
 	//-------------
 	// tychoMgr = engine.NewManager(*tychoPeriodMs, collMgr)

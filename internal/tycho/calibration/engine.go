@@ -134,7 +134,7 @@ func RunPollCalibration(ctx context.Context) (Results, error) {
 func RunIdleCalibration(
 	ctx context.Context,
 	mono *clock.Mono,
-	bpfBuf *ring.Sync[ring.BpfSample],
+	bpfBuf *ring.Sync[ring.BpfTick],
 	raplBuf *ring.Sync[ring.RaplSample],
 	rfBuf *ring.Sync[ring.RedfishSample],
 	gpuBuf *ring.Sync[ring.GpuSample],
