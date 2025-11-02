@@ -2,6 +2,8 @@ package gpuCollector
 
 import (
 	"context"
+	"encoding/binary"
+	"math"
 	"time"
 
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
@@ -127,6 +129,33 @@ func (c *Collector) Init(ctx context.Context) error {
 	return nil
 }
 
+// NVML value type codes (check your binding; adjust if they differ)
+const (
+	nvmlValueTypeDouble           = 0
+	nvmlValueTypeUnsignedInt      = 1
+	nvmlValueTypeUnsignedLong     = 2
+	nvmlValueTypeUnsignedLongLong = 3
+	nvmlValueTypeSignedLongLong   = 4
+	nvmlValueTypeString           = 5
+)
+
+func decodePowerMilliwatts(v nvml.FieldValue) (uint64, bool) {
+	switch v.ValueType {
+	case nvmlValueTypeUnsignedInt:
+		return uint64(binary.LittleEndian.Uint32(v.Value[:4])), true
+	case nvmlValueTypeUnsignedLong, nvmlValueTypeUnsignedLongLong:
+		return binary.LittleEndian.Uint64(v.Value[:]), true
+	case nvmlValueTypeDouble:
+		f := math.Float64frombits(binary.LittleEndian.Uint64(v.Value[:]))
+		if f < 0 {
+			return 0, false
+		}
+		return uint64(f + 0.5), true
+	default:
+		return 0, false
+	}
+}
+
 // Collect samples all GPUs once at the given timestamp and pushes exactly ONE tick to the ring.
 // One ring element == one timestamped collection event with per-device data embedded (no per-device timestamps).
 func (c *Collector) Collect(ctx context.Context, ts time.Time) {
@@ -175,6 +204,27 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 			cum := mJ
 			cumMJPtr = &cum
 		}
+
+		// --- Direct NVML field test (instant power) ----------------------------
+		instPowerMw := uint64(0)
+		values := make([]nvml.FieldValue, 1)
+		values[0].FieldId = 186 // NVML_FI_DEV_POWER_INSTANT (mW)
+		if ret := nv.GetFieldValues(values); ret == nvml.SUCCESS {
+			v := values[0]
+			if v.NvmlReturn == uint32(nvml.SUCCESS) {
+				if mw, ok := decodePowerMilliwatts(v); ok {
+					instPowerMw = mw
+					// TODO: log/store instPowerMw
+				} else {
+					klog.Warningf("NVML 186: unsupported ValueType=%d raw=%v", v.ValueType, v.Value)
+				}
+			} else {
+				klog.Warningf("NVML 186 per-field error: %d", v.NvmlReturn)
+			}
+		} else {
+			klog.Warningf("nv.GetFieldValues failed: %v", ret)
+		}
+		klog.V(5).Infof("gpuCollector: PowerMw: %d, instantPower: %d, difference: %d", powerMw, instPowerMw, (powerMw - int(instPowerMw)))
 
 		devSamples = append(devSamples, ring.GpuSample{
 			DeviceIndex:         state.Index,
@@ -393,7 +443,7 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 		Processes:  procSamples,
 	})
 
-	klog.V(5).Infof("gpuCollector: collected 1 tick (%d device samples, %d proc samples)", len(devSamples), len(procSamples))
+	//klog.V(5).Infof("gpuCollector: collected 1 tick (%d device samples, %d proc samples)", len(devSamples), len(procSamples))
 	c.lastMono = nowMono
 }
 
