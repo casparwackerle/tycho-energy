@@ -24,6 +24,8 @@ type Results struct {
 	GpuDelayMS    *int
 	GpuIdleP5     *float64
 
+	GpuIdlePerDevice map[string]float64
+
 	// Redfish
 	RedfishBestPollMS *int
 	RedfishDelayMS    *int

@@ -2,7 +2,6 @@ package gpuCollector
 
 import (
 	"context"
-	"math"
 	"time"
 
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
@@ -27,10 +26,12 @@ type Collector struct {
 
 	inited     bool
 	disabled   bool
-	backendStr string // "NVML" | "DCGM" | etc.
+	backendStr string         // "NVML" | "DCGM" | etc.
+	devIf      devices.Device // ← new: handle to Kepler device interface (for per-process collection)
 
 	// Per-device cached state
-	devs []gpuDeviceState
+	devs              []gpuDeviceState
+	lastProcQueryMono map[int]uint64
 
 	// timing
 	lastMono uint64
@@ -46,8 +47,6 @@ type gpuDeviceState struct {
 	PCIBus string
 
 	HasCumulativeEnergy bool
-	LastMilliJ          uint64
-	LastMilliW          int
 }
 
 // New returns a GPU collector.
@@ -73,6 +72,7 @@ func (c *Collector) Init(ctx context.Context) error {
 		return nil
 	}
 	devIf := accel.Device()
+	c.devIf = devIf
 	c.backendStr = devIf.DevType().String()
 
 	byID := devIf.DevicesByID()
@@ -104,18 +104,6 @@ func (c *Collector) Init(ctx context.Context) error {
 			hasCum = true
 		}
 
-		// Prime last values (best-effort)
-		var lastW int
-		if wU32, ret := nv.GetPowerUsage(); ret == nvml.SUCCESS {
-			lastW = int(wU32)
-		}
-		var lastMJ uint64
-		if hasCum {
-			if mJ, ret := nv.GetTotalEnergyConsumption(); ret == nvml.SUCCESS {
-				lastMJ = mJ
-			}
-		}
-
 		c.devs = append(c.devs, gpuDeviceState{
 			Index:               idx,
 			Nvml:                nv,
@@ -123,8 +111,6 @@ func (c *Collector) Init(ctx context.Context) error {
 			Name:                name,
 			PCIBus:              bus,
 			HasCumulativeEnergy: hasCum,
-			LastMilliJ:          lastMJ,
-			LastMilliW:          lastW,
 		})
 	}
 
@@ -137,6 +123,7 @@ func (c *Collector) Init(ctx context.Context) error {
 	klog.V(3).Infof("gpuCollector: initialized %d device(s) via backend=%s", len(c.devs), c.backendStr)
 	// Initialize lastMono so first dt is sane
 	c.lastMono = c.mono.From(time.Now())
+	c.lastProcQueryMono = make(map[int]uint64)
 	return nil
 }
 
@@ -146,27 +133,19 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 	if !c.inited || c.disabled {
 		return
 	}
+	if len(c.devs) == 0 {
+		klog.V(6).Info("gpuCollector: Collect skipped (no NVML-capable devices)")
+		return
+	}
 
 	nowMono := c.mono.From(ts)
 
-	// Compute dt (ms) for energy integration fallbacks; clamp to 1 ms minimum.
-	var dtMs float64
-	if c.lastMono != 0 && nowMono > c.lastMono {
-		dtMs = float64(nowMono-c.lastMono) / 1e6
-	}
-	if dtMs < 1.0 {
-		dtMs = 1.0
-	}
-
-	// Preallocate per-entity slice to avoid growth during the loop.
+	// --- 1) Physical GPU device samples (NVML fast-path) ---
 	devSamples := make([]ring.GpuSample, 0, len(c.devs))
-	totalEnergy := uint64(0)
-
 	for i := range c.devs {
 		state := &c.devs[i]
 		nv := state.Nvml
 
-		// Instantaneous readings (best-effort; ignore individual call errors like before).
 		powerMwU32, _ := nv.GetPowerUsage()
 		powerMw := int(powerMwU32)
 
@@ -181,68 +160,29 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 		var encPtr, decPtr *float64
 		if u, _, ret := nv.GetEncoderUtilization(); ret == nvml.SUCCESS {
 			v := float64(u)
-			encPtr = &v // address escapes; safe for tick lifetime
+			encPtr = &v
 		}
 		if u, _, ret := nv.GetDecoderUtilization(); ret == nvml.SUCCESS {
 			v := float64(u)
-			decPtr = &v // address escapes; safe for tick lifetime
+			decPtr = &v
 		}
 
-		// Energy delta for this device this tick (µJ).
-		var dEmicroJ uint64
-		if state.HasCumulativeEnergy {
-			if mJ, ret := nv.GetTotalEnergyConsumption(); ret == nvml.SUCCESS {
-				var delta uint64
-				if mJ >= state.LastMilliJ {
-					delta = mJ - state.LastMilliJ
-				}
-				dEmicroJ = delta * 1000
-				state.LastMilliJ = mJ
-			} else {
-				// Fallback to trapezoid integration if cumulative temporarily unavailable.
-				dEmicroJ = integrateTrapezoidMicroJ(state.LastMilliW, powerMw, dtMs)
-			}
-		} else {
-			dEmicroJ = integrateTrapezoidMicroJ(state.LastMilliW, powerMw, dtMs)
-		}
-		totalEnergy += dEmicroJ
-
-		// --- MIG hints (best-effort, zero if unsupported) ---
-		isMIG := false
-		var migParentID *int
-		var migParentUUID *string
-
-		// Heuristic 1: if GPU instance id exists, this is a MIG device.
-		if gi, ret := nv.GetGpuInstanceId(); ret == nvml.SUCCESS && gi != 0xffffffff {
-			isMIG = true
+		// Optional cumulative energy (mJ) — raw only
+		var cumMJPtr *uint64
+		hasCum := false
+		if mJ, ret := nv.GetTotalEnergyConsumption(); ret == nvml.SUCCESS {
+			hasCum = true
+			cum := mJ
+			cumMJPtr = &cum
 		}
 
-		// Heuristic 2 (preferred if available in your binding):
-		// Try to get the parent device handle from the MIG handle, then map to our devs[].
-		if isMIG {
-			if phys, ret := nv.GetDeviceHandleFromMigDeviceHandle(); ret == nvml.SUCCESS {
-				if puuid, r2 := phys.GetUUID(); r2 == nvml.SUCCESS {
-					// Cache: map UUID -> index for O(1) lookups if you have many devices.
-					for di := range c.devs {
-						if c.devs[di].UUID == puuid {
-							migParentID = new(int)
-							*migParentID = c.devs[di].Index
-							migParentUUID = new(string)
-							*migParentUUID = puuid
-							break
-						}
-					}
-				}
-			}
-		}
-
-		// Populate the per-device payload.
-		gs := ring.GpuSample{
+		devSamples = append(devSamples, ring.GpuSample{
 			DeviceIndex:         state.Index,
 			UUID:                state.UUID,
 			PCIBusID:            state.PCIBus,
 			Name:                state.Name,
 			PowerMilliW:         powerMw,
+			CumEnergyMilliJ:     cumMJPtr,
 			SMUtilPct:           float64(util.Gpu),
 			MemUtilPct:          float64(util.Memory),
 			EncUtilPct:          encPtr,
@@ -252,40 +192,209 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 			SMClockMHz:          uint32(smClk),
 			MemClockMHz:         uint32(memClk),
 			TempC:               tempC,
-			EnergyMicroJ:        dEmicroJ,
-			HasCumulativeEnergy: state.HasCumulativeEnergy,
+			HasCumulativeEnergy: hasCum,
 			Backend:             c.backendStr,
-			// MIG hints:
-			IsMIG:         isMIG,
-			MIGParentID:   migParentID,
-			MIGParentUUID: migParentUUID,
+			IsMIG:               false,
+			MIGParentID:         nil,
+			MIGParentUUID:       nil,
+		})
+	}
+
+	// --- 2) MIG slice device samples (DCGM path only), gated by config ---
+	if c.devIf != nil && c.backendStr == "DCGM" && config.GpuEnableMigDiscovery() {
+		inst := c.devIf.DeviceInstances() // map[parentID]map[migID]any
+		for parentID, migMap := range inst {
+			// Find parent metadata (UUID/index) from our physical dev list
+			var parentUUID *string
+			var parentIdx *int
+			for i := range c.devs {
+				if c.devs[i].Index == parentID {
+					parentIdx = new(int)
+					*parentIdx = c.devs[i].Index
+					parentUUID = new(string)
+					*parentUUID = c.devs[i].UUID
+					break
+				}
+			}
+			for _, anyDev := range migMap {
+				gd, ok := anyDev.(devices.GPUDevice)
+				if !ok || gd.DeviceHandler == nil {
+					continue
+				}
+				mh, ok := gd.DeviceHandler.(nvml.Device) // DCGM gave us NVML MIG handle
+				if !ok {
+					continue
+				}
+
+				// Same instantaneous reads against the MIG handle
+				powerMwU32, _ := mh.GetPowerUsage()
+				powerMw := int(powerMwU32)
+				util, _ := mh.GetUtilizationRates()
+				mem, _ := mh.GetMemoryInfo()
+				smClk, _ := mh.GetClockInfo(nvml.CLOCK_SM)
+				memClk, _ := mh.GetClockInfo(nvml.CLOCK_MEM)
+				tempCU32, _ := mh.GetTemperature(nvml.TEMPERATURE_GPU)
+				tempC := int(tempCU32)
+
+				var encPtr, decPtr *float64
+				if u, _, ret := mh.GetEncoderUtilization(); ret == nvml.SUCCESS {
+					v := float64(u)
+					encPtr = &v
+				}
+				if u, _, ret := mh.GetDecoderUtilization(); ret == nvml.SUCCESS {
+					v := float64(u)
+					decPtr = &v
+				}
+
+				// MIG UUID may be distinct or empty depending on driver; keep best-effort.
+				uuid, _ := mh.GetUUID()
+				pci, _ := mh.GetPciInfo()
+				bus := cChar32ToString(pci.BusId)
+				name, _ := mh.GetName()
+
+				// Cumulative energy (raw) on MIG (if exposed)
+				var cumMJPtr *uint64
+				hasCum := false
+				if mJ, ret := mh.GetTotalEnergyConsumption(); ret == nvml.SUCCESS {
+					hasCum = true
+					c := mJ
+					cumMJPtr = &c
+				}
+
+				devSamples = append(devSamples, ring.GpuSample{
+					DeviceIndex:         gd.ID, // use DCGM entity id as index for uniqueness
+					UUID:                uuid,
+					PCIBusID:            bus,
+					Name:                name,
+					PowerMilliW:         powerMw,
+					CumEnergyMilliJ:     cumMJPtr,
+					SMUtilPct:           float64(util.Gpu),
+					MemUtilPct:          float64(util.Memory),
+					EncUtilPct:          encPtr,
+					DecUtilPct:          decPtr,
+					MemUsedBytes:        mem.Used,
+					MemTotalBytes:       mem.Total,
+					SMClockMHz:          uint32(smClk),
+					MemClockMHz:         uint32(memClk),
+					TempC:               tempC,
+					HasCumulativeEnergy: hasCum,
+					Backend:             c.backendStr,
+					IsMIG:               true,
+					MIGParentID:         parentIdx,
+					MIGParentUUID:       parentUUID,
+				})
+			}
+		}
+	}
+
+	// --- Per-process metrics (NVML/DCGM), gated by config ---
+	var procSamples []ring.GpuProcSample
+	if c.devIf != nil && config.GpuEnablePerProcess() {
+
+		procSamples = make([]ring.GpuProcSample, 0, 32)
+		// Compute a per-owner duration from monotonic deltas, then pass as time.Duration.
+		ownerSince := func(ownerIdx int) time.Duration {
+			// Prefer per-owner watermark; fall back to the collector’s last tick time.
+			var from uint64
+			if t0, ok := c.lastProcQueryMono[ownerIdx]; ok && t0 != 0 {
+				from = t0
+			} else {
+				from = c.lastMono // last successful tick we pushed
+			}
+
+			var dMono uint64
+			if nowMono > from {
+				dMono = nowMono - from
+			} else {
+				// Extremely unlikely (clock monotonicity), but avoid zero/negative.
+				dMono = 1 // 1 ns
+			}
+			return time.Duration(int64(dMono))
 		}
 
-		devSamples = append(devSamples, gs)
+		// Helper to append results and advance the monotonic watermark.
+		appendProc := func(ownerIdx int, ownerUUID string, m map[uint32]any) {
+			if len(m) == 0 {
+				c.lastProcQueryMono[ownerIdx] = nowMono
+				return
+			}
+			for _, v := range m {
+				p, ok := v.(devices.GPUProcessUtilizationSample)
+				if !ok {
+					continue
+				}
+				procSamples = append(procSamples, ring.GpuProcSample{
+					Pid:               p.Pid,
+					TimeStampUS:       p.TimeStamp,   // backend’s own clock; treat as opaque
+					ComputeUtil:       p.ComputeUtil, // %
+					MemUtil:           p.MemUtil,     // %
+					EncUtil:           p.EncUtil,     // %
+					DecUtil:           p.DecUtil,     // %
+					GpuIndex:          ownerIdx,
+					GpuUUID:           ownerUUID,
+					GpuInstanceID:     nil, // can be filled if DCGM exposes ids you want to surface
+					ComputeInstanceID: nil,
+				})
+			}
+			c.lastProcQueryMono[ownerIdx] = nowMono
+		}
 
-		// Update last instantaneous values for next integration step.
-		state.LastMilliW = powerMw
+		// (a) Physical devices via NVML/DCGM
+		for i := range c.devs {
+			state := &c.devs[i]
+			since := ownerSince(state.Index)
+			gd := devices.GPUDevice{
+				DeviceHandler: state.Nvml,
+				ID:            state.Index,
+				IsSubdevice:   false,
+			}
+			m, err := c.devIf.ProcessResourceUtilizationPerDevice(gd, since)
+			if err != nil {
+				klog.V(6).Infof("gpuCollector: per-process (phys %d) error: %v", state.Index, err)
+				c.lastProcQueryMono[state.Index] = nowMono
+				continue
+			}
+			appendProc(state.Index, state.UUID, m)
+		}
+
+		// (b) MIG instances (DCGM only)
+		if c.backendStr == "DCGM" && config.GpuEnableMigDiscovery() {
+			inst := c.devIf.DeviceInstances()
+			for parentID, migMap := range inst {
+				parentUUID := ""
+				for i := range c.devs {
+					if c.devs[i].Index == parentID {
+						parentUUID = c.devs[i].UUID
+						break
+					}
+				}
+				for _, anyDev := range migMap {
+					gd, ok := anyDev.(devices.GPUDevice)
+					if !ok {
+						continue
+					}
+					ownerIdx := gd.ID // use DCGM entity id for uniqueness
+					since := ownerSince(ownerIdx)
+					m, err := c.devIf.ProcessResourceUtilizationPerDevice(gd, since)
+					if err != nil {
+						klog.V(6).Infof("gpuCollector: per-process (MIG %d) error: %v", ownerIdx, err)
+						c.lastProcQueryMono[ownerIdx] = nowMono
+						continue
+					}
+					appendProc(ownerIdx, parentUUID, m)
+				}
+			}
+		}
 	}
-
-	// Push exactly one ring element for this collection tick (timestamp lives here).
+	// --- 4) Push one tick containing devices and per-process (if any) ---
 	c.buf.Push(ring.GpuTick{
-		SampleMeta:        ring.SampleMeta{Mono: nowMono}, // FIX: was "mono"
-		TotalEnergyMicroJ: totalEnergy,
-		Devices:           devSamples, // treat as immutable after push
+		SampleMeta: ring.SampleMeta{Mono: nowMono},
+		Devices:    devSamples,
+		Processes:  procSamples,
 	})
 
-	klog.V(5).Infof("gpuCollector: collected 1 tick with %d device samples (totalEnergyDelta=%.3f mJ)",
-		len(devSamples), float64(totalEnergy)/1000.0)
-
+	klog.V(5).Infof("gpuCollector: collected 1 tick (%d device samples, %d proc samples)", len(devSamples), len(procSamples))
 	c.lastMono = nowMono
-}
-
-func integrateTrapezoidMicroJ(prevMilliW, currMilliW int, dtMs float64) uint64 {
-	microJ := ((float64(prevMilliW) + float64(currMilliW)) / 2.0) * dtMs * 1000.0
-	if microJ < 0 {
-		return 0
-	}
-	return uint64(math.Round(microJ))
 }
 
 // cChar32ToString converts a C-style fixed-size [32]int8 array to a Go string.

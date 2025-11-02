@@ -238,10 +238,32 @@ func RunIdleCalibration(
 
 	// --- Compute baselines from snapshots -------------------------------------
 	if cfg.CalibrationGpuIdleEnabled() && cfg.EnableGpu() {
-		if p5, ok := IdleBaselineGPUFromSnap(ctx, mono, gpuSnap); ok {
-			res.GpuIdleP5 = &p5
+		perDev, ok := IdleBaselineGPUPerDeviceFromSnap(ctx, mono, gpuSnap)
+		if ok && len(perDev) > 0 {
+			// Store per-device idle baselines
+			res.GpuIdlePerDevice = perDev
+
+			// Maintain legacy scalar: sum of per-device p5s as a host-level idle proxy
+			var total float64
+			for _, v := range perDev {
+				total += v
+			}
+			res.GpuIdleP5 = &total
+
+			// Status/notes
+			if res.Status == nil {
+				res.Status = make(map[string]string)
+			}
 			res.Status["gpu.idle"] = "ok"
+
+			if res.Notes == nil {
+				res.Notes = make(map[string]string)
+			}
+			res.Notes["gpu.idle.devices"] = fmt.Sprintf("%d", len(perDev))
 		} else {
+			if res.Status == nil {
+				res.Status = make(map[string]string)
+			}
 			res.Status["gpu.idle"] = "skipped_or_failed"
 		}
 	}

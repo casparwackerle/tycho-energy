@@ -295,46 +295,139 @@ func probeGpuOnce(ctx context.Context, g *gpuCollector.Collector, gpuBuf interfa
 	return pp
 }
 
-// Returns (p5, true) on success, or (0, false) if there are no usable samples
-// or the context is canceled. Computes the 5th percentile of the *total GPU power*
-// per tick (sum across all devices in each tick).
-func IdleBaselineGPUFromSnap(
+// IdleBaselineGPUPerDeviceFromSnap returns a per-device idle baseline (5th percentile, in Watts)
+// for devices that have enough "quiet" samples within the snapshot. Devices that do not meet
+// the quietness/min-sample criteria are omitted from the result map.
+// Returns (map, true) if at least one device produced a baseline; otherwise (nil, false).
+func IdleBaselineGPUPerDeviceFromSnap(
 	ctx context.Context,
-	mono *clock.Mono, // kept for signature consistency with other analyzers; not used here
+	mono *clock.Mono, // kept for signature symmetry; not used here
 	snap []ring.GpuTick,
-) (float64, bool) {
+) (map[string]float64, bool) {
 	if len(snap) == 0 {
-		return 0, false
+		return nil, false
 	}
 
-	values := make([]float64, 0, len(snap)) // totals per tick, in Watts
+	// ---- Tunables (consider exposing via config) ----
+	const (
+		smQuietMaxPct   = 3.0 // SM/core util threshold for "quiet"
+		memQuietMaxPct  = 5.0 // Memory controller util threshold
+		encQuietMaxPct  = 1.0 // NVENC util threshold
+		decQuietMaxPct  = 1.0 // NVDEC util threshold
+		procQuietMaxPct = 3.0 // Sum of per-process compute util on that GPU
+		minQuietTicks   = 20  // Minimum quiet samples required to accept a baseline
+	)
+
+	// Per-device accumulator: UUID -> []Watts (quiet-only samples)
+	perDevQuietWatts := make(map[string][]float64)
+
 	for i := 0; i < len(snap); i++ {
 		select {
 		case <-ctx.Done():
-			return 0, false
+			return nil, false
 		default:
 		}
-
 		tick := snap[i]
-		var totalMilliW int
-		var hasValid bool
+
+		// Pre-aggregate per-process compute util *per GPU index* for this tick.
+		// (If Processes slice is empty, the sum remains zero and is not restrictive.)
+		procComputeByGPU := make(map[int]float64)
+		for _, p := range tick.Processes {
+			// Defensive: treat unknown/malformed util as 0..100 clamp.
+			u := float64(p.ComputeUtil)
+			if u < 0 {
+				u = 0
+			} else if u > 100 {
+				u = 100
+			}
+			procComputeByGPU[p.GpuIndex] += u
+		}
 
 		for _, dev := range tick.Devices {
-			// Accept zeros (true idle), skip invalid negatives.
+			// Skip invalid/negative readings; zero is allowed (true idle).
 			if dev.PowerMilliW < 0 {
 				continue
 			}
-			totalMilliW += dev.PowerMilliW
-			hasValid = true
-		}
 
-		if hasValid {
-			values = append(values, float64(totalMilliW)/1000.0) // mW -> W
+			// Quietness predicate for this device in this tick.
+			if !isGpuDeviceQuiet(dev, procComputeByGPU[dev.DeviceIndex],
+				smQuietMaxPct, memQuietMaxPct, encQuietMaxPct, decQuietMaxPct, procQuietMaxPct) {
+				continue
+			}
+
+			perDevQuietWatts[dev.UUID] = append(perDevQuietWatts[dev.UUID], float64(dev.PowerMilliW)/1000.0)
 		}
 	}
 
-	if len(values) == 0 {
-		return 0, false
+	if len(perDevQuietWatts) == 0 {
+		return nil, false
 	}
-	return P5(values), true
+
+	// Compute p5 per device only if enough quiet samples exist.
+	out := make(map[string]float64, len(perDevQuietWatts))
+	for uuid, watts := range perDevQuietWatts {
+		if len(watts) < minQuietTicks {
+			continue
+		}
+		out[uuid] = P5(watts)
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}
+
+// Quietness check for a single device sample within a tick.
+// procComputeTotal is the sum of per-process GPU compute util for this device's GPU index in this tick.
+func isGpuDeviceQuiet(
+	dev ring.GpuSample,
+	procComputeTotal float64,
+	smMax, memMax, encMax, decMax, procMax float64,
+) bool {
+	// Clamp/normalize optional enc/dec pointers.
+	enc := 0.0
+	if dev.EncUtilPct != nil {
+		enc = *dev.EncUtilPct
+		if enc < 0 {
+			enc = 0
+		} else if enc > 100 {
+			enc = 100
+		}
+	}
+	dec := 0.0
+	if dev.DecUtilPct != nil {
+		dec = *dev.DecUtilPct
+		if dec < 0 {
+			dec = 0
+		} else if dec > 100 {
+			dec = 100
+		}
+	}
+
+	// Clamp primary utils as well (defensive).
+	sm := dev.SMUtilPct
+	if sm < 0 {
+		sm = 0
+	} else if sm > 100 {
+		sm = 100
+	}
+	mem := dev.MemUtilPct
+	if mem < 0 {
+		mem = 0
+	} else if mem > 100 {
+		mem = 100
+	}
+
+	// Processes sum clamp.
+	if procComputeTotal < 0 {
+		procComputeTotal = 0
+	} else if procComputeTotal > 100 {
+		procComputeTotal = 100
+	}
+
+	return sm <= smMax &&
+		mem <= memMax &&
+		enc <= encMax &&
+		dec <= decMax &&
+		procComputeTotal <= procMax
 }
