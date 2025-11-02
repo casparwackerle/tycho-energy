@@ -109,6 +109,18 @@ func BusyLoop(ctx context.Context, duration time.Duration, period time.Duration,
 	}
 }
 
+func alignToQuantum(ms, quantumMs int) int {
+	if quantumMs <= 1 {
+		return ms
+	}
+	// Round up to the nearest multiple of quantum to avoid undersampling due to rounding.
+	rem := ms % quantumMs
+	if rem == 0 {
+		return ms
+	}
+	return ms + (quantumMs - rem)
+}
+
 // P5 returns the 5th percentile of xs (or min if not enough points).
 func P5(xs []float64) float64 {
 	n := len(xs)

@@ -61,7 +61,21 @@ type RedfishSample struct {
 
 type GpuTick struct {
 	SampleMeta
-	Devices []GpuSample
+	Devices   []GpuSample
+	Processes []GpuProcSample
+}
+
+type GpuProcSample struct {
+	Pid               uint32
+	TimeStampUS       uint64 // as delivered by backend
+	ComputeUtil       uint32 // %
+	MemUtil           uint32 // %
+	EncUtil           uint32 // %
+	DecUtil           uint32 // %
+	GpuIndex          int
+	GpuUUID           string
+	GpuInstanceID     *uint32 // MIG ids if present (backend-specific)
+	ComputeInstanceID *uint32
 }
 
 type GpuSample struct {
@@ -87,8 +101,7 @@ type GpuSample struct {
 	// --- Energy accounting (per tick) ---
 	// If the device exposes cumulative energy (mJ) we compute a delta and store it as microJ.
 	// Otherwise we integrate instantaneous power across dt (trapezoid) and store that as microJ.
-	EnergyMicroJ        uint64 // Energy delta for this tick (microJ)
-	HasCumulativeEnergy bool   // True when cumulative energy is used underneath
+	HasCumulativeEnergy bool // True when cumulative energy is used underneath
 
 	// --- Backend / topology hints (optional) ---
 	Backend       string  // "nvml" | "dcgm" (for debugging/telemetry)

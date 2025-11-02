@@ -95,11 +95,11 @@ extraEnvVars:
   TYCHO_CALIBRATION_REDFISH_DELAY_ENABLE: "false"                # enable Redfish delay measurement
   TYCHO_CALIBRATION_REDFISH_DELAY_BUDGET_SEC: "90"              # max duration for Redfish delay test
   TYCHO_CALIBRATION_REDFISH_IDLE_ENABLE: "false"                 # measure Redfish idle baseline
-  TYCHO_CALIBRATION_GPU_POLL_ENABLE: "false"                     # enable GPU poll-rate calibration
+  TYCHO_CALIBRATION_GPU_POLL_ENABLE: "true"                     # enable GPU poll-rate calibration
   TYCHO_CALIBRATION_GPU_POLL_BUDGET_SEC: "30"                   # max duration for GPU poll-rate probe
   TYCHO_CALIBRATION_GPU_DELAY_ENABLE: "false"                    # enable GPU delay measurement
   TYCHO_CALIBRATION_GPU_DELAY_BUDGET_SEC: "30"                  # max duration for GPU delay test
-  TYCHO_CALIBRATION_GPU_IDLE_ENABLE: "false"                     # measure GPU idle baseline
+  TYCHO_CALIBRATION_GPU_IDLE_ENABLE: "true"                     # measure GPU idle baseline
 
   TYCHO_COLLECTOR_GPU_PREFER_DCGM: "false"
   TYCHO_COLLECTOR_GPU_ENABLE_PERPROCESS: "false"
