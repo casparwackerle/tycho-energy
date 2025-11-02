@@ -147,12 +147,15 @@ const (
 	defaultTychoDelayAfterMs       = 200 //will be overwritten if there is a metric delay that is longer
 
 	// Tycho Collector Config
-	defaultTychoEnableRapl       = true
-	defaultTychoEnableBpf        = true
-	defaultTychoEnableGpu        = true
-	defaultTychoEnableRedfish    = true
-	defaultTychoPowercapBasePath = "/sys/class/powercap"
-	defaultTychoRaplDomains      = "package,core,dram,uncore"
+	defaultTychoEnableRapl            = true
+	defaultTychoEnableBpf             = true
+	defaultTychoEnableGpu             = true
+	defaultTychoEnableRedfish         = true
+	defaultTychoPowercapBasePath      = "/sys/class/powercap"
+	defaultTychoRaplDomains           = "package,core,dram,uncore"
+	defaultTychoGPUPreferDCGM         = true
+	defaultTychoGPUEnablePerProcess   = true
+	defaultTychoGPUEnableMIGDiscovery = true
 )
 
 var BaseDir string = "/etc/kepler/kepler.config"

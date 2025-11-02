@@ -1,6 +1,8 @@
 package ring
 
-import "time"
+import (
+	"time"
+)
 
 // SampleMeta is embedded in each metric-specific sample type.
 // Mono is Tycho's monotonic event index/tick.
@@ -57,10 +59,12 @@ type RedfishSample struct {
 	FreshnessMs   float64   // max(0, CollectorTime - SourceTime) in ms; 0 if SourceTime is zero
 }
 
-type GpuSample struct {
-	// Common sample metadata (Tycho monotonic timestamp)
+type GpuTick struct {
 	SampleMeta
+	Devices []GpuSample
+}
 
+type GpuSample struct {
 	// --- Identity / topology (backend-agnostic) ---
 	DeviceIndex int    // 0..N-1 in current host view
 	UUID        string // NVML device UUID (stable identifier)
@@ -68,16 +72,17 @@ type GpuSample struct {
 	Name        string // Human-readable GPU name (for logs)
 
 	// --- Instantaneous telemetry (per tick) ---
-	PowerMilliW   int      // Instant power from NVML (mW)
-	SMUtilPct     float64  // GPU core/SM utilization (%); was already present
-	MemUtilPct    float64  // Memory controller utilization (%); was already present
-	EncUtilPct    *float64 // Optional: NVENC utilization (%) if available
-	DecUtilPct    *float64 // Optional: NVDEC utilization (%) if available
-	MemUsedBytes  uint64   // FB memory used (bytes)
-	MemTotalBytes uint64   // FB memory total (bytes)
-	SMClockMHz    uint32   // SM/graphics clock
-	MemClockMHz   uint32   // Memory clock
-	TempC         int      // GPU temperature (°C)
+	PowerMilliW     int      // Instant power from NVML (mW)
+	CumEnergyMilliJ *uint64  // cumulative energy (if supported)
+	SMUtilPct       float64  // GPU core/SM utilization (%); was already present
+	MemUtilPct      float64  // Memory controller utilization (%); was already present
+	EncUtilPct      *float64 // Optional: NVENC utilization (%) if available
+	DecUtilPct      *float64 // Optional: NVDEC utilization (%) if available
+	MemUsedBytes    uint64   // FB memory used (bytes)
+	MemTotalBytes   uint64   // FB memory total (bytes)
+	SMClockMHz      uint32   // SM/graphics clock
+	MemClockMHz     uint32   // Memory clock
+	TempC           int      // GPU temperature (°C)
 
 	// --- Energy accounting (per tick) ---
 	// If the device exposes cumulative energy (mJ) we compute a delta and store it as microJ.

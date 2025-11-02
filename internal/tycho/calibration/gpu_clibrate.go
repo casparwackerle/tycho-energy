@@ -13,76 +13,6 @@ import (
 	gpuCollector "github.com/casparwackerle/tycho-energy/internal/tycho/collectors/gpu"
 )
 
-// // PollProbeGPU: increase sampling aggressiveness down to minMs, infer NVML publish cadence from value changes.
-// // Best period = clamp(round(0.8 * medianDelta), minMs, ...).
-// func PollProbeGPU(ctx context.Context, mono *clock.Mono, budgetSec int, minMs int) (bestMS int, ok bool) {
-// 	bufMgr := ring.NewManager()
-// 	// windowSec=float64, periodMs=int
-// 	gpuSz := ring.SizeForWindow(budgetSec, minMs)
-// 	gpuBuf := ring.GetOrCreateSync[ring.GpuSample](bufMgr, "gpu-cal", gpuSz)
-// 	g := gpuCollector.New(gpuCollector.Config{Buf: gpuBuf, Mono: mono})
-
-// 	if err := g.Init(ctx); err != nil {
-// 		klog.Errorf("gpu.PollProbe: init failed: %v", err)
-// 		return 0, false
-// 	}
-
-// 	steps := []int{200, 100, 50}
-// 	if minMs < steps[len(steps)-1] {
-// 		steps = append(steps, minMs)
-// 	}
-
-// 	var changeDts []float64
-// 	deadline := time.Duration(budgetSec) * time.Second
-// 	stepBudget := deadline / time.Duration(len(steps))
-
-// 	// Use mW integers (as reported by NVML via collector)
-// 	lastVal := func(s ring.GpuSample) int { return s.PowerMilliW }
-
-// 	var prev int
-// 	var havePrev bool
-// 	var lastChange time.Time
-
-// 	for _, ms := range steps {
-// 		per := time.Duration(ms) * time.Millisecond
-// 		windowCtx, cancel := context.WithTimeout(ctx, stepBudget)
-
-// 		havePrev = false
-// 		lastChange = time.Time{}
-
-// 		BusyLoop(windowCtx, stepBudget, per, func(ts time.Time) {
-// 			g.Collect(windowCtx, ts)
-// 			if s, ok := PeekOne(gpuBuf); ok {
-// 				v := lastVal(s)
-// 				if !havePrev {
-// 					prev = v
-// 					havePrev = true
-// 					lastChange = ts
-// 					return
-// 				}
-// 				if v != prev {
-// 					dt := ts.Sub(lastChange).Seconds()
-// 					changeDts = append(changeDts, dt)
-// 					prev = v
-// 					lastChange = ts
-// 				}
-// 			}
-// 		})
-
-// 		cancel()
-// 	}
-
-// 	if len(changeDts) == 0 {
-// 		klog.V(2).Infof("gpu.PollProbe: no value changes observed within budget")
-// 		return 0, false
-// 	}
-
-// 	medianDt := Median(changeDts)
-// 	best := int(0.8 * medianDt * 1000.0)
-// 	if best < minMs {
-// 		best = minMs
-// 	}
-
 // 	klog.V(2).Infof("gpu.PollProbe: medianΔ=%.1fms => best=%dms (min=%d)", medianDt*1000, best, minMs)
 // 	return best, true
 // }
@@ -114,7 +44,7 @@ func PollProbeGPU(ctx context.Context, mono *clock.Mono, budgetSec int, minMs in
 
 	bufMgr := ring.NewManager()
 	gpuSz := ring.SizeForWindow(budgetSec, minMs)
-	gpuBuf := ring.GetOrCreateSync[ring.GpuSample](bufMgr, "gpu-cal", gpuSz)
+	gpuBuf := ring.GetOrCreateSync[ring.GpuTick](bufMgr, "gpu-cal", gpuSz)
 	g := gpuCollector.New(gpuCollector.Config{Buf: gpuBuf, Mono: mono})
 
 	// Init collector → if it fails, treat as "skipped_or_failed".
@@ -286,7 +216,7 @@ func PollProbeGPU(ctx context.Context, mono *clock.Mono, budgetSec int, minMs in
 // Because the GPU collector pushes one sample PER DEVICE per tick, we only check for
 // "at least one new sample" per tick to count an OK arrival.
 func probeGpuOnce(ctx context.Context, g *gpuCollector.Collector, gpuBuf interface {
-	PeekNewestCopy(int) []ring.GpuSample
+	PeekNewestCopy(int) []ring.GpuTick
 }, ms int, windowSec int) PollProbePoint {
 	per := time.Duration(ms) * time.Millisecond
 	window := time.Duration(windowSec) * time.Second
@@ -365,60 +295,42 @@ func probeGpuOnce(ctx context.Context, g *gpuCollector.Collector, gpuBuf interfa
 	return pp
 }
 
-// func IdleBaselineGPU(ctx context.Context, mono *clock.Mono, idleBudgetSec int, pollMs int) (p5 float64, ok bool) {
-// 	bufMgr := ring.NewManager()
-// 	gpuSz := ring.SizeForWindow(idleBudgetSec, pollMs)
-// 	gpuBuf := ring.GetOrCreateSync[ring.GpuSample](bufMgr, "gpu-idle", gpuSz)
-// 	g := gpuCollector.New(gpuCollector.Config{Buf: gpuBuf, Mono: mono})
-// 	if err := g.Init(ctx); err != nil {
-// 		return 0, false
-// 	}
-
-// 	values := make([]float64, 0, gpuSz)
-// 	per := time.Duration(pollMs) * time.Millisecond
-
-// 	BusyLoop(ctx, time.Duration(idleBudgetSec)*time.Second, per, func(ts time.Time) {
-// 		g.Collect(ctx, ts)
-// 		if s, ok := PeekOne(gpuBuf); ok {
-// 			// convert mW -> W if you want float watt stats
-// 			values = append(values, float64(s.PowerMilliW)/1000.0)
-// 		}
-// 	})
-
-// 	if len(values) == 0 {
-// 		return 0, false
-// 	}
-// 	return P5(values), true
-// }
-
-// IdleBaselineGPUFromSnap computes the GPU idle baseline (P5) from an already
-// collected snapshot of GPU samples. It does no collection or timing.
-// Input power is expected in milli-watts on GpuSample; output is watts.
-//
 // Returns (p5, true) on success, or (0, false) if there are no usable samples
-// or the context is canceled.
+// or the context is canceled. Computes the 5th percentile of the *total GPU power*
+// per tick (sum across all devices in each tick).
 func IdleBaselineGPUFromSnap(
 	ctx context.Context,
 	mono *clock.Mono, // kept for signature consistency with other analyzers; not used here
-	snap []ring.GpuSample,
+	snap []ring.GpuTick,
 ) (float64, bool) {
 	if len(snap) == 0 {
 		return 0, false
 	}
 
-	values := make([]float64, 0, len(snap))
+	values := make([]float64, 0, len(snap)) // totals per tick, in Watts
 	for i := 0; i < len(snap); i++ {
 		select {
 		case <-ctx.Done():
 			return 0, false
 		default:
 		}
-		s := snap[i]
-		// Accept zeros (true idle) but skip obviously invalid negatives.
-		if s.PowerMilliW < 0 {
-			continue
+
+		tick := snap[i]
+		var totalMilliW int
+		var hasValid bool
+
+		for _, dev := range tick.Devices {
+			// Accept zeros (true idle), skip invalid negatives.
+			if dev.PowerMilliW < 0 {
+				continue
+			}
+			totalMilliW += dev.PowerMilliW
+			hasValid = true
 		}
-		values = append(values, float64(s.PowerMilliW)/1000.0) // mW -> W
+
+		if hasValid {
+			values = append(values, float64(totalMilliW)/1000.0) // mW -> W
+		}
 	}
 
 	if len(values) == 0 {

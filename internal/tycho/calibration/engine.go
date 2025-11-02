@@ -137,7 +137,7 @@ func RunIdleCalibration(
 	bpfBuf *ring.Sync[ring.BpfTick],
 	raplBuf *ring.Sync[ring.RaplSample],
 	rfBuf *ring.Sync[ring.RedfishSample],
-	gpuBuf *ring.Sync[ring.GpuSample],
+	gpuBuf *ring.Sync[ring.GpuTick],
 ) (Results, error) {
 	res := Results{
 		Notes:  make(map[string]string),
@@ -220,7 +220,7 @@ func RunIdleCalibration(
 	var mode string
 	var raplSnap []ring.RaplSample
 	var rfSnap []ring.RedfishSample
-	var gpuSnap []ring.GpuSample
+	var gpuSnap []ring.GpuTick
 
 	if haveBudget && eligibleByTime {
 		mode = "ground_truth"

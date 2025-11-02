@@ -155,6 +155,10 @@ type TychoCollectorConfig struct {
 	// RAPL specifics
 	PowercapBasePath string
 	RaplDomains      string // comma list: package,core,dram,psys
+	//GPU specifics
+	PreferDCGM         bool // set to false to prefer NVML
+	EnablePerProcess   bool
+	EnableMIGDiscovery bool
 }
 
 type Config struct {
@@ -307,12 +311,15 @@ func getTychoAnalysisConfig() TychoAnalysisConfig {
 }
 func getTychoCollectorConfig() TychoCollectorConfig {
 	return TychoCollectorConfig{
-		EnableRapl:       getBoolConfig("TYCHO_COLLECTOR_ENABLE_RAPL", defaultTychoEnableRapl),
-		EnableBpf:        getBoolConfig("TYCHO_COLLECTOR_ENABLE_BPF", defaultTychoEnableBpf),
-		EnableGpu:        getBoolConfig("TYCHO_COLLECTOR_ENABLE_GPU", defaultTychoEnableGpu),
-		EnableRedfish:    getBoolConfig("TYCHO_COLLECTOR_ENABLE_REDFISH", defaultTychoEnableRedfish),
-		PowercapBasePath: getConfig("TYCHO_COLLECTOR_POWERCAP_BASE_PATH", defaultTychoPowercapBasePath),
-		RaplDomains:      getConfig("TYCHO_COLLECTOR_RAPL_DOMAINS", defaultTychoRaplDomains),
+		EnableRapl:         getBoolConfig("TYCHO_COLLECTOR_ENABLE_RAPL", defaultTychoEnableRapl),
+		EnableBpf:          getBoolConfig("TYCHO_COLLECTOR_ENABLE_BPF", defaultTychoEnableBpf),
+		EnableGpu:          getBoolConfig("TYCHO_COLLECTOR_ENABLE_GPU", defaultTychoEnableGpu),
+		EnableRedfish:      getBoolConfig("TYCHO_COLLECTOR_ENABLE_REDFISH", defaultTychoEnableRedfish),
+		PowercapBasePath:   getConfig("TYCHO_COLLECTOR_POWERCAP_BASE_PATH", defaultTychoPowercapBasePath),
+		RaplDomains:        getConfig("TYCHO_COLLECTOR_RAPL_DOMAINS", defaultTychoRaplDomains),
+		PreferDCGM:         getBoolConfig("TYCHO_COLLECTOR_GPU_PREFER_DCGM", defaultTychoGPUPreferDCGM),
+		EnablePerProcess:   getBoolConfig("TYCHO_COLLECTOR_GPU_ENABLE_PERPROCESS", defaultTychoGPUEnablePerProcess),
+		EnableMIGDiscovery: getBoolConfig("TYCHO_COLLECTOR_GPU_ENABL_MIGDISCOVERY", defaultTychoGPUEnableMIGDiscovery),
 	}
 }
 
@@ -479,6 +486,8 @@ func logTychoConfigs() {
 		instance.TychoCalibration.GpuDelayEnabled,
 		instance.TychoCalibration.GpuDelayBudgetSec,
 		instance.TychoCalibration.GpuIdleEnabled)
+	klog.V(5).Infof("GPU: Prefer DCGM=%t, EnablePerProcess=%t, EnableMIGDiscovery=%t",
+		instance.TychoCollector.PreferDCGM, instance.TychoCollector.EnablePerProcess, instance.TychoCollector.EnableMIGDiscovery)
 	klog.V(5).Infof("STOP TYCHO CONFIGS: ----------------------------------------")
 
 }
@@ -1143,6 +1152,18 @@ func PowercapBasePath() string {
 
 func RaplDomains() string {
 	return instance.TychoCollector.RaplDomains
+}
+
+func GPUPreferDcgm() bool {
+	return instance.TychoCollector.PreferDCGM
+}
+
+func GpuEnablePerProcess() bool {
+	return instance.TychoCollector.EnablePerProcess
+}
+
+func GpuEnableMigDiscovery() bool {
+	return instance.TychoCollector.EnableMIGDiscovery
 }
 
 func CoreUsageMetric() string {
