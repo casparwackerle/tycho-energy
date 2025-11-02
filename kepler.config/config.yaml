@@ -66,9 +66,9 @@ extraEnvVars:
 
   # Enable flags
   TYCHO_COLLECTOR_ENABLE_BPF: "true"
-  TYCHO_COLLECTOR_ENABLE_RAPL: "true"
+  TYCHO_COLLECTOR_ENABLE_RAPL: "false"
   TYCHO_COLLECTOR_ENABLE_GPU: "false"
-  TYCHO_COLLECTOR_ENABLE_REDFISH: "true"
+  TYCHO_COLLECTOR_ENABLE_REDFISH: "false"
 
   # Measurement Periods (milliseconds)
   TYCHO_BPF_POLL_MS: "50"

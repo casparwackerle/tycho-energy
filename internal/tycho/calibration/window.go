@@ -4,7 +4,7 @@ import "github.com/casparwackerle/tycho-energy/internal/tycho/ring"
 
 // Span-based coverage checks using mono-ns
 
-func hasWindowBpfMono(buf *ring.Sync[ring.BpfSample], m0, m1 uint64) bool {
+func hasWindowBpfMono(buf *ring.Sync[ring.BpfTick], m0, m1 uint64) bool {
 	src := buf.SnapshotChrono()
 	if len(src) == 0 {
 		return false
