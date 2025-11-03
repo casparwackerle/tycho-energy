@@ -431,3 +431,178 @@ func isGpuDeviceQuiet(
 		dec <= decMax &&
 		procComputeTotal <= procMax
 }
+
+// CumEnergyValidationPerDeviceFromSnap validates NVML cumulative energy per device
+// using a snapshot of GPU ticks. For each device that has enough data, it checks:
+//   - cumulative counter is monotonic (non-decreasing)
+//   - slope matches integrated InstantPowerMilliW within a tolerance
+//
+// Returns (map[uuid]CumEnergyDiag, true) if at least one device produced a verdict;
+// otherwise (nil, false).
+func CumEnergyValidationPerDeviceFromSnap(
+	ctx context.Context,
+	mono *clock.Mono, // kept for symmetry; not required here
+	snap []ring.GpuTick,
+) (map[string]CumEnergyDiag, bool) {
+	if len(snap) < 2 {
+		return nil, false
+	}
+
+	// ---- Tunables (consider moving to config) ----
+	const (
+		minTicks       = 20   // minimum total ticks per device
+		minCumReadFrac = 0.5  // require >=50% of ticks to have a cum reading
+		minEnergyJ     = 0.25 // require at least 0.25 J over window to be meaningful
+		maxRelError    = 0.15 // 15% relative error tolerance
+	)
+
+	// Per-device time series accumulators
+	type dp struct {
+		tMono uint64 // ns (from tick.SampleMeta.Mono)
+		pMW   uint64 // instant power (mW)
+		eMJ   uint64 // cumulative energy (mJ); only valid if okE
+		okE   bool   // whether cumulative reading was present
+	}
+
+	series := make(map[string][]dp) // uuid -> []dp
+
+	// Build per-device series from the snapshot
+	for i := 0; i < len(snap); i++ {
+		select {
+		case <-ctx.Done():
+			return nil, false
+		default:
+		}
+		tick := snap[i]
+		// NOTE: This assumes your tick carries per-device slices (like your idle function).
+		// If your current tick is flattened, adapt this loop accordingly.
+		for _, dev := range tick.Devices {
+			d := dp{
+				tMono: tick.SampleMeta.Mono,
+				pMW:   dev.InstantPowerMilliW, // integrate the *instant* signal
+			}
+			if dev.CumEnergyMilliJ != nil {
+				d.eMJ = *dev.CumEnergyMilliJ
+				d.okE = true
+			}
+			series[dev.UUID] = append(series[dev.UUID], d)
+		}
+	}
+
+	out := make(map[string]CumEnergyDiag, len(series))
+	haveAny := false
+
+	for uuid, s := range series {
+		if len(s) < minTicks {
+			continue
+		}
+
+		// Count available cumulative reads
+		cumReads := 0
+		for _, x := range s {
+			if x.okE {
+				cumReads++
+			}
+		}
+		if float64(cumReads) < minCumReadFrac*float64(len(s)) {
+			continue
+		}
+
+		// Compute window span
+		t0 := s[0].tMono
+		t1 := s[len(s)-1].tMono
+		winSec := float64(t1-t0) / 1e9
+
+		// Monotonicity check (non-decreasing on the subsequence where okE==true)
+		monoViol := 0
+		var prev uint64
+		prevSet := false
+		for _, x := range s {
+			if !x.okE {
+				continue
+			}
+			if prevSet && x.eMJ < prev {
+				monoViol++
+			}
+			prev = x.eMJ
+			prevSet = true
+		}
+		if monoViol > 0 {
+			out[uuid] = CumEnergyDiag{
+				Valid:               false,
+				Samples:             len(s),
+				CumReads:            cumReads,
+				MonotonicViolations: monoViol,
+				WindowSeconds:       winSec,
+			}
+			haveAny = true
+			continue
+		}
+
+		// Integrate instant power with trapezoidal rule
+		var eintJ float64
+		for i := 1; i < len(s); i++ {
+			dt := float64(s[i].tMono-s[i-1].tMono) / 1e9 // seconds
+			p0 := float64(s[i-1].pMW) / 1000.0           // W
+			p1 := float64(s[i].pMW) / 1000.0             // W
+			eintJ += 0.5 * (p0 + p1) * dt
+		}
+
+		// Delta of cumulative over first/last valid cum sample
+		// (scan from both ends to find valid endpoints)
+		var e0, e1 uint64
+		found0 := false
+		for i := 0; i < len(s); i++ {
+			if s[i].okE {
+				e0 = s[i].eMJ
+				found0 = true
+				break
+			}
+		}
+		if !found0 {
+			continue
+		}
+		for i := len(s) - 1; i >= 0; i-- {
+			if s[i].okE {
+				e1 = s[i].eMJ
+				break
+			}
+		}
+		ecumJ := float64(e1-e0) / 1000.0 // mJ → J
+
+		// Require a meaningful amount of energy change
+		if eintJ < minEnergyJ {
+			out[uuid] = CumEnergyDiag{
+				Valid:            false,
+				Samples:          len(s),
+				CumReads:         cumReads,
+				IntegratedJ:      eintJ,
+				CumulativeDeltaJ: ecumJ,
+				RelativeError:    1.0,
+				WindowSeconds:    winSec,
+			}
+			haveAny = true
+			continue
+		}
+
+		rel := math.Abs(ecumJ-eintJ) / math.Max(eintJ, 1e-6)
+		valid := rel <= maxRelError
+
+		out[uuid] = CumEnergyDiag{
+			Valid:               valid,
+			Samples:             len(s),
+			CumReads:            cumReads,
+			MonotonicViolations: monoViol,
+			IntegratedJ:         eintJ,
+			CumulativeDeltaJ:    ecumJ,
+			RelativeError:       rel,
+			WindowSeconds:       winSec,
+		}
+		haveAny = true
+	}
+
+	if !haveAny {
+		return nil, false
+	}
+	return out, true
+}

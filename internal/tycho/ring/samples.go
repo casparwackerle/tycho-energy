@@ -86,22 +86,18 @@ type GpuSample struct {
 	Name        string // Human-readable GPU name (for logs)
 
 	// --- Instantaneous telemetry (per tick) ---
-	PowerMilliW     int      // Instant power from NVML (mW)
-	CumEnergyMilliJ *uint64  // cumulative energy (if supported)
-	SMUtilPct       float64  // GPU core/SM utilization (%); was already present
-	MemUtilPct      float64  // Memory controller utilization (%); was already present
-	EncUtilPct      *float64 // Optional: NVENC utilization (%) if available
-	DecUtilPct      *float64 // Optional: NVDEC utilization (%) if available
-	MemUsedBytes    uint64   // FB memory used (bytes)
-	MemTotalBytes   uint64   // FB memory total (bytes)
-	SMClockMHz      uint32   // SM/graphics clock
-	MemClockMHz     uint32   // Memory clock
-	TempC           int      // GPU temperature (°C)
-
-	// --- Energy accounting (per tick) ---
-	// If the device exposes cumulative energy (mJ) we compute a delta and store it as microJ.
-	// Otherwise we integrate instantaneous power across dt (trapezoid) and store that as microJ.
-	HasCumulativeEnergy bool // True when cumulative energy is used underneath
+	PowerMilliW        int      //  power from NVML (mW) based on function nvmlDeviceGetPowerUsage (1 second average, according to Nvidia
+	InstantPowerMilliW uint64   // Instant power from NVML (mW) based on the field NVML_FI_DEV_POWER_INSTANT (186), according to Nvidia
+	CumEnergyMilliJ    *uint64  // cumulative energy (if supported)
+	SMUtilPct          float64  // GPU core/SM utilization (%); was already present
+	MemUtilPct         float64  // Memory controller utilization (%); was already present
+	EncUtilPct         *float64 // Optional: NVENC utilization (%) if available
+	DecUtilPct         *float64 // Optional: NVDEC utilization (%) if available
+	MemUsedBytes       uint64   // FB memory used (bytes)
+	MemTotalBytes      uint64   // FB memory total (bytes)
+	SMClockMHz         uint32   // SM/graphics clock
+	MemClockMHz        uint32   // Memory clock
+	TempC              int      // GPU temperature (°C)
 
 	// --- Backend / topology hints (optional) ---
 	Backend       string  // "nvml" | "dcgm" (for debugging/telemetry)
