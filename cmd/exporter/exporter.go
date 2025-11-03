@@ -273,24 +273,54 @@ func main() {
 	go func() { _ = eng.Start(tycho_ctx) }()
 	defer tycho_cancel()
 
-	// // ----- Force one idle calibration after engine is running --------------------
-	// go func() {
-	// 	// Warm-up so BPF has enough ticks for the guard window
-	// 	const warmup = 20 * time.Second
-	// 	time.Sleep(warmup)
+	// Force one idle calibration after engine is running
+	go func() {
+		// Warm-up so GPU/BPF/RAPL rings have enough data
+		warmup := time.Duration(config.BufferWindowSec()) * time.Second
+		time.Sleep(warmup)
 
-	// 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	// 	defer cancel()
-	// 	resIdle, err := calibration.RunIdleCalibration(ctx, mono, bpfBuf, raplBuf, rfBuf, gpuBuf)
-	// 	if err != nil {
-	// 		klog.Errorf("TYCHO-CAL: initial idle calibration error: %v", err)
-	// 		return
-	// 	}
-	// 	calibration.Apply(resIdle)
-	// 	klog.V(2).Infof("TYCHO-CAL: initial idle calibration applied: status=%v notes=%v", resIdle.Status, resIdle.Notes)
-	// }()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
 
-	// // ----- Periodic re-calibration every 24h (idle-only) -------------------------
+		//Cumulative-energy validation (per device)
+		{
+			snap := gpuBuf.SnapshotChrono()
+			if diagMap, ok := calibration.CumEnergyValidationPerDeviceFromSnap(ctx, mono, snap); ok {
+				// persist per-device verdicts/diagnostics
+				calibration.SetCumEnergyDiag(diagMap)
+
+				// concise summary + per-device diagnostics at higher verbosity
+				valid, invalid := 0, 0
+				for uuid, d := range diagMap {
+					if d.Valid {
+						valid++
+					} else {
+						invalid++
+					}
+					klog.V(3).Infof(
+						"TYCHO-CAL: cumulativeEnergy[%s]: valid=%t samples=%d cumReads=%d monoViol=%d win=%.1fs Einteg=%.3fJ Ecum=%.3fJ relErr=%.3f",
+						uuid, d.Valid, d.Samples, d.CumReads, d.MonotonicViolations,
+						d.WindowSeconds, d.IntegratedJ, d.CumulativeDeltaJ, d.RelativeError,
+					)
+				}
+				klog.V(2).Infof("TYCHO-CAL: cumulative energy validation done: devices_valid=%d devices_invalid=%d (warmup≈%.0fs)",
+					valid, invalid, warmup.Seconds())
+			} else {
+				klog.V(2).Infof("TYCHO-CAL: cumulative energy validation skipped (insufficient GPU data; warmup≈%.0fs)", warmup.Seconds())
+			}
+		}
+
+		// Existing: Idle calibration
+		resIdle, err := calibration.RunIdleCalibration(ctx, mono, bpfBuf, raplBuf, rfBuf, gpuBuf)
+		if err != nil {
+			klog.Errorf("TYCHO-CAL: initial idle calibration error: %v", err)
+			return
+		}
+		calibration.Apply(resIdle)
+		klog.V(2).Infof("TYCHO-CAL: initial idle calibration applied: status=%v notes=%v", resIdle.Status, resIdle.Notes)
+	}()
+
+	// // Periodic re-calibration every 24h (idle-only)
 	// go func() {
 	// 	ticker := time.NewTicker(24 * time.Hour)
 	// 	defer ticker.Stop()

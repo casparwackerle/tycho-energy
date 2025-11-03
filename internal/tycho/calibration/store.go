@@ -9,16 +9,25 @@ import (
 type idleStore struct {
 	mu sync.RWMutex
 
-	// best-known baselines (set by SetIdleAll, refined by MaybeUpdateIdle)
-	idle IdleBaselines
+	idle         IdleBaselines
+	hasCumEnergy map[string]CumEnergyDiag
 
-	// mono timestamp (int64) of the last full calibration run
-	lastCalibMono int64
-
-	// hysteresis & confirmations for downward-only updates
-	hysteresisPct        float64 // e.g., 0.01 for 1%
-	confirmationsNeeded  int     // e.g., 3 confirmations before accepting a lower value
+	lastCalibMono        int64
+	hysteresisPct        float64
+	confirmationsNeeded  int
 	pendingConfirmations map[idKey]int
+}
+
+// CumEnergyDiag reports per-device validation results for cumulative energy.
+type CumEnergyDiag struct {
+	Valid               bool    // final verdict
+	Samples             int     // number of ticks considered
+	CumReads            int     // ticks where cumulative mJ was available
+	MonotonicViolations int     // count of strictly decreasing cum samples
+	IntegratedJ         float64 // energy from integrating InstantPowerMilliW (J)
+	CumulativeDeltaJ    float64 // delta of cumulative counter over window (J)
+	RelativeError       float64 // |Ecum - Eintegrated| / max(Eintegrated, eps)
+	WindowSeconds       float64 // total time span of the considered ticks
 }
 
 type idKey struct {
@@ -27,11 +36,11 @@ type idKey struct {
 }
 
 var (
-	// single global instance inside the package
 	_store = &idleStore{
 		idle:                 make(IdleBaselines),
-		hysteresisPct:        0.01, // default 1%
-		confirmationsNeeded:  3,    // default 3 confirmations
+		hasCumEnergy:         make(map[string]CumEnergyDiag),
+		hysteresisPct:        0.01,
+		confirmationsNeeded:  3,
 		pendingConfirmations: make(map[idKey]int),
 	}
 )
@@ -155,4 +164,28 @@ func SetLastCalibMono(ts int64) {
 	_store.mu.Lock()
 	defer _store.mu.Unlock()
 	_store.lastCalibMono = ts
+}
+
+// SetCumEnergyDiag stores the per-device cumulative energy validation results
+// in the global calibration store. Thread-safe and overwrites previous results.
+func SetCumEnergyDiag(diags map[string]CumEnergyDiag) {
+	_store.mu.Lock()
+	defer _store.mu.Unlock()
+	if _store.hasCumEnergy == nil {
+		_store.hasCumEnergy = make(map[string]CumEnergyDiag)
+	}
+	for uuid, d := range diags {
+		_store.hasCumEnergy[uuid] = d
+	}
+}
+
+// GetCumEnergyDiag returns a copy of the currently stored cumulative energy diagnostics.
+func GetCumEnergyDiag() map[string]CumEnergyDiag {
+	_store.mu.RLock()
+	defer _store.mu.RUnlock()
+	out := make(map[string]CumEnergyDiag, len(_store.hasCumEnergy))
+	for k, v := range _store.hasCumEnergy {
+		out[k] = v
+	}
+	return out
 }

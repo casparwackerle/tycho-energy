@@ -129,17 +129,19 @@ func (c *Collector) Init(ctx context.Context) error {
 	return nil
 }
 
-// NVML value type codes (check your binding; adjust if they differ)
+// --- Helpers ---------------------------------------------------------------
+// Adjust these value-type codes if your binding defines different constants.
 const (
 	nvmlValueTypeDouble           = 0
 	nvmlValueTypeUnsignedInt      = 1
 	nvmlValueTypeUnsignedLong     = 2
 	nvmlValueTypeUnsignedLongLong = 3
 	nvmlValueTypeSignedLongLong   = 4
-	nvmlValueTypeString           = 5
 )
 
-func decodePowerMilliwatts(v nvml.FieldValue) (uint64, bool) {
+// decodeNVMLUint converts an nvml.FieldValue into a uint64 (little-endian).
+// Handles the common numeric NVML types we may see for power fields.
+func decodeNVMLUint(v nvml.FieldValue) (uint64, bool) {
 	switch v.ValueType {
 	case nvmlValueTypeUnsignedInt:
 		return uint64(binary.LittleEndian.Uint32(v.Value[:4])), true
@@ -198,55 +200,42 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 
 		// Optional cumulative energy (mJ) — raw only
 		var cumMJPtr *uint64
-		hasCum := false
 		if mJ, ret := nv.GetTotalEnergyConsumption(); ret == nvml.SUCCESS {
-			hasCum = true
 			cum := mJ
 			cumMJPtr = &cum
 		}
 
 		// --- Direct NVML field test (instant power) ----------------------------
+		// Read instantaneous power via NVML field API (NVML_FI_DEV_POWER_INSTANT = 186).
 		instPowerMw := uint64(0)
-		values := make([]nvml.FieldValue, 1)
-		values[0].FieldId = 186 // NVML_FI_DEV_POWER_INSTANT (mW)
-		if ret := nv.GetFieldValues(values); ret == nvml.SUCCESS {
-			v := values[0]
-			if v.NvmlReturn == uint32(nvml.SUCCESS) {
-				if mw, ok := decodePowerMilliwatts(v); ok {
-					instPowerMw = mw
-					// TODO: log/store instPowerMw
-				} else {
-					klog.Warningf("NVML 186: unsupported ValueType=%d raw=%v", v.ValueType, v.Value)
-				}
-			} else {
-				klog.Warningf("NVML 186 per-field error: %d", v.NvmlReturn)
+		values := []nvml.FieldValue{{FieldId: 186}} // mW
+		if ret := nv.GetFieldValues(values); ret == nvml.SUCCESS && values[0].NvmlReturn == uint32(nvml.SUCCESS) {
+			if mw, ok := decodeNVMLUint(values[0]); ok {
+				instPowerMw = mw
 			}
-		} else {
-			klog.Warningf("nv.GetFieldValues failed: %v", ret)
 		}
-		klog.V(5).Infof("gpuCollector: PowerMw: %d, instantPower: %d, difference: %d", powerMw, instPowerMw, (powerMw - int(instPowerMw)))
 
 		devSamples = append(devSamples, ring.GpuSample{
-			DeviceIndex:         state.Index,
-			UUID:                state.UUID,
-			PCIBusID:            state.PCIBus,
-			Name:                state.Name,
-			PowerMilliW:         powerMw,
-			CumEnergyMilliJ:     cumMJPtr,
-			SMUtilPct:           float64(util.Gpu),
-			MemUtilPct:          float64(util.Memory),
-			EncUtilPct:          encPtr,
-			DecUtilPct:          decPtr,
-			MemUsedBytes:        mem.Used,
-			MemTotalBytes:       mem.Total,
-			SMClockMHz:          uint32(smClk),
-			MemClockMHz:         uint32(memClk),
-			TempC:               tempC,
-			HasCumulativeEnergy: hasCum,
-			Backend:             c.backendStr,
-			IsMIG:               false,
-			MIGParentID:         nil,
-			MIGParentUUID:       nil,
+			DeviceIndex:        state.Index,
+			UUID:               state.UUID,
+			PCIBusID:           state.PCIBus,
+			Name:               state.Name,
+			PowerMilliW:        powerMw,
+			InstantPowerMilliW: instPowerMw,
+			CumEnergyMilliJ:    cumMJPtr,
+			SMUtilPct:          float64(util.Gpu),
+			MemUtilPct:         float64(util.Memory),
+			EncUtilPct:         encPtr,
+			DecUtilPct:         decPtr,
+			MemUsedBytes:       mem.Used,
+			MemTotalBytes:      mem.Total,
+			SMClockMHz:         uint32(smClk),
+			MemClockMHz:        uint32(memClk),
+			TempC:              tempC,
+			Backend:            c.backendStr,
+			IsMIG:              false,
+			MIGParentID:        nil,
+			MIGParentUUID:      nil,
 		})
 	}
 
@@ -304,34 +293,31 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 
 				// Cumulative energy (raw) on MIG (if exposed)
 				var cumMJPtr *uint64
-				hasCum := false
 				if mJ, ret := mh.GetTotalEnergyConsumption(); ret == nvml.SUCCESS {
-					hasCum = true
 					c := mJ
 					cumMJPtr = &c
 				}
 
 				devSamples = append(devSamples, ring.GpuSample{
-					DeviceIndex:         gd.ID, // use DCGM entity id as index for uniqueness
-					UUID:                uuid,
-					PCIBusID:            bus,
-					Name:                name,
-					PowerMilliW:         powerMw,
-					CumEnergyMilliJ:     cumMJPtr,
-					SMUtilPct:           float64(util.Gpu),
-					MemUtilPct:          float64(util.Memory),
-					EncUtilPct:          encPtr,
-					DecUtilPct:          decPtr,
-					MemUsedBytes:        mem.Used,
-					MemTotalBytes:       mem.Total,
-					SMClockMHz:          uint32(smClk),
-					MemClockMHz:         uint32(memClk),
-					TempC:               tempC,
-					HasCumulativeEnergy: hasCum,
-					Backend:             c.backendStr,
-					IsMIG:               true,
-					MIGParentID:         parentIdx,
-					MIGParentUUID:       parentUUID,
+					DeviceIndex:     gd.ID, // use DCGM entity id as index for uniqueness
+					UUID:            uuid,
+					PCIBusID:        bus,
+					Name:            name,
+					PowerMilliW:     powerMw,
+					CumEnergyMilliJ: cumMJPtr,
+					SMUtilPct:       float64(util.Gpu),
+					MemUtilPct:      float64(util.Memory),
+					EncUtilPct:      encPtr,
+					DecUtilPct:      decPtr,
+					MemUsedBytes:    mem.Used,
+					MemTotalBytes:   mem.Total,
+					SMClockMHz:      uint32(smClk),
+					MemClockMHz:     uint32(memClk),
+					TempC:           tempC,
+					Backend:         c.backendStr,
+					IsMIG:           true,
+					MIGParentID:     parentIdx,
+					MIGParentUUID:   parentUUID,
 				})
 			}
 		}
