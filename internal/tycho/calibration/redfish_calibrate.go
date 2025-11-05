@@ -11,69 +11,6 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// // PollProbeRedfish: probe down to minMs, infer publish cadence from value changes; keep 0.8×medianΔ as best.
-// func PollProbeRedfish(ctx context.Context, mono *clock.Mono, budgetSec int, minMs int) (bestMS int, ok bool) {
-// 	bufMgr := ring.NewManager()
-// 	rfSz := ring.SizeForWindow(budgetSec, minMs)
-// 	rfBuf := ring.GetOrCreateSync[ring.RedfishSample](bufMgr, "rf-cal", rfSz)
-// 	rf := rfCollector.New(rfCollector.Config{Buf: rfBuf, Mono: mono})
-
-// 	steps := []int{2000, 1000, 750, 500}
-// 	if minMs < steps[len(steps)-1] {
-// 		steps = append(steps, minMs)
-// 	}
-
-// 	var changeDts []float64
-// 	deadline := time.Duration(budgetSec) * time.Second
-// 	stepBudget := deadline / time.Duration(len(steps))
-
-// 	lastVal := func(s ring.RedfishSample) int { return int(s.PowerWatts) } // adjust if different
-
-// 	var prev int
-// 	var havePrev bool
-// 	var lastChange time.Time
-
-// 	for _, ms := range steps {
-// 		per := time.Duration(ms) * time.Millisecond
-// 		windowCtx, cancel := context.WithTimeout(ctx, stepBudget)
-
-// 		havePrev = false
-// 		lastChange = time.Time{}
-
-// 		BusyLoop(windowCtx, stepBudget, per, func(ts time.Time) {
-// 			rf.Collect(windowCtx, ts)
-// 			if s, ok := PeekOne(rfBuf); ok {
-// 				v := lastVal(s)
-// 				if !havePrev {
-// 					prev = v
-// 					havePrev = true
-// 					lastChange = ts
-// 					return
-// 				}
-// 				if v != prev {
-// 					dt := ts.Sub(lastChange).Seconds()
-// 					changeDts = append(changeDts, dt)
-// 					prev = v
-// 					lastChange = ts
-// 				}
-// 			}
-// 		})
-
-// 		cancel()
-// 	}
-
-// 	if len(changeDts) == 0 {
-// 		return 0, false
-// 	}
-
-// 	medianDt := Median(changeDts)
-// 	best := int(0.8 * medianDt * 1000.0)
-// 	if best < minMs {
-// 		best = minMs
-// 	}
-// 	return best, true
-// }
-
 // Package-private stash for the latest probe report.
 // Engine can read it after calling PollProbeRedfish and place into Results.Redfish.
 var redfishReport *PollProbeReport
@@ -341,42 +278,22 @@ func maxInt(a, b int) int {
 	return b
 }
 
-// func IdleBaselineRedfish(ctx context.Context, mono *clock.Mono, idleBudgetSec int, pollMs int) (p5 float64, ok bool) {
-// 	bufMgr := ring.NewManager()
-// 	rfSz := ring.SizeForWindow(idleBudgetSec, pollMs)
-// 	rfBuf := ring.GetOrCreateSync[ring.RedfishSample](bufMgr, "rf-idle", rfSz)
-// 	rf := rfCollector.New(rfCollector.Config{Buf: rfBuf, Mono: mono})
-
-// 	values := make([]float64, 0, rfSz)
-// 	per := time.Duration(pollMs) * time.Millisecond
-
-// 	BusyLoop(ctx, time.Duration(idleBudgetSec)*time.Second, per, func(ts time.Time) {
-// 		rf.Collect(ctx, ts)
-// 		if s, ok := PeekOne(rfBuf); ok {
-// 			values = append(values, float64(s.PowerWatts))
-// 		}
-// 	})
-
-// 	if len(values) == 0 {
-// 		return 0, false
-// 	}
-// 	return P5(values), true
-// }
-
-// IdleBaselineRedfishFromSnap computes the Redfish idle baseline (P5) from an
-// already-collected snapshot of Redfish samples. It does no collection/timing.
-// Input power is expected in watts on RedfishSample.
-//
 // Returns (p5, true) on success, or (0, false) if there are no usable samples
 // or the context is canceled.
 func IdleBaselineRedfishFromSnap(
 	ctx context.Context,
-	mono *clock.Mono, // kept for signature parity; not used here
+	mono *clock.Mono, // signature parity
 	snap []ring.RedfishSample,
 ) (float64, bool) {
 	if len(snap) == 0 {
 		return 0, false
 	}
+
+	// (Optional) Check effective time span
+	// If SampleMeta.Mono exists and you want a minimal span, enforce it here.
+	// Comment out if you don't want a span guard.
+	firstMono := snap[0].SampleMeta.Mono
+	lastMono := snap[0].SampleMeta.Mono
 
 	values := make([]float64, 0, len(snap))
 	for i := 0; i < len(snap); i++ {
@@ -386,15 +303,27 @@ func IdleBaselineRedfishFromSnap(
 		default:
 		}
 		s := snap[i]
-		// Accept zeros (true idle) but skip invalid negatives/NaN/Inf.
+		if s.SampleMeta.Mono < firstMono {
+			firstMono = s.SampleMeta.Mono
+		}
+		if s.SampleMeta.Mono > lastMono {
+			lastMono = s.SampleMeta.Mono
+		}
+		// Accept zeros (idle), skip invalid
 		if s.PowerWatts < 0 || math.IsNaN(s.PowerWatts) || math.IsInf(s.PowerWatts, 0) {
 			continue
 		}
-		values = append(values, float64(s.PowerWatts))
+		values = append(values, s.PowerWatts)
 	}
 
 	if len(values) == 0 {
 		return 0, false
 	}
-	return P5(values), true
+
+	// Outlier-robust idle baseline
+	p5, _, n := DeSpikeP5(values)
+	if n == 0 {
+		return 0, false
+	}
+	return p5, true
 }

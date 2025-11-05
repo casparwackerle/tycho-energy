@@ -253,6 +253,14 @@ func main() {
 	//start monotonic time
 	mono := clock.NewMono(clock.DefaultSource, time.Duration(config.TimebaseQuantumMs())*time.Millisecond)
 
+	calibration.Init(calibration.CalibDeps{
+		Mono: mono,
+		Bpf:  bpfBuf,
+		Rapl: raplBuf,
+		Rf:   rfBuf,
+		Gpu:  gpuBuf,
+	})
+
 	// Start Engine
 	eng := engine.NewManager()
 	b := bpfCollector.New(bpfCollector.Config{Buf: bpfBuf, Mono: mono, Exp: bpfExporter})
@@ -311,7 +319,7 @@ func main() {
 		}
 
 		// Existing: Idle calibration
-		resIdle, err := calibration.RunIdleCalibration(ctx, mono, bpfBuf, raplBuf, rfBuf, gpuBuf)
+		resIdle, err := calibration.RunIdleCalibration(ctx)
 		if err != nil {
 			klog.Errorf("TYCHO-CAL: initial idle calibration error: %v", err)
 			return
@@ -319,52 +327,6 @@ func main() {
 		calibration.Apply(resIdle)
 		klog.V(2).Infof("TYCHO-CAL: initial idle calibration applied: status=%v notes=%v", resIdle.Status, resIdle.Notes)
 	}()
-
-	// // Periodic re-calibration every 24h (idle-only)
-	// go func() {
-	// 	ticker := time.NewTicker(24 * time.Hour)
-	// 	defer ticker.Stop()
-	// 	for {
-	// 		select {
-	// 		case <-ticker.C:
-	// 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	// 			resIdle, err := calibration.RunIdleCalibration(ctx, mono, bpfBuf, raplBuf, rfBuf, gpuBuf)
-	// 			cancel()
-	// 			if err != nil {
-	// 				klog.Errorf("TYCHO-CAL: periodic idle calibration error: %v", err)
-	// 				continue
-	// 			}
-	// 			calibration.Apply(resIdle)
-	// 			klog.V(2).Infof("TYCHO-CAL: periodic idle calibration applied: status=%v notes=%v", resIdle.Status, resIdle.Notes)
-	// 		case <-tycho_ctx.Done():
-	// 			return
-	// 		}
-	// 	}
-	// }()
-
-	//-------------
-	// tychoMgr = engine.NewManager(*tychoPeriodMs, collMgr)
-	// go func() {
-	// 	if err := tychoMgr.Start(tychoCtx); err != nil {
-	// 		klog.Errorf("Tycho engine error: %v", err)
-	// 	}
-	// }()
-
-	//--------------------------------------------------------------------------------
-	// --- Tycho smoke test (remove later) ---
-	// This ensures the new internal package is referenced and builds.
-	// Start() is a no-op for now, so this won't change behavior.
-	// tm := engine.NewManager(100)
-
-	// // use a short-lived context; Start currently returns immediately anyway
-	// tycho_ctx, tycho_cancel := context.WithCancel(context.Background())
-	// defer tycho_cancel()
-
-	// if err := tm.Start(tycho_ctx); err != nil {
-	// 	klog.Errorf("Tycho smoke test: manager Start() error: %v", err)
-	// } else {
-	// 	klog.Infof("Tycho smoke test: manager Start() called (no-op)")
-	// }
 
 	//--------------------------------------------------------------------------------
 
