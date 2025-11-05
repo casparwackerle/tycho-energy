@@ -16,9 +16,37 @@ const (
 // Optional: helper for iteration where needed (not used by store directly).
 var AllDomains = []Domain{DomainPkg, DomainCore, DomainUncore, DomainDRAM}
 
-// --- (your existing code continues) ---
+/* =========================
+   Orchestration primitives
+   ========================= */
+
+// SensorMask selects which sensors to calibrate in an orchestrated run.
+type SensorMask uint8
+
+const (
+	MaskNone    SensorMask = 0
+	MaskRAPL    SensorMask = 1 << 0
+	MaskRedfish SensorMask = 1 << 1
+	MaskGPU     SensorMask = 1 << 2
+	MaskAll                = MaskRAPL | MaskRedfish | MaskGPU
+)
+
+// IdleMode indicates which policy the orchestrator used.
+type IdleMode string
+
+const (
+	ModeGroundTruth         IdleMode = "ground_truth"         // full budgeted window; replaces baselines
+	ModeOpportunisticRefine IdleMode = "opportunistic_refine" // current window; downward-only refine
+)
+
+/* =========================
+   Results & baselines
+   ========================= */
 
 type Results struct {
+	// Mode used by orchestrator (optional; filled by orchestrator).
+	Mode IdleMode
+
 	// GPU
 	GpuBestPollMS *int
 	GpuDelayMS    *int

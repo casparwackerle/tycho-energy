@@ -301,24 +301,22 @@ func probeGpuOnce(ctx context.Context, g *gpuCollector.Collector, gpuBuf interfa
 // Returns (map, true) if at least one device produced a baseline; otherwise (nil, false).
 func IdleBaselineGPUPerDeviceFromSnap(
 	ctx context.Context,
-	mono *clock.Mono, // kept for signature symmetry; not used here
+	mono *clock.Mono, // kept for signature symmetry; not used
 	snap []ring.GpuTick,
 ) (map[string]float64, bool) {
 	if len(snap) == 0 {
 		return nil, false
 	}
 
-	// ---- Tunables (consider exposing via config) ----
+	// Tunables
 	const (
 		smQuietMaxPct   = 3.0 // SM/core util threshold for "quiet"
 		memQuietMaxPct  = 5.0 // Memory controller util threshold
 		encQuietMaxPct  = 1.0 // NVENC util threshold
 		decQuietMaxPct  = 1.0 // NVDEC util threshold
 		procQuietMaxPct = 3.0 // Sum of per-process compute util on that GPU
-		minQuietTicks   = 20  // Minimum quiet samples required to accept a baseline
 	)
 
-	// Per-device accumulator: UUID -> []Watts (quiet-only samples)
 	perDevQuietWatts := make(map[string][]float64)
 
 	for i := 0; i < len(snap); i++ {
@@ -329,11 +327,9 @@ func IdleBaselineGPUPerDeviceFromSnap(
 		}
 		tick := snap[i]
 
-		// Pre-aggregate per-process compute util *per GPU index* for this tick.
-		// (If Processes slice is empty, the sum remains zero and is not restrictive.)
+		// Per-tick process util grouped by GPU index
 		procComputeByGPU := make(map[int]float64)
 		for _, p := range tick.Processes {
-			// Defensive: treat unknown/malformed util as 0..100 clamp.
 			u := float64(p.ComputeUtil)
 			if u < 0 {
 				u = 0
@@ -343,18 +339,15 @@ func IdleBaselineGPUPerDeviceFromSnap(
 			procComputeByGPU[p.GpuIndex] += u
 		}
 
+		// Check each device
 		for _, dev := range tick.Devices {
-			// Skip invalid/negative readings; zero is allowed (true idle).
 			if dev.PowerMilliW < 0 {
 				continue
 			}
-
-			// Quietness predicate for this device in this tick.
 			if !isGpuDeviceQuiet(dev, procComputeByGPU[dev.DeviceIndex],
 				smQuietMaxPct, memQuietMaxPct, encQuietMaxPct, decQuietMaxPct, procQuietMaxPct) {
 				continue
 			}
-
 			perDevQuietWatts[dev.UUID] = append(perDevQuietWatts[dev.UUID], float64(dev.PowerMilliW)/1000.0)
 		}
 	}
@@ -363,14 +356,15 @@ func IdleBaselineGPUPerDeviceFromSnap(
 		return nil, false
 	}
 
-	// Compute p5 per device only if enough quiet samples exist.
 	out := make(map[string]float64, len(perDevQuietWatts))
 	for uuid, watts := range perDevQuietWatts {
-		if len(watts) < minQuietTicks {
+		if len(watts) == 0 {
 			continue
 		}
+		// Compute P5 directly, no enforced sample count
 		out[uuid] = P5(watts)
 	}
+
 	if len(out) == 0 {
 		return nil, false
 	}
@@ -441,7 +435,7 @@ func isGpuDeviceQuiet(
 // otherwise (nil, false).
 func CumEnergyValidationPerDeviceFromSnap(
 	ctx context.Context,
-	mono *clock.Mono, // kept for symmetry; not required here
+	mono *clock.Mono,
 	snap []ring.GpuTick,
 ) (map[string]CumEnergyDiag, bool) {
 	if len(snap) < 2 {
@@ -450,10 +444,8 @@ func CumEnergyValidationPerDeviceFromSnap(
 
 	// ---- Tunables (consider moving to config) ----
 	const (
-		minTicks       = 20   // minimum total ticks per device
-		minCumReadFrac = 0.5  // require >=50% of ticks to have a cum reading
-		minEnergyJ     = 0.25 // require at least 0.25 J over window to be meaningful
-		maxRelError    = 0.15 // 15% relative error tolerance
+		minEnergyJ  = 0.25 // require at least 0.25 J over window to be meaningful
+		maxRelError = 0.15 // 15% relative error tolerance
 	)
 
 	// Per-device time series accumulators
@@ -485,6 +477,7 @@ func CumEnergyValidationPerDeviceFromSnap(
 				d.eMJ = *dev.CumEnergyMilliJ
 				d.okE = true
 			}
+
 			series[dev.UUID] = append(series[dev.UUID], d)
 		}
 	}
@@ -493,10 +486,6 @@ func CumEnergyValidationPerDeviceFromSnap(
 	haveAny := false
 
 	for uuid, s := range series {
-		if len(s) < minTicks {
-			continue
-		}
-
 		// Count available cumulative reads
 		cumReads := 0
 		for _, x := range s {
@@ -504,7 +493,7 @@ func CumEnergyValidationPerDeviceFromSnap(
 				cumReads++
 			}
 		}
-		if float64(cumReads) < minCumReadFrac*float64(len(s)) {
+		if cumReads < 2 {
 			continue
 		}
 

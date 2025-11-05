@@ -2,7 +2,70 @@ package calibration
 
 import (
 	"sync"
+
+	"github.com/casparwackerle/tycho-energy/internal/tycho/clock"
+	"github.com/casparwackerle/tycho-energy/internal/tycho/ring"
 )
+
+type CalibDeps struct {
+	Mono *clock.Mono
+
+	Bpf  *ring.Sync[ring.BpfTick]
+	Rapl *ring.Sync[ring.RaplSample]
+	Rf   *ring.Sync[ring.RedfishSample]
+	Gpu  *ring.Sync[ring.GpuTick]
+}
+
+// ConfigView is a read-only view of calibration-related knobs.
+// Your concrete config should implement this; the orchestrator reads via this interface.
+type ConfigView interface {
+	// Idle calibration policy
+	CalibrationIdleBudgetSec() int
+	CalibrationQuietGuardSec() int
+
+	// Sensor enable/disable + per-sensor idle switches
+	EnableRapl() bool
+	EnableRedfish() bool
+	EnableGpu() bool
+	CalibrationRaplIdleEnabled() bool
+	CalibrationRedfishIdleEnabled() bool
+	CalibrationGpuIdleEnabled() bool
+}
+
+var (
+	depsMu sync.RWMutex
+	deps   *CalibDeps
+)
+
+// Init wires calibration dependencies once at startup.
+// It is safe to call exactly once; subsequent calls replace the handle atomically.
+func Init(d CalibDeps) {
+	depsMu.Lock()
+	defer depsMu.Unlock()
+	// Shallow copy is sufficient; rings and mono are pointers.
+	local := d
+	deps = &local
+}
+
+// HasDeps reports whether Init() has been called successfully.
+func HasDeps() bool {
+	depsMu.RLock()
+	defer depsMu.RUnlock()
+	return deps != nil
+}
+
+// getDeps returns the current dependency handle (or nil if uninitialized).
+// Internal use by the orchestrator and helpers.
+func getDeps() *CalibDeps {
+	depsMu.RLock()
+	defer depsMu.RUnlock()
+	return deps
+}
+
+/* ==============================
+   Idle baselines & calibration KV
+   (existing store, unchanged)
+   ============================== */
 
 // idleStore holds the current best idle baselines and simple calibration bookkeeping.
 // Memory-only; thread-safe; no external persistence.
