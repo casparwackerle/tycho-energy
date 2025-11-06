@@ -140,7 +140,4 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 	c.buf.Push(tick)
 
 	klog.V(5).Infof("bpf: pushed 1 tick with %d procs in %v", len(procs), time.Since(start))
-
-	// If you keep a previous mono, update it now:
-	// c.lastMono = mono
 }
