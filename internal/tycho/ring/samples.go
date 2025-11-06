@@ -43,7 +43,7 @@ type BpfProcDelta struct {
 	CacheMiss    uint64
 }
 
-type RaplSample struct {
+type RaplTick struct {
 	SampleMeta SampleMeta
 	Source     string                     // components.GetSourceName()
 	Sockets    map[int]RaplDomainCounters // per-socket raw counters

@@ -196,7 +196,7 @@ func runIdleWithMask(ctx context.Context, mask SensorMask) (Results, error) {
 	res.Notes["mode"] = string(mode)
 
 	// --- Full-ring snapshots for sensors (no time slicing) --------------------
-	var raplSnap []ring.RaplSample
+	var raplSnap []ring.RaplTick
 	var rfSnap []ring.RedfishSample
 	var gpuSnap []ring.GpuTick
 

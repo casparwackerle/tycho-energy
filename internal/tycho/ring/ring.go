@@ -18,7 +18,7 @@ import "fmt"
 //
 // Not thread-safe by itself. See Sync[T].
 //
-// T is typically a metric sample (e.g., RaplSample) that embeds SampleMeta.
+// T is typically a metric sample (e.g., RaplTick) that embeds SampleMeta.
 // But any type works.
 
 type Ring[T any] struct {

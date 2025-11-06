@@ -15,14 +15,14 @@ import (
 
 // Config holds dependencies/settings for the BPF collector (placeholder for now).
 type Config struct {
-	Buf  *ring.Sync[ring.RaplSample]
+	Buf  *ring.Sync[ring.RaplTick]
 	Mono *clock.Mono
 	// ...
 }
 
 // Collector performs BPF collection (placeholder).
 type Collector struct {
-	buf  *ring.Sync[ring.RaplSample]
+	buf  *ring.Sync[ring.RaplTick]
 	mono *clock.Mono
 	// ... drivers/handles
 }
@@ -32,6 +32,7 @@ func New(cfg Config) *Collector {
 }
 
 // Collect reads raw RAPL counters (mJ) per socket and appends one sample to the ring.
+// Collect reads raw RAPL counters (mJ) for all sockets and pushes exactly one tick.
 func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 	select {
 	case <-ctx.Done():
@@ -45,30 +46,33 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 
 	start := time.Now()
 
+	// Single snapshot of absolute counters per package/socket.
 	nodeE := components.GetAbsEnergyFromNodeComponents()
 	if len(nodeE) == 0 {
 		return
 	}
 
+	// Build per-tick payload: one element holds all sockets/domains at this timestamp.
 	sockets := make(map[int]ring.RaplDomainCounters, len(nodeE))
 	for socketID, e := range nodeE {
 		sockets[socketID] = ring.RaplDomainCounters{
-			Pkg:    e.Pkg,
-			Core:   e.Core,
-			Uncore: e.Uncore,
-			DRAM:   e.DRAM,
+			Pkg:    e.Pkg,    // package (PKG) energy
+			Core:   e.Core,   // PP0 (cores) — per package aggregate
+			Uncore: e.Uncore, // uncore/PP1 if available on this platform
+			DRAM:   e.DRAM,   // DRAM domain (platform-dependent)
 		}
 	}
 
-	sample := ring.RaplSample{
+	tick := ring.RaplTick{
 		SampleMeta: ring.SampleMeta{Mono: c.mono.From(ts)},
 		Source:     components.GetSourceName(),
 		Sockets:    sockets,
 	}
 
-	c.buf.Push(sample)
+	// Push exactly one immutable tick for this collection run.
+	c.buf.Push(tick)
 
-	klog.V(5).Infof("rapl: pushed 1 sample (%d sockets) in %v", len(sockets), time.Since(start))
+	klog.V(5).Infof("rapl: pushed 1 tick (sockets=%d) in %v", len(sockets), time.Since(start))
 }
 
 func PrintAvailableRaplDomains() {

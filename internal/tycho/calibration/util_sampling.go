@@ -311,6 +311,6 @@ func snapshotGpuAll(buf *ring.Sync[ring.GpuTick]) []ring.GpuTick {
 	return buf.SnapshotChrono()
 }
 
-func snapshotRaplAll(buf *ring.Sync[ring.RaplSample]) []ring.RaplSample {
+func snapshotRaplAll(buf *ring.Sync[ring.RaplTick]) []ring.RaplTick {
 	return buf.SnapshotChrono()
 }

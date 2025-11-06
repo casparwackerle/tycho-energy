@@ -246,7 +246,7 @@ func main() {
 
 	// Create synchronized typed rings
 	bpfBuf := ring.GetOrCreateSync[ring.BpfTick](bufMgr, "bpf", bpfSz)
-	raplBuf := ring.GetOrCreateSync[ring.RaplSample](bufMgr, "rapl", raplSz)
+	raplBuf := ring.GetOrCreateSync[ring.RaplTick](bufMgr, "rapl", raplSz)
 	rfBuf := ring.GetOrCreateSync[ring.RedfishSample](bufMgr, "redfish", rfSz)
 	gpuBuf := ring.GetOrCreateSync[ring.GpuTick](bufMgr, "gpu", gpuSz)
 

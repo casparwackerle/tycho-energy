@@ -11,7 +11,7 @@ type CalibDeps struct {
 	Mono *clock.Mono
 
 	Bpf  *ring.Sync[ring.BpfTick]
-	Rapl *ring.Sync[ring.RaplSample]
+	Rapl *ring.Sync[ring.RaplTick]
 	Rf   *ring.Sync[ring.RedfishSample]
 	Gpu  *ring.Sync[ring.GpuTick]
 }
