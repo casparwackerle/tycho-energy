@@ -104,19 +104,20 @@ type HostConfig struct {
 }
 
 type TychoTimingConfig struct {
-	TimebaseQuantumMs    int // resampling grid for aligned series
-	BufferWindowSec      int
-	BufferMarginCycles   int
-	RaplPollMs           int
-	RaplDelayMs          int
-	BpfPollMs            int
-	BpfDelayMs           int
-	GpuPollMs            int
-	GpuDelayMs           int
-	RedfishPollMs        int // note: Redfish.RedfishProbeIntervalInSeconds still exists; this overrides if >0
-	RedfishDelayMs       int
-	RedfishHeartbeatMs   int
-	RedfishAutoHeartbeat bool
+	TimebaseQuantumMs     int // resampling grid for aligned series
+	BufferWindowSec       int
+	BufferMarginCycles    int
+	RaplPollMs            int
+	RaplDelayMs           int
+	BpfPollMs             int
+	BpfDelayMs            int
+	GpuPollMs             int
+	GpuDelayMs            int
+	GpuPhaseAwareSampling bool
+	RedfishPollMs         int // note: Redfish.RedfishProbeIntervalInSeconds still exists; this overrides if >0
+	RedfishDelayMs        int
+	RedfishHeartbeatMs    int
+	RedfishAutoHeartbeat  bool
 }
 
 type TychoCalibrationConfig struct {
@@ -263,18 +264,19 @@ func getKeplerConfig() KeplerConfig {
 
 func getTychoTimingConfig() TychoTimingConfig {
 	return TychoTimingConfig{
-		TimebaseQuantumMs:  getIntConfig("TYCHO_TIMEBASE_QUANTUM_MS", defaultTychoTimebaseQuantumMs),
-		BufferWindowSec:    getIntConfig("TYCHO_BUFFER_WINDOW_SEC", defaultTychoBufferWindowSec),
-		BufferMarginCycles: getIntConfig("TYCHO_BUFFER_MARGIN_CYCLES", defaultTychoBufferMarginCycles),
-		RaplPollMs:         getIntConfig("TYCHO_RAPL_POLL_MS", defaultTychoRaplPollMs),
-		RaplDelayMs:        getIntConfig("TYCHO_RAPL_DELAY_MS", defaultTychoRaplDelayMs),
-		BpfPollMs:          getIntConfig("TYCHO_BPF_POLL_MS", defaultTychoBpfPollMs),
-		BpfDelayMs:         getIntConfig("TYCHO_BPF_DELAY_MS", defaultTychoBpfDelayMs),
-		GpuPollMs:          getIntConfig("TYCHO_GPU_POLL_MS", defaultTychoGpuPollMs),
-		GpuDelayMs:         getIntConfig("TYCHO_GPU_DELAY_MS", defaultTychoGpuDelayMs),
-		RedfishPollMs:      getIntConfig("TYCHO_REDFISH_POLL_MS", defaultTychoRedfishPollMs),
-		RedfishDelayMs:     getIntConfig("TYCHO_REDFISH_DELAY_MS", defaultTychoRedfishDelayMs),
-		RedfishHeartbeatMs: getIntConfig("TYCHO_REDFISH_HEARTBEAT_MAX_GAP_MS", defaultTychoRedfishHeartbeatMs),
+		TimebaseQuantumMs:     getIntConfig("TYCHO_TIMEBASE_QUANTUM_MS", defaultTychoTimebaseQuantumMs),
+		BufferWindowSec:       getIntConfig("TYCHO_BUFFER_WINDOW_SEC", defaultTychoBufferWindowSec),
+		BufferMarginCycles:    getIntConfig("TYCHO_BUFFER_MARGIN_CYCLES", defaultTychoBufferMarginCycles),
+		RaplPollMs:            getIntConfig("TYCHO_RAPL_POLL_MS", defaultTychoRaplPollMs),
+		RaplDelayMs:           getIntConfig("TYCHO_RAPL_DELAY_MS", defaultTychoRaplDelayMs),
+		BpfPollMs:             getIntConfig("TYCHO_BPF_POLL_MS", defaultTychoBpfPollMs),
+		BpfDelayMs:            getIntConfig("TYCHO_BPF_DELAY_MS", defaultTychoBpfDelayMs),
+		GpuPollMs:             getIntConfig("TYCHO_GPU_POLL_MS", defaultTychoGpuPollMs),
+		GpuPhaseAwareSampling: getBoolConfig("TYCHO_GPU_PHASE_AWARE_SAMPLING", defaultGpuPhaseAwareSampling),
+		GpuDelayMs:            getIntConfig("TYCHO_GPU_DELAY_MS", defaultTychoGpuDelayMs),
+		RedfishPollMs:         getIntConfig("TYCHO_REDFISH_POLL_MS", defaultTychoRedfishPollMs),
+		RedfishDelayMs:        getIntConfig("TYCHO_REDFISH_DELAY_MS", defaultTychoRedfishDelayMs),
+		RedfishHeartbeatMs:    getIntConfig("TYCHO_REDFISH_HEARTBEAT_MAX_GAP_MS", defaultTychoRedfishHeartbeatMs),
 	}
 }
 
@@ -455,6 +457,7 @@ func logTychoConfigs() {
 		instance.TychoTiming.BpfPollMs, instance.TychoTiming.BpfDelayMs,
 		instance.TychoTiming.GpuPollMs, instance.TychoTiming.GpuDelayMs,
 		instance.TychoTiming.RedfishPollMs, instance.TychoTiming.RedfishDelayMs)
+	klog.V(5).Infof("TYCHO_GPU_PHASE_AWARE_SAMPLING: %t", instance.TychoTiming.GpuPhaseAwareSampling)
 	klog.V(5).Infof("TYCHO_REDFISH_HEARTBEAT_MAX_GAP_MS: %d", instance.TychoTiming.RedfishHeartbeatMs)
 	klog.V(5).Infof("TYCHO_ANALYSIS_TRIGGER: %s", instance.TychoAnalysis.Trigger)
 	klog.V(5).Infof("TYCHO_ANALYSIS_EVERY_SEC: %d", instance.TychoAnalysis.TriggerIntervalSec)
@@ -1020,6 +1023,10 @@ func GpuDelayMs() int {
 
 func SetGpuDelayMs(ms int) {
 	instance.TychoTiming.GpuDelayMs = ms
+}
+
+func GpuPhaseAwareSamplingEnabled() bool {
+	return instance.TychoTiming.GpuPhaseAwareSampling
 }
 
 func RedfishPollMs() int {
