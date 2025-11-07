@@ -268,8 +268,13 @@ func main() {
 	rf := redfishCollector.New(redfishCollector.Config{Buf: rfBuf, Mono: mono})
 	g := gpuCollector.New(gpuCollector.Config{Buf: gpuBuf, Mono: mono})
 
+	ctx_gpu, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	if err := g.Init(context.Background()); err != nil {
 		klog.Errorf("gpuCollector init failed: %v", err)
+	} else {
+		g.EnablePhaseAware(ctx_gpu, gpuCollector.CollectorSamplerDeps{}) // auto-starts if enabled in config
+		defer g.Close()
 	}
 
 	_ = eng.Register("bpf", time.Duration(config.BpfPollMs())*time.Millisecond, config.EnableBpf(), b.Collect)
