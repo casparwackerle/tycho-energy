@@ -135,8 +135,8 @@ const (
 	defaultTychoCalibrationInitRedfishDelayBudgetSec         = 60 // in sec: Duration of Delay Testing
 	defaultTychoCalibrationInitRedfishIdleEnabled            = false
 	defaultTychoCalibrationInitGpuPollEnabled                = false
-	defaultTychoCalibrationInitGpuPollBudgetSec              = 30  //in sec: Duration of Poll testing
-	defaultTychoCalibrationInitGpuPollMinMs                  = 500 // in ms: Poll intervals cannot be shorter
+	defaultTychoCalibrationInitGpuPollBudgetSec              = 30 //in sec: Duration of Poll testing
+	defaultTychoCalibrationInitGpuPollMinMs                  = 50 // in ms: Poll intervals cannot be shorter
 	defaultTychoCalibrationInitGpuDelayEnabled               = false
 	defaultTychoCalibrationInitGpuDelayBudgetSec             = 30 // in sec: Duration of Delay Testing
 	defaultTychoCalibrationInitGpuIdleEnabled                = false
