@@ -209,6 +209,8 @@ func main() {
 	if err := collMgr.StatsCollector.Initialize(); err != nil {
 		klog.Fatalf("failed to init stats collector: %v", err)
 	}
+	//start monotonic time
+	mono := clock.NewMono(clock.DefaultSource, time.Duration(config.TimebaseQuantumMs())*time.Millisecond)
 
 	// calibrate if necessary
 	needCal := config.CalibrationGpuPollEnabled() ||
@@ -249,9 +251,6 @@ func main() {
 	raplBuf := ring.GetOrCreateSync[ring.RaplTick](bufMgr, "rapl", raplSz)
 	rfBuf := ring.GetOrCreateSync[ring.RedfishSample](bufMgr, "redfish", rfSz)
 	gpuBuf := ring.GetOrCreateSync[ring.GpuTick](bufMgr, "gpu", gpuSz)
-
-	//start monotonic time
-	mono := clock.NewMono(clock.DefaultSource, time.Duration(config.TimebaseQuantumMs())*time.Millisecond)
 
 	calibration.Init(calibration.CalibDeps{
 		Mono: mono,
@@ -295,16 +294,18 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 
-		//Cumulative-energy validation (per device)
+		// --- Cumulative-energy validation (per device) ---
 		{
 			snap := gpuBuf.SnapshotChrono()
 			if diagMap, ok := calibration.CumEnergyValidationPerDeviceFromSnap(ctx, mono, snap); ok {
-				// persist per-device verdicts/diagnostics
+				// Persist in calibration’s own store (if you need it elsewhere)
 				calibration.SetCumEnergyDiag(diagMap)
 
-				// concise summary + per-device diagnostics at higher verbosity
+				// Build a simple validity map for the GPU collector (to avoid import cycles)
+				validMap := make(map[string]bool, len(diagMap))
 				valid, invalid := 0, 0
 				for uuid, d := range diagMap {
+					validMap[uuid] = d.Valid
 					if d.Valid {
 						valid++
 					} else {
@@ -316,6 +317,10 @@ func main() {
 						d.WindowSeconds, d.IntegratedJ, d.CumulativeDeltaJ, d.RelativeError,
 					)
 				}
+
+				if g != nil {
+					g.SetCumEnergyDiag(validMap) // <-- now matches the gpuCollector signature
+				}
 				klog.V(2).Infof("TYCHO-CAL: cumulative energy validation done: devices_valid=%d devices_invalid=%d (warmup≈%.0fs)",
 					valid, invalid, warmup.Seconds())
 			} else {
@@ -323,7 +328,7 @@ func main() {
 			}
 		}
 
-		// Existing: Idle calibration
+		// --- Idle calibration (existing) ---
 		resIdle, err := calibration.RunIdleCalibration(ctx)
 		if err != nil {
 			klog.Errorf("TYCHO-CAL: initial idle calibration error: %v", err)

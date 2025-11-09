@@ -31,9 +31,9 @@ func RunPollCalibration(ctx context.Context) (Results, error) {
 		} else {
 			res.Status["gpu.poll"] = "skipped_or_failed"
 		}
-		if rep := LastGPUReport(); rep != nil {
-			res.GPU = rep
-		}
+		// if rep := LastGPUReport(); rep != nil {
+		// 	res.GPU = rep
+		// }
 	}
 
 	// --- Redfish: Poll --------------------------------------------------------

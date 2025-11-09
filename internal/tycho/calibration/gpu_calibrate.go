@@ -3,296 +3,501 @@ package calibration
 import (
 	"context"
 	"math"
+	"unsafe"
+
 	"time"
 
-	"k8s.io/klog/v2"
-
+	"github.com/NVIDIA/go-nvml/pkg/nvml"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/clock"
-	"github.com/casparwackerle/tycho-energy/internal/tycho/ring"
-
 	gpuCollector "github.com/casparwackerle/tycho-energy/internal/tycho/collectors/gpu"
+	"github.com/casparwackerle/tycho-energy/internal/tycho/ring"
+	"k8s.io/klog/v2"
 )
 
-// 	klog.V(2).Infof("gpu.PollProbe: medianΔ=%.1fms => best=%dms (min=%d)", medianDt*1000, best, minMs)
-// 	return best, true
-// }
+// -----------------------------------------------------------------------------
+// Public API
+// -----------------------------------------------------------------------------
 
-// Package-private stash for the latest GPU probe report.
-var gpuReport *PollProbeReport
-
-// LastGPUReport returns the most recent PollProbeReport produced by PollProbeGPU.
-func LastGPUReport() *PollProbeReport { return gpuReport }
-
-// PollProbeGPU: dynamic search for a conservative, stable GPU polling period.
-// Strategy: exponential descent from a safe start → bracket (lastGood, firstBad) → bisection/refine → early stop.
-// GPU thresholds (stricter than Redfish):
-//   - err_rate ≤ 1% (drop ≤ 0.01)
-//   - effRate  ≥ 0.90
-//
-// Notes:
-//   - If no GPU is present/initialized, return ok=false and log "skipped".
-//   - Respect minMs guard (≥100ms). NVML commonly averages ~1s; oversampling is allowed but provides no extra information.
+// PollProbeGPU measures per-device GPU metric publish cadence before normal
+// collection, then returns a node-wide recommended poll period (bestMS).
+// It uses a short-lived GPU collector with no ring buffer and shuts it down.
 func PollProbeGPU(ctx context.Context, mono *clock.Mono, budgetSec int, minMs int) (bestMS int, ok bool) {
-	if budgetSec <= 0 {
-		klog.V(2).Infof("phase=calibrate component=gpu step=start ok=false reason=bad_budget budgetSec=%d", budgetSec)
-		gpuReport = nil
+	klog.V(5).Infof("GPU-POLL: starting probe (budgetSec=%d, minMs=%d)", budgetSec, minMs)
+
+	// Create a short-lived collector with no buffer; reuse your lifecycle
+	col := gpuCollector.New(gpuCollector.Config{
+		Buf:  nil,  // important: no ring in calibration
+		Mono: mono, // use shared monotonic clock
+	})
+	if col == nil {
+		klog.V(2).Info("GPU-POLL: failed to create GPU collector")
 		return 0, false
 	}
-	if minMs < 100 {
-		minMs = 100 // guard floor
-	}
-
-	bufMgr := ring.NewManager()
-	gpuSz := ring.SizeForWindow(budgetSec, minMs)
-	gpuBuf := ring.GetOrCreateSync[ring.GpuTick](bufMgr, "gpu-cal", gpuSz)
-	g := gpuCollector.New(gpuCollector.Config{Buf: gpuBuf, Mono: mono})
-
-	// Init collector → if it fails, treat as "skipped_or_failed".
-	if err := g.Init(ctx); err != nil {
-		klog.V(2).Infof("phase=calibrate component=gpu step=start ok=false reason=init_failed err=%v", err)
-		gpuReport = &PollProbeReport{
-			Component:   "gpu",
-			CandidateMs: 0,
-			MinGuardMs:  minMs,
-			WindowSec:   0,
-			EarlyStop:   false,
-			Reason:      "skipped_or_failed",
-			Path:        nil,
+	defer func() {
+		if err := col.Close(); err != nil {
+			klog.V(5).Infof("GPU-POLL: close error: %v", err)
 		}
+	}()
+
+	if err := col.Init(ctx); err != nil {
+		klog.V(2).Infof("GPU-POLL: init error: %v", err)
 		return 0, false
 	}
 
-	totalBudget := time.Duration(budgetSec) * time.Second
-	deadline := time.Now().Add(totalBudget)
-
-	// Defaults (can later be wired to internal getters)
-	startMs := 1000
-	targetPrecMs := 20
-	windowSec := 30
-	coolOff := 5 * time.Second // GPUs tolerate aggressive probing; short cool-off is fine
-	minSamples := 8
-
-	if startMs < minMs {
-		startMs = minMs
-	}
-	if time.Until(deadline) < time.Duration(windowSec)*time.Second {
-		startMs = maxInt(startMs, minMs)
-	}
-
-	path := make([]PollProbePoint, 0, 12)
-	report := &PollProbeReport{
-		Component:  "gpu",
-		MinGuardMs: minMs,
-		WindowSec:  windowSec,
-		Path:       nil,
-	}
-
-	// ---- Quick presence sanity check: try a brief single probe at startMs.
-	pp0 := probeGpuOnce(ctx, g, gpuBuf, startMs, 5 /*sec*/)
-	if pp0.Samples == 0 && pp0.Errs == 0 {
-		// No movement at all → likely no devices or disabled collector
-		klog.V(2).Infof("phase=calibrate component=gpu step=probe ok=false reason=no_samples_present")
-		report.CandidateMs = 0
-		report.Reason = "skipped_or_failed"
-		gpuReport = report
+	raw := col.DevicesInternal() // []gpuDeviceState (unexported type; exported fields)
+	if len(raw) == 0 {
+		klog.V(2).Info("GPU-POLL: no NVML-capable devices discovered; skip probe")
 		return 0, false
 	}
-	// If the quick probe had time, keep it as the first point; otherwise we run again in descend
-	if pp0.Samples > 0 {
-		path = append(path, pp0)
+
+	cfg := defaultGPUPollProbeConfig(minMs)
+	st := newGPUPollState(ctx, mono, budgetSec, cfg)
+
+	// Snapshot exported metadata + keep NVML handles aligned by index in st
+	for _, d := range raw {
+		st.devs = append(st.devs, gpuDevMeta{
+			Index: d.Index, UUID: d.UUID, Name: d.Name, PCIBus: d.PCIBus,
+			Nvml: d.Nvml, // handle used for reads
+		})
+		st.out = append(st.out, &deviceProbeResult{
+			DeviceIndex: d.Index,
+			UUID:        d.UUID,
+			Name:        d.Name,
+			PCIBus:      d.PCIBus,
+		})
 	}
 
-	// ---- Phase 1: Exponential descent ---------------------------------------
-	lastGood := startMs
-	firstBad := 0
-	p := startMs
+	// hyper-poll refine (tight loop around suspected cadence)
+	if err := st.hyperPollRefineAll(); err != nil {
+		klog.V(5).Infof("GPU-POLL: refine finished with error: %v", err)
+	}
 
+	// Summarize → per-device recommendation → node min
+	best, ok := st.summarizeAndRecommend()
+	if ok {
+		klog.V(2).Infof("GPU-POLL: summary bestMS=%d ms across %d device(s)", best, len(st.devs))
+	}
+	return best, ok
+}
+
+// -----------------------------------------------------------------------------
+// Config / constants
+// -----------------------------------------------------------------------------
+
+const (
+	nvmlFieldInstantPower = 186
+
+	defaultEdgesTarget    = 50
+	defaultRefineGuardSec = 8
+	defaultHyperPollMs    = 1
+)
+
+type GPUPollProbeConfig struct {
+	MinRecommendedMs int
+
+	EdgesTarget    int
+	RefineGuardSec int
+	HyperPollMs    int
+}
+
+func defaultGPUPollProbeConfig(minMs int) GPUPollProbeConfig {
+	return GPUPollProbeConfig{
+		MinRecommendedMs: minMs,
+		EdgesTarget:      defaultEdgesTarget,
+		RefineGuardSec:   defaultRefineGuardSec,
+		HyperPollMs:      defaultHyperPollMs,
+	}
+}
+
+// -----------------------------------------------------------------------------
+// State & data models
+// -----------------------------------------------------------------------------
+
+type edgeMetric int
+
+const (
+	edgeMetricUnknown edgeMetric = iota
+	edgeMetricPowerUsage
+	edgeMetricField186
+)
+
+type deviceEdge struct {
+	DeviceIndex int
+	WhenWall    time.Time // used for robust Δt computation
+	Source      edgeMetric
+}
+
+type callLatency struct {
+	PowerUsageDur  []time.Duration
+	FieldValuesDur []time.Duration
+	BundleSpanDur  []time.Duration
+}
+
+type deviceProbeResult struct {
+	DeviceIndex int
+	UUID        string
+	Name        string
+	PCIBus      string
+
+	DeviceEdges []deviceEdge
+
+	Notes []string
+
+	Latency callLatency
+
+	MeanPeriodMs int
+}
+
+type gpuDevMeta struct {
+	Index  int
+	UUID   string
+	Name   string
+	PCIBus string
+	Nvml   nvml.Device
+}
+
+type gpuPollState struct {
+	ctx      context.Context
+	mono     *clock.Mono
+	deadline time.Time
+	cfg      GPUPollProbeConfig
+
+	devs []gpuDevMeta
+	out  []*deviceProbeResult
+}
+
+func newGPUPollState(ctx context.Context, mono *clock.Mono, budgetSec int, cfg GPUPollProbeConfig) *gpuPollState {
+	var dl time.Time
+	if budgetSec > 0 {
+		dl = time.Now().Add(time.Duration(budgetSec) * time.Second)
+	}
+	return &gpuPollState{
+		ctx:      ctx,
+		mono:     mono,
+		deadline: dl,
+		cfg:      cfg,
+	}
+}
+
+func (s *gpuPollState) deadlineExceeded() bool {
+	return !s.deadline.IsZero() && time.Now().After(s.deadline)
+}
+
+// deviceEdgeDetector tracks plateau state. If field186 is ever observed,
+// we ignore power edges entirely to avoid double-counting.
+type deviceEdgeDetector struct {
+	// availability flag: once we see any field186 value, we stick to it exclusively
+	have186 bool
+
+	// field 186 plateau tracking
+	last186       *uint64
+	stable186Val  *uint64
+	stable186Hits int
+
+	// power plateau tracking (used ONLY when have186==false)
+	lastPower       *uint64
+	stablePowerVal  *uint64
+	stablePowerHits int
+}
+
+// detectEdge returns true when a NEW plateau is committed for the chosen metric.
+// Energy is intentionally ignored elsewhere.
+func (d *deviceEdgeDetector) detectEdge(b readBundleOut) (bool, edgeMetric) {
+	const needHits = 2 // N identical reads in a row to confirm plateau
+
+	// If we ever observe field186, lock to it and never emit power edges anymore.
+	if b.Field186 != nil {
+		d.have186 = true
+	}
+
+	if d.have186 {
+		// ---- Use ONLY field186 ----
+		if b.Field186 == nil {
+			return false, edgeMetricUnknown
+		}
+		cur := *b.Field186
+		if d.last186 == nil || *d.last186 != cur {
+			d.last186 = &cur
+			d.stable186Hits = 1
+		} else {
+			d.stable186Hits++
+		}
+		if d.stable186Hits >= needHits {
+			if d.stable186Val == nil {
+				d.stable186Val = &cur // initialize plateau; no edge
+				return false, edgeMetricUnknown
+			}
+			if *d.stable186Val != cur {
+				d.stable186Val = &cur
+				return true, edgeMetricField186
+			}
+		}
+		return false, edgeMetricUnknown
+	}
+
+	// ---- Fallback: use ONLY power when 186 never showed up ----
+	if b.PowerMw == nil {
+		return false, edgeMetricUnknown
+	}
+	cur := *b.PowerMw
+	if d.lastPower == nil || *d.lastPower != cur {
+		d.lastPower = &cur
+		d.stablePowerHits = 1
+	} else {
+		d.stablePowerHits++
+	}
+	if d.stablePowerHits >= needHits {
+		if d.stablePowerVal == nil {
+			d.stablePowerVal = &cur // initialize plateau; no edge
+			return false, edgeMetricUnknown
+		}
+		if *d.stablePowerVal != cur {
+			d.stablePowerVal = &cur
+			return true, edgeMetricPowerUsage
+		}
+	}
+	return false, edgeMetricUnknown
+}
+
+func (s *gpuPollState) hyperPollRefineAll() error {
+	for i := range s.devs {
+		if s.deadlineExceeded() {
+			return context.DeadlineExceeded
+		}
+		if err := s.hyperPollRefineDevice(i); err != nil {
+			// propagate or just log; using _ = ... hides real errors
+			return err
+		}
+	}
+	return nil
+}
+func (s *gpuPollState) hyperPollRefineDevice(i int) error {
+	meta := s.devs[i]
+	out := s.out[i]
+
+	// Configurable tiny poll interval (default 1ms).
+	pollStep := time.Duration(s.cfg.HyperPollMs) * time.Millisecond
+	perDevDeadline := time.Now().Add(time.Duration(s.cfg.RefineGuardSec) * time.Second)
+
+	// This phase keeps its own edges
+	out.DeviceEdges = nil
+
+	// Seed the plateau detector so first commit isn't treated as an edge
+	det := deviceEdgeDetector{}
+	if b0, _ := s.readBundle(meta.Nvml); true {
+		_, _ = det.detectEdge(b0)
+		if b0.DurBundle > 0 {
+			out.Latency.BundleSpanDur = append(out.Latency.BundleSpanDur, b0.DurBundle)
+		}
+		if b0.DurPower > 0 {
+			out.Latency.PowerUsageDur = append(out.Latency.PowerUsageDur, b0.DurPower)
+		}
+		if b0.DurField > 0 {
+			out.Latency.FieldValuesDur = append(out.Latency.FieldValuesDur, b0.DurField)
+		}
+	}
+
+	// Anchor on first real edge
+	var (
+		startWall time.Time
+		lastWall  time.Time
+		edges     int
+	)
+
+	nextTick := time.Now() // drift-free loop: sleep until nextTick, then advance by pollStep
+
+waitFirst:
 	for {
-		if time.Now().After(deadline) {
-			klog.V(2).Infof("phase=calibrate component=gpu step=descend ok=false reason=budget_exhausted")
+		// Stop conditions
+		select {
+		case <-s.ctx.Done():
+			return s.ctx.Err()
+		default:
+		}
+		if time.Now().After(perDevDeadline) {
+			return context.DeadlineExceeded
+		}
+
+		// Sleep until the scheduled tick (handles oversleep gracefully)
+		now := time.Now()
+		if d := nextTick.Sub(now); d > 0 {
+			time.Sleep(d)
+		}
+		nextTick = nextTick.Add(pollStep)
+
+		// Read+detect
+		b, _ := s.readBundle(meta.Nvml)
+		if ok, src := det.detectEdge(b); ok {
+			t := time.Now()
+			// de-dup identical wall instants (extremely unlikely)
+			if n := len(out.DeviceEdges); n == 0 || !out.DeviceEdges[n-1].WhenWall.Equal(t) {
+				out.DeviceEdges = append(out.DeviceEdges, deviceEdge{
+					DeviceIndex: meta.Index,
+					WhenWall:    t,
+					Source:      src,
+				})
+				startWall = t
+				lastWall = t
+				edges = 1
+				break waitFirst
+			}
+		}
+	}
+
+	// Collect more edges at 1ms cadence
+	target := s.cfg.EdgesTarget
+	if target < 20 {
+		target = 20
+	}
+
+	for edges < target {
+		select {
+		case <-s.ctx.Done():
+			return s.ctx.Err()
+		default:
+		}
+		if time.Now().After(perDevDeadline) {
 			break
 		}
-		// Avoid duplicating the quick probe if it was at p=startMs and long enough
-		var pp PollProbePoint
-		if len(path) > 0 && path[len(path)-1].Ms == p && path[len(path)-1].Samples >= 5 {
-			pp = path[len(path)-1]
-		} else {
-			pp = probeGpuOnce(ctx, g, gpuBuf, p, windowSec)
-			path = append(path, pp)
+
+		now := time.Now()
+		if d := nextTick.Sub(now); d > 0 {
+			time.Sleep(d)
 		}
+		nextTick = nextTick.Add(pollStep)
 
-		klog.V(2).Infof("phase=calibrate component=gpu step=descend p=%dms samples=%d errs=%d effRate=%.2f ok=%v",
-			pp.Ms, pp.Samples, pp.Errs, pp.EffRate, pp.Ok)
+		b, _ := s.readBundle(meta.Nvml)
+		if ok, src := det.detectEdge(b); ok {
+			t := time.Now()
+			if n := len(out.DeviceEdges); n == 0 || !out.DeviceEdges[n-1].WhenWall.Equal(t) {
+				out.DeviceEdges = append(out.DeviceEdges, deviceEdge{
+					DeviceIndex: meta.Index,
+					WhenWall:    t,
+					Source:      src,
+				})
+				lastWall = t
+				edges++
+			}
+		}
+	}
 
-		if pp.Ok {
-			lastGood = p
-			if p == minMs {
-				break
-			}
-			next := int(math.Floor(float64(p) / 1.5))
-			if next < minMs {
-				next = minMs
-			}
-			okEarly, reason := EarlyStopSatisfied(path, targetPrecMs, minSamples)
-			if okEarly {
-				report.EarlyStop = true
-				report.Reason = reason
-				break
-			}
-			p = next
+	if edges < 2 {
+		klog.V(5).Infof("GPU-POLL: refine dev=%d collected <2 edges; cannot compute mean", meta.Index)
+		return nil
+	}
+
+	span := lastWall.Sub(startWall)
+	out.MeanPeriodMs = int(float64(span.Milliseconds())/float64(edges-1) + 0.5)
+
+	klog.V(5).Infof("GPU-POLL: refine dev=%d edges=%d span=%s mean≈%dms (poll=%s)",
+		meta.Index, edges, span.String(), out.MeanPeriodMs, pollStep)
+
+	return nil
+}
+
+func (s *gpuPollState) summarizeAndRecommend() (best int, ok bool) {
+	if len(s.devs) == 0 {
+		return 0, false
+	}
+
+	nodeBest := 0
+	numOK := 0
+
+	for i := range s.devs {
+		out := s.out[i]
+
+		// need at least 2 edges to form a mean
+		if len(out.DeviceEdges) < 2 || out.MeanPeriodMs <= 0 {
 			continue
 		}
 
-		// Bad at p → we’ve crossed the safe boundary; cool off and bracket.
-		time.Sleep(coolOff)
-		firstBad = p
-		break
+		meanMs := out.MeanPeriodMs
+		klog.V(2).Infof("GPU-POLL: dev=%d mean_publish=%dms edges=%d",
+			out.DeviceIndex, meanMs, len(out.DeviceEdges))
+
+		if nodeBest == 0 || meanMs < nodeBest {
+			nodeBest = meanMs
+		}
+		numOK++
 	}
 
-	// If never failed and reached floor or early-stopped, accept lastGood
-	if firstBad == 0 {
-		report.CandidateMs = lastGood
-		report.Path = path
-		if report.Reason == "" {
-			report.Reason = "no_failure_within_floor_or_early_stop"
-		}
-		gpuReport = report
-
-		klog.V(2).Infof("phase=calibrate component=gpu step=summary ok=true candidate=%dms early=%v reason=%s points=%d",
-			report.CandidateMs, report.EarlyStop, report.Reason, len(report.Path))
-		return report.CandidateMs, true
+	if numOK == 0 {
+		return 0, false
 	}
-
-	// ---- Phase 2: Bisection --------------------------------------------------
-	lo := lastGood
-	hi := firstBad
-
-	for {
-		if absInt(hi-lo) <= targetPrecMs || time.Now().Add(time.Duration(windowSec)*time.Second).After(deadline) {
-			break
-		}
-		mid := (lo + hi) / 2
-		if mid < minMs {
-			mid = minMs
-		}
-
-		pp := probeGpuOnce(ctx, g, gpuBuf, mid, windowSec)
-		path = append(path, pp)
-
-		klog.V(2).Infof("phase=calibrate component=gpu step=bisect p=%dms samples=%d errs=%d effRate=%.2f ok=%v",
-			pp.Ms, pp.Samples, pp.Errs, pp.EffRate, pp.Ok)
-
-		if pp.Ok {
-			lo = mid
-			okEarly, reason := EarlyStopSatisfied(path, targetPrecMs, minSamples)
-			if okEarly {
-				report.EarlyStop = true
-				report.Reason = reason
-				break
-			}
-		} else {
-			time.Sleep(coolOff)
-			hi = mid
-		}
-	}
-
-	report.CandidateMs = maxInt(lo, minMs)
-	report.Path = path
-	if report.Reason == "" {
-		report.Reason = "bracketed_conservative_choice"
-	}
-	gpuReport = report
-
-	klog.V(2).Infof("phase=calibrate component=gpu step=summary ok=true candidate=%dms early=%v reason=%s points=%d",
-		report.CandidateMs, report.EarlyStop, report.Reason, len(report.Path))
-
-	return report.CandidateMs, true
+	return nodeBest, true
 }
 
-// probeGpuOnce runs one measurement window at 'ms' and evaluates strict GPU criteria:
-//   - drop ≤ 0.01 (i.e., err_rate ≤ 1%)
-//   - effRate ≥ 0.90
-//
-// Because the GPU collector pushes one sample PER DEVICE per tick, we only check for
-// "at least one new sample" per tick to count an OK arrival.
-func probeGpuOnce(ctx context.Context, g *gpuCollector.Collector, gpuBuf interface {
-	PeekNewestCopy(int) []ring.GpuTick
-}, ms int, windowSec int) PollProbePoint {
-	per := time.Duration(ms) * time.Millisecond
-	window := time.Duration(windowSec) * time.Second
+type readBundleOut struct {
+	PowerMw  *uint64
+	Field186 *uint64
 
-	totalTicks := 0
-	okArrivals := 0
-	drops := 0
-	times := make([]time.Time, 0, 64)
+	DurPower  time.Duration
+	DurField  time.Duration
+	DurBundle time.Duration
+}
 
-	var lastMono uint64
-	var haveLast bool
-	var longGapCount int
-	var lastArrival time.Time
+func (s *gpuPollState) readBundle(dev nvml.Device) (readBundleOut, error) {
+	var out readBundleOut
 
-	windowCtx, cancel := context.WithTimeout(ctx, window)
-	defer cancel()
+	preWall := time.Now()
 
-	BusyLoop(windowCtx, window, per, func(ts time.Time) {
-		totalTicks++
-		g.Collect(windowCtx, ts)
-		if s, got := PeekOne(gpuBuf); got {
-			mono := s.SampleMeta.Mono
-			if !haveLast || mono != lastMono {
-				okArrivals++
-				times = append(times, ts)
-				if !lastArrival.IsZero() {
-					if gap := ts.Sub(lastArrival); gap >= 3*per {
-						longGapCount++
-					}
-				}
-				lastArrival = ts
-				lastMono = mono
-				haveLast = true
-				return
+	// Field 186
+	{
+		start := time.Now()
+		values := []nvml.FieldValue{{FieldId: nvmlFieldInstantPower}}
+		if ret := dev.GetFieldValues(values); ret == nvml.SUCCESS && values[0].NvmlReturn == uint32(nvml.SUCCESS) {
+			if mw, ok := decodeNVMLUint(values[0]); ok {
+				//klog.V(5).Infof("InstantPower: %d", mw)
+				val := uint64(mw)
+				out.Field186 = &val
 			}
 		}
-		drops++
-	})
-
-	eff := EffectiveArrivalRate(ms, times)
-	drop := DropRatio(totalTicks, okArrivals)
-
-	pp := PollProbePoint{
-		Ms:      ms,
-		Ok:      true,
-		Samples: totalTicks,
-		Errs:    drops,
-		EffRate: eff,
+		out.DurField = time.Since(start)
 	}
 
-	// Strict GPU failure rules
-	if drop > 0.01 {
-		pp.Ok = false
-		pp.Notes = "high_drop"
-	}
-	if eff < 0.90 {
-		pp.Ok = false
-		if pp.Notes == "" {
-			pp.Notes = "low_eff_rate"
-		} else {
-			pp.Notes += ",low_eff_rate"
+	// Power usage (classic)
+	{
+		start := time.Now()
+		if mwU32, ret := dev.GetPowerUsage(); ret == nvml.SUCCESS {
+			//klog.V(5).Infof("Power: %d", mwU32)
+			val := uint64(mwU32)
+			out.PowerMw = &val
 		}
+		out.DurPower = time.Since(start)
 	}
-	// Long gaps usually shouldn’t occur at sane ms values, but keep as a soft hint
-	if longGapCount >= 2 {
-		if pp.Notes == "" {
-			pp.Notes = "repeated_long_gaps"
-		} else {
-			pp.Notes += ",repeated_long_gaps"
+
+	postWall := time.Now()
+	out.DurBundle = postWall.Sub(preWall)
+
+	return out, nil
+}
+
+// decodeNVMLUint mirrors your helper semantics (unsigned or double → uint64).
+// If you already have this function in a shared place, reuse it instead.
+func decodeNVMLUint(v nvml.FieldValue) (uint64, bool) {
+	const (
+		nvmlValueTypeDouble           = 0
+		nvmlValueTypeUnsignedInt      = 1
+		nvmlValueTypeUnsignedLong     = 2
+		nvmlValueTypeUnsignedLongLong = 3
+		nvmlValueTypeSignedLongLong   = 4
+	)
+	switch v.ValueType {
+	case nvmlValueTypeUnsignedInt:
+		// NVML packs little-endian; power fits in 32 bits
+		return uint64(*(*uint32)(unsafe.Pointer(&v.Value[0]))), true
+	case nvmlValueTypeUnsignedLong, nvmlValueTypeUnsignedLongLong:
+		return *(*uint64)(unsafe.Pointer(&v.Value[0])), true
+	case nvmlValueTypeDouble:
+		bits := *(*uint64)(unsafe.Pointer(&v.Value[0]))
+		f := math.Float64frombits(bits)
+		if f < 0 {
+			return 0, false
 		}
+		return uint64(f + 0.5), true
+	default:
+		return 0, false
 	}
-
-	klog.V(2).Infof("phase=calibrate component=gpu step=probe p=%dms total=%d okTicks=%d drops=%d drop=%.3f effRate=%.2f longGaps=%d ok=%v notes=%s",
-		ms, totalTicks, okArrivals, drops, drop, eff, longGapCount, pp.Ok, pp.Notes)
-
-	return pp
 }
 
 // IdleBaselineGPUPerDeviceFromSnap returns a per-device idle baseline (5th percentile, in Watts)
