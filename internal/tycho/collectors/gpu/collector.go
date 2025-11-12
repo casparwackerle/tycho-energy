@@ -185,6 +185,9 @@ func (c *Collector) Init(ctx context.Context) error {
 	// Initialize lastMono so first dt is sane
 	c.lastMono = c.mono.From(time.Now())
 	c.lastProcQueryMono = make(map[int]uint64)
+	if c.lastProcQueryTime == nil {
+		c.lastProcQueryTime = make(map[int]time.Time)
+	}
 	return nil
 }
 
@@ -738,7 +741,7 @@ func (s *sampler) onNewObservation(tObsMono uint64, devs []ring.GpuSample, procs
 		}
 
 		// Apply phase correction.
-		klog.V(5).Infof("GPU-OBS: tObs=%d, T̂=%d ticks (~%v), nextEdge=%d", tObsMono, uint64(s.phase.Period/s.quantum), s.phase.Period, s.phase.nextEdgeMono(tObsMono))
+		klog.V(6).Infof("GPU-OBS: tObs=%d, T̂=%d ticks (~%v), nextEdge=%d", tObsMono, uint64(s.phase.Period/s.quantum), s.phase.Period, s.phase.nextEdgeMono(tObsMono))
 
 		s.phase.correctPhase(time.Duration(delta) * s.quantum)
 
@@ -900,6 +903,8 @@ type Collector struct {
 	PhaseAwareEnabled bool
 	samp              *sampler
 	events            *gpuEventQueue
+	lastProcQueryTime map[int]time.Time // per-owner (GPU or MIG) last successful query wall time
+	lastDeviceObsTime time.Time         // wall time when we last pushed a device snapshot to the ring
 }
 
 // Collect remains your engine-driven per-tick entry point.
@@ -921,6 +926,7 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 		})
 		klog.V(5).Infof("GPU-COLLECT: pushed tick mono=%d changed=%v devs=%d procs=%d", ev.tObsMono, ev.Changed, len(ev.Devices), len(ev.Procs))
 		c.lastMono = ev.tObsMono
+		c.lastDeviceObsTime = time.Now()
 		c.logTickDebug(ev.Changed, len(ev.Devices), len(ev.Procs))
 	}
 	// else: nothing to push this tick
@@ -1187,35 +1193,61 @@ func (c *Collector) readPerProcessSnapshot(nowMono uint64) (procs []ring.GpuProc
 	if c.devIf == nil || !config.GpuEnablePerProcess() {
 		return nil, true
 	}
-	if c.lastProcQueryMono == nil {
+	if c.lastProcQueryTime == nil {
+		c.lastProcQueryTime = make(map[int]time.Time)
+	}
+	if c.lastProcQueryMono == nil { // keep existing mono map alive (not used here)
 		c.lastProcQueryMono = make(map[int]uint64)
 	}
 
 	procs = make([]ring.GpuProcSample, 0, 32)
 
-	// Helper: compute "since" duration for a given owner (device or MIG entity).
-	ownerSince := func(ownerIdx int) time.Duration {
-		var from uint64
-		if t0, ok := c.lastProcQueryMono[ownerIdx]; ok && t0 != 0 {
+	// Fixed wall-clock "now" for this entire call, so all owners use the same origin.
+	nowWall := time.Now()
+
+	// Bounds for the NVML/DCGM "since" window
+	const minSince = time.Millisecond // never pass 0
+	const maxSince = 5 * time.Second  // cap to avoid huge windows
+	roundUpToMS := func(d time.Duration) time.Duration {
+		if d <= 0 {
+			return minSince
+		}
+		q := time.Millisecond
+		// ceil(d / 1ms) * 1ms
+		return ((d + q - 1) / q) * q
+	}
+
+	// Compute a per-owner "since" Duration from wall-clock watermarks.
+	// Priority:
+	//  1) lastProcQueryTime[owner]
+	//  2) lastDeviceObsTime (when we last pushed a device snapshot)
+	//  3) fallback to nowWall - minSince (=> pass minSince)
+	ownerSinceMs := func(ownerIdx int) time.Duration {
+		var from time.Time
+		if t0, ok := c.lastProcQueryTime[ownerIdx]; ok && !t0.IsZero() {
 			from = t0
-		} else if c.lastMono != 0 {
-			from = c.lastMono
+		} else if !c.lastDeviceObsTime.IsZero() {
+			from = c.lastDeviceObsTime
 		} else {
-			// Fallback: use a small non-zero duration to avoid zero/negative
-			from = nowMono
+			// First ever call very early: simulate a minimal non-zero lookback.
+			from = nowWall.Add(-minSince)
 		}
 
-		var dMono uint64
-		if nowMono > from {
-			dMono = nowMono - from
-		} else {
-			dMono = 1 // 1 ns minimum
+		d := nowWall.Sub(from)
+		if d < minSince {
+			d = minSince
 		}
-		return time.Duration(int64(dMono))
+		if d > maxSince {
+			d = maxSince
+		}
+		return roundUpToMS(d)
 	}
 
 	appendProc := func(ownerIdx int, ownerUUID string, m map[uint32]any) {
 		if len(m) == 0 {
+			// Advance wall-clock watermark even if no procs returned (prevents tight loops).
+			c.lastProcQueryTime[ownerIdx] = nowWall
+			// Keep mono watermark behavior as before:
 			c.lastProcQueryMono[ownerIdx] = nowMono
 			return
 		}
@@ -1237,22 +1269,26 @@ func (c *Collector) readPerProcessSnapshot(nowMono uint64) (procs []ring.GpuProc
 				ComputeInstanceID: nil,
 			})
 		}
+		// Successful read → advance watermarks
+		c.lastProcQueryTime[ownerIdx] = nowWall
 		c.lastProcQueryMono[ownerIdx] = nowMono
 	}
 
 	// (a) Physical devices via NVML/DCGM
 	for i := range c.devs {
 		state := &c.devs[i]
-		since := ownerSince(state.Index)
+		since := ownerSinceMs(state.Index)
+		klog.V(6).Infof("gpu-proc: idx=%d uuid=%s since=%s", state.Index, state.UUID, since)
+
 		gd := devices.GPUDevice{
 			DeviceHandler: state.Nvml,
 			ID:            state.Index,
 			IsSubdevice:   false,
 		}
-		// ProcessResourceUtilizationPerDevice is provided by the accelerator Device interface.
 		m, err := c.devIf.ProcessResourceUtilizationPerDevice(gd, since)
 		if err != nil {
-			// Advance watermark to avoid tight loop on repeated errors.
+			// Advance watermarks to avoid tight loop on repeated errors.
+			c.lastProcQueryTime[state.Index] = nowWall
 			c.lastProcQueryMono[state.Index] = nowMono
 			continue
 		}
@@ -1276,9 +1312,12 @@ func (c *Collector) readPerProcessSnapshot(nowMono uint64) (procs []ring.GpuProc
 					continue
 				}
 				ownerIdx := gd.ID // DCGM entity id
-				since := ownerSince(ownerIdx)
+				since := ownerSinceMs(ownerIdx)
+				klog.V(6).Infof("gpu-proc[MIG]: owner=%d parent=%d since=%s", ownerIdx, parentID, since)
+
 				m, err := c.devIf.ProcessResourceUtilizationPerDevice(gd, since)
 				if err != nil {
+					c.lastProcQueryTime[ownerIdx] = nowWall
 					c.lastProcQueryMono[ownerIdx] = nowMono
 					continue
 				}
