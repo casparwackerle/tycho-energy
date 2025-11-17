@@ -51,3 +51,5 @@ bpfassets/
 reference/
 
 bpf_backup/
+
+scripts/venv
