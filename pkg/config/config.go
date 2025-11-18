@@ -123,15 +123,11 @@ type TychoTimingConfig struct {
 type TychoCalibrationConfig struct {
 	IdleBudgetSec                     int
 	RaplPollMinMs                     int
-	RaplDelayEnabled                  bool
-	RaplDelayBudgetSec                int
 	RaplIdleEnabled                   bool
 	RedfishContinuousHeartbeatEnabled bool
 	RedfishPollEnabled                bool
 	RedfishPollBudgetSec              int
 	RedfishPollMinMs                  int
-	RedfishDelayEnabled               bool
-	RedfishDelayBudgetSec             int
 	RedfishIdleEnabled                bool
 	GpuPollEnabled                    bool
 	GpuPollBudgetSec                  int
@@ -284,15 +280,11 @@ func getTychoCalibrationConfig() TychoCalibrationConfig {
 	return TychoCalibrationConfig{
 		IdleBudgetSec:                     getIntConfig("TYCHO_CALIBRATION_IDLE_BUDGET_SEC", defaultTychoCalibrationInitIdleBudgetSec),
 		RaplPollMinMs:                     getIntConfig("TYCHO_CALIBRATION_RAPL_POLL_MIN_MS", defaultTychoCalibrationInitRaplPollMinMs),
-		RaplDelayEnabled:                  getBoolConfig("TYCHO_CALIBRATION_RAPL_DELAY_ENABLE", defaultTychoCalibrationInitRaplDelayEnabled),
-		RaplDelayBudgetSec:                getIntConfig("TYCHO_CALIBRATION_RAPL_DELAY_BUDGET_SEC", defaultTychoCalibrationInitRaplDelayBudgetSec),
 		RaplIdleEnabled:                   getBoolConfig("TYCHO_CALIBRATION_RAPL_IDLE_ENABLE", defaultTychoCalibrationInitRaplIdleEnabled),
 		RedfishContinuousHeartbeatEnabled: getBoolConfig("TYCHO_CALIBRATION_REDFISH_CONTINUOUS_HEARTBEAT_ENABLE", defaultTychoCalibrationRedfishContinuousHeartbeatEnabled),
 		RedfishPollEnabled:                getBoolConfig("TYCHO_CALIBRATION_REDFISH_POLL_ENABLE", defaultTychoCalibrationInitRedfishPollEnabled),
 		RedfishPollBudgetSec:              getIntConfig("TYCHO_CALIBRATION_REDFISH_POLL_BUDGET_SEC", defaultTychoCalibrationInitRedfishPollBudgetSec),
 		RedfishPollMinMs:                  getIntConfig("TYCHO_CALIBRATION_REDFISH_POLL_MIN_MS", defaultTychoCalibrationInitRedfishPollMinMs),
-		RedfishDelayEnabled:               getBoolConfig("TYCHO_CALIBRATION_REDFISH_DELAY_ENABLE", defaultTychoCalibrationInitRedfishDelayEnabled),
-		RedfishDelayBudgetSec:             getIntConfig("TYCHO_CALIBRATION_REDFISH_DELAY_BUDGET_SEC", defaultTychoCalibrationInitRedfishDelayBudgetSec),
 		RedfishIdleEnabled:                getBoolConfig("TYCHO_CALIBRATION_REDFISH_IDLE_ENABLE", defaultTychoCalibrationInitRedfishIdleEnabled),
 		GpuPollEnabled:                    getBoolConfig("TYCHO_CALIBRATION_GPU_POLL_ENABLE", defaultTychoCalibrationInitGpuPollEnabled),
 		GpuPollBudgetSec:                  getIntConfig("TYCHO_CALIBRATION_GPU_POLL_BUDGET_SEC", defaultTychoCalibrationInitGpuPollBudgetSec),
@@ -472,16 +464,11 @@ func logTychoConfigs() {
 	klog.V(5).Infof("TYCHO_COLLECTOR_RAPL_DOMAINS: %s", instance.TychoCollector.RaplDomains)
 	klog.V(5).Infof("START TYCHO CALIBRATION CONFIGS")
 	klog.V(5).Infof("IdleBudgetSec:%d", instance.TychoCalibration.IdleBudgetSec)
-	klog.V(5).Infof("RAPL:  DelayEnabled=%t, DelayBudgetSec=%d, IdleEnabled=%t",
-		instance.TychoCalibration.RaplDelayEnabled,
-		instance.TychoCalibration.RaplDelayBudgetSec,
-		instance.TychoCalibration.RaplIdleEnabled)
-	klog.V(5).Infof("REDFISH: ContinuousHeartbeatEnabled=%t, PollEnabled=%t, PollBudgetSec=%d, DelayEnabled=%t, DelayBudgetSec=%d, IdleEnabled=%t",
+	klog.V(5).Infof("RAPL:  IdleEnabled=%t", instance.TychoCalibration.RaplIdleEnabled)
+	klog.V(5).Infof("REDFISH: ContinuousHeartbeatEnabled=%t, PollEnabled=%t, PollBudgetSec=%d, IdleEnabled=%t",
 		instance.TychoCalibration.RedfishContinuousHeartbeatEnabled,
 		instance.TychoCalibration.RedfishPollEnabled,
 		instance.TychoCalibration.RedfishPollBudgetSec,
-		instance.TychoCalibration.RedfishDelayEnabled,
-		instance.TychoCalibration.RedfishDelayBudgetSec,
 		instance.TychoCalibration.RedfishIdleEnabled)
 	klog.V(5).Infof("GPU: PollEnabled=%t, PollBudgetSec=%d, DelayEnabled=%t, DelayBudgetSec=%d, IdleEnabled=%t",
 		instance.TychoCalibration.GpuPollEnabled,
@@ -1057,19 +1044,11 @@ func CalibrationRaplPollMinMs() int {
 	return instance.TychoCalibration.RaplPollMinMs
 }
 
-func CalibrationRaplDelayEnabled() bool {
-	return instance.TychoCalibration.RaplDelayEnabled
-}
-
-func CalibrationRaplDelayBudgetSec() int {
-	return instance.TychoCalibration.RaplDelayBudgetSec
-}
-
 func CalibrationRaplIdleEnabled() bool {
 	return instance.TychoCalibration.RaplIdleEnabled
 }
 
-func CalibrationREdfishContinuousHeartbeatEnabled() bool {
+func CalibrationRedfishContinuousHeartbeatEnabled() bool {
 	return instance.TychoTiming.RedfishAutoHeartbeat
 }
 
@@ -1083,14 +1062,6 @@ func CalibrationRedfishPollBudgetSec() int {
 
 func CalibrationRedfishPollMinMs() int {
 	return instance.TychoCalibration.RedfishPollMinMs
-}
-
-func CalibrationRedfishDelayEnabled() bool {
-	return instance.TychoCalibration.RedfishDelayEnabled
-}
-
-func CalibrationRedfishDelayBudgetSec() int {
-	return instance.TychoCalibration.RedfishDelayBudgetSec
 }
 
 func CalibrationRedfishIdleEnabled() bool {

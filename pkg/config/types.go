@@ -124,15 +124,11 @@ const (
 
 	defaultTychoCalibrationInitIdleBudgetSec                 = 10 // in sec: Duration of (general) idle testing
 	defaultTychoCalibrationInitRaplPollMinMs                 = 50 // in ms: Poll intervals cannot be shorter
-	defaultTychoCalibrationInitRaplDelayEnabled              = false
-	defaultTychoCalibrationInitRaplDelayBudgetSec            = 30 // in sec: Duration of Delay testing
 	defaultTychoCalibrationInitRaplIdleEnabled               = false
 	defaultTychoCalibrationRedfishContinuousHeartbeatEnabled = true // continuously adjusts Redfish Heartbeat
 	defaultTychoCalibrationInitRedfishPollEnabled            = false
-	defaultTychoCalibrationInitRedfishPollBudgetSec          = 30  //in sec: Duration of Poll testing
+	defaultTychoCalibrationInitRedfishPollBudgetSec          = 60  //in sec: Duration of Poll testing
 	defaultTychoCalibrationInitRedfishPollMinMs              = 500 // in ms: Poll intervals cannot be shorter
-	defaultTychoCalibrationInitRedfishDelayEnabled           = false
-	defaultTychoCalibrationInitRedfishDelayBudgetSec         = 60 // in sec: Duration of Delay Testing
 	defaultTychoCalibrationInitRedfishIdleEnabled            = false
 	defaultTychoCalibrationInitGpuPollEnabled                = false
 	defaultTychoCalibrationInitGpuPollBudgetSec              = 30 //in sec: Duration of Poll testing

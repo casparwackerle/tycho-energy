@@ -215,9 +215,7 @@ func main() {
 	// calibrate if necessary
 	needCal := config.CalibrationGpuPollEnabled() ||
 		config.CalibrationGpuDelayEnabled() ||
-		config.CalibrationRedfishPollEnabled() ||
-		config.CalibrationRedfishDelayEnabled() ||
-		config.CalibrationRaplDelayEnabled()
+		config.CalibrationRedfishPollEnabled()
 
 	if needCal {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
