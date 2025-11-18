@@ -65,19 +65,19 @@ def parse_args():
     parser.add_argument(
         "--runs",
         type=int,
-        default=5,
+        default=100,
         help="Number of repeated idle+burn runs (default: %(default)s)",
     )
     parser.add_argument(
         "--idle-seconds",
         type=float,
-        default=10.0,
+        default=15.0,
         help="Idle measurement duration before stress (default: %(default)s s)",
     )
     parser.add_argument(
         "--burn-seconds",
         type=float,
-        default=10.0,
+        default=15.0,
         help="Duration (in seconds) to stress the GPU (default: %(default)s)",
     )
     parser.add_argument(
