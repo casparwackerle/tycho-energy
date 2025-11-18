@@ -94,7 +94,7 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 	}
 
 	start := time.Now()
-	auto := config.CalibrationREdfishContinuousHeartbeatEnabled()
+	auto := config.CalibrationRedfishContinuousHeartbeatEnabled()
 
 	// Update the passive cache with a single pull at Tycho cadence.
 	c.client.PollOnce()

@@ -3,11 +3,13 @@ package calibration
 import (
 	"context"
 	"math"
+	"sort"
 	"time"
 
 	"github.com/casparwackerle/tycho-energy/internal/tycho/clock"
 	rfCollector "github.com/casparwackerle/tycho-energy/internal/tycho/collectors/redfish"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/ring"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"k8s.io/klog/v2"
 )
 
@@ -21,10 +23,20 @@ func LastRedfishReport() *PollProbeReport {
 	return redfishReport
 }
 
-// PollProbeRedfish: dynamic search for a conservative, stable polling period.
-// Strategy: exponential descent from a safe start → bracket (lastGood, firstBad) → bisection/refine → early stop.
-// Success criteria tolerate Redfish irregularity: we judge mainly by effective arrival rate and drop ratio.
-// Failure = high drop (>5%) OR effRate < 0.4 over the window (proxy for transport/timeouts/throttle).
+// PollProbeRedfish performs a simple hyperpoll-based calibration for Redfish.
+//
+// Strategy:
+//   - Poll Redfish at a fixed period `minMs` for `budgetSec` seconds.
+//   - Every time the newest Redfish sample's Mono changes, treat this as a NEW
+//     published BMC reading and record the arrival timestamp.
+//   - After the window, compute the median inter-arrival time between NEW samples.
+//   - Derive a final polling period:
+//   - If continuous heartbeat is enabled:
+//     poll = max(minMs, median_interval / 3)
+//     (poll faster than BMC publish, auto-heartbeat handles freshness).
+//   - Otherwise:
+//     poll = max(minMs, median_interval)
+//   - Populate a PollProbeReport for logging and return the chosen period.
 func PollProbeRedfish(ctx context.Context, mono *clock.Mono, budgetSec int, minMs int) (bestMS int, ok bool) {
 	// ---- Guards and setup ----------------------------------------------------
 	if budgetSec <= 0 {
@@ -32,250 +44,189 @@ func PollProbeRedfish(ctx context.Context, mono *clock.Mono, budgetSec int, minM
 		redfishReport = nil
 		return 0, false
 	}
-	if minMs < 500 {
-		minMs = 500 // hard safety floor, as requested
+	if minMs < 1 {
+		klog.V(2).Infof("phase=calibrate component=redfish step=start ok=false reason=bad_minMs minMs=%d", minMs)
+		redfishReport = nil
+		return 0, false
 	}
 
+	pollPer := time.Duration(minMs) * time.Millisecond
+	window := time.Duration(budgetSec) * time.Second
+	autoHeartbeat := config.CalibrationRedfishContinuousHeartbeatEnabled()
+
+	klog.V(2).Infof("phase=calibrate component=redfish step=start budgetSec=%d minMs=%d autoHeartbeat=%v",
+		budgetSec, minMs, autoHeartbeat)
+
 	bufMgr := ring.NewManager()
-	// Allocate a reasonably large buffer based on the MIN period to avoid churn.
 	rfSz := ring.SizeForWindow(budgetSec, minMs)
 	rfBuf := ring.GetOrCreateSync[ring.RedfishSample](bufMgr, "rf-cal", rfSz)
 	rf := rfCollector.New(rfCollector.Config{Buf: rfBuf, Mono: mono})
 
-	totalBudget := time.Duration(budgetSec) * time.Second
-	deadline := time.Now().Add(totalBudget)
-
-	// Default knobs (can be made configurable later via getters)
-	startMs := 3000
-	targetPrecMs := 50
-	windowSec := 45 // per-probe measurement window
-	coolOff := 15 * time.Second
-	minSamples := 6 // need a handful of arrivals to judge stability
-
-	if startMs < minMs {
-		startMs = minMs
-	}
-	if time.Until(deadline) < (time.Duration(windowSec) * time.Second) {
-		// If there's barely any time, try a single probe at startMs.
-		startMs = maxInt(startMs, minMs)
+	if rf == nil {
+		klog.V(2).Infof("phase=calibrate component=redfish step=start ok=false reason=no_redfish_client")
+		redfishReport = nil
+		return 0, false
 	}
 
-	path := make([]PollProbePoint, 0, 12)
+	// Report skeleton (Path will be filled with a single "hyperpoll" point).
 	report := &PollProbeReport{
 		Component:  "redfish",
 		MinGuardMs: minMs,
-		WindowSec:  windowSec,
-		Path:       nil, // fill later
+		WindowSec:  budgetSec,
 	}
-
-	// ---- Phase 1: Exponential descent (find firstBad) ------------------------
-	lastGood := startMs
-	firstBad := 0
-	p := startMs
-
-	for {
-		if time.Now().After(deadline) {
-			klog.V(2).Infof("phase=calibrate component=redfish step=descend ok=false reason=budget_exhausted")
-			break
-		}
-		pp := probeRedfishOnce(ctx, rf, rfBuf, p, windowSec)
-		path = append(path, pp)
-
-		klog.V(2).Infof("phase=calibrate component=redfish step=descend p=%dms samples=%d errs=%d effRate=%.2f ok=%v",
-			pp.Ms, pp.Samples, pp.Errs, pp.EffRate, pp.Ok)
-
-		if pp.Ok {
-			lastGood = p
-			// Try faster unless already at floor
-			if p == minMs {
-				break
-			}
-			next := int(math.Floor(float64(p) / 1.5))
-			if next < minMs {
-				next = minMs
-			}
-			// Early stop: if we are already close to floor and stable, accept.
-			okEarly, reason := EarlyStopSatisfied(path, targetPrecMs, minSamples)
-			if okEarly {
-				report.EarlyStop = true
-				report.Reason = reason
-				break
-			}
-			p = next
-			continue
-		}
-
-		// Bad at p → we’ve crossed the safe boundary; cool off and bracket.
-		time.Sleep(coolOff)
-		firstBad = p
-		break
-	}
-
-	// If never failed and reached minMs (or early stopped), accept lastGood (conservative).
-	if firstBad == 0 {
-		report.CandidateMs = lastGood
-		report.Path = path
-		if report.Reason == "" {
-			report.Reason = "no_failure_within_floor_or_early_stop"
-		}
-		redfishReport = report
-		klog.V(2).Infof("phase=calibrate component=redfish step=summary ok=true candidate=%dms early=%v reason=%s points=%d",
-			report.CandidateMs, report.EarlyStop, report.Reason, len(report.Path))
-		return report.CandidateMs, true
-	}
-
-	// ---- Phase 2: Bisection between [lastGood, firstBad] ---------------------
-	lo := lastGood
-	hi := firstBad
-
-	for {
-		// Stop if precision reached or budget out
-		if absInt(hi-lo) <= targetPrecMs || time.Now().Add(time.Duration(windowSec)*time.Second).After(deadline) {
-			break
-		}
-		mid := (lo + hi) / 2
-		// Snap to at least minMs
-		if mid < minMs {
-			mid = minMs
-		}
-
-		pp := probeRedfishOnce(ctx, rf, rfBuf, mid, windowSec)
-		path = append(path, pp)
-
-		klog.V(2).Infof("phase=calibrate component=redfish step=bisect p=%dms samples=%d errs=%d effRate=%.2f ok=%v",
-			pp.Ms, pp.Samples, pp.Errs, pp.EffRate, pp.Ok)
-
-		if pp.Ok {
-			lo = mid // we can go faster (smaller ms)
-			// Optional refine: check early stop around lo
-			okEarly, reason := EarlyStopSatisfied(path, targetPrecMs, minSamples)
-			if okEarly {
-				report.EarlyStop = true
-				report.Reason = reason
-				break
-			}
-		} else {
-			time.Sleep(coolOff)
-			hi = mid // too aggressive
-		}
-	}
-
-	// Conservative choice: take the larger ms that was OK (lo)
-	report.CandidateMs = maxInt(lo, minMs)
-	report.Path = path
-	if report.Reason == "" {
-		report.Reason = "bracketed_conservative_choice"
-	}
-	redfishReport = report
-
-	klog.V(2).Infof("phase=calibrate component=redfish step=summary ok=true candidate=%dms early=%v reason=%s points=%d",
-		report.CandidateMs, report.EarlyStop, report.Reason, len(report.Path))
-
-	return report.CandidateMs, true
-}
-
-// probeRedfishOnce runs a single measurement window at the requested polling period.
-// It judges success/failure using:
-//   - err_rate > 5%  => fail
-//   - effRate  < 0.4 => fail
-//
-// Jitter is tolerated; we only track whether new samples arrived and how often.
-func probeRedfishOnce(ctx context.Context, rf *rfCollector.Collector, rfBuf interface {
-	PeekNewestCopy(int) []ring.RedfishSample
-}, ms int, windowSec int) PollProbePoint {
-	per := time.Duration(ms) * time.Millisecond
-	window := time.Duration(windowSec) * time.Second
-
-	// We count "total polls" as BusyLoop ticks and "ok" when the buffer shows a NEW sample (mono changed).
-	total := 0
-	okCount := 0
-	errs := 0
-	times := make([]time.Time, 0, 64)
-
-	var lastMono uint64
-	var haveLast bool
-	var lastArrival time.Time
-	var longGapCount int
-
+	// ---- Hyperpoll loop: poll at minMs and record NEW samples ---------------
 	windowCtx, cancel := context.WithTimeout(ctx, window)
 	defer cancel()
 
-	BusyLoop(windowCtx, window, per, func(ts time.Time) {
-		total++
+	var (
+		totalTicks   int    // total polls
+		newSamples   int    // number of NEW BMC samples
+		lastMono     uint64 // last observed Mono
+		haveLastMono bool
+		lastArrival  time.Time
+		gaps         []time.Duration
+	)
+
+	BusyLoop(windowCtx, window, pollPer, func(ts time.Time) {
+		totalTicks++
 		rf.Collect(windowCtx, ts)
-		if s, got := PeekOne(rfBuf); got {
-			mono := s.SampleMeta.Mono
-			if !haveLast || mono != lastMono {
-				okCount++
-				times = append(times, ts)
-				// Track long gaps as "repeated timeouts/throttle" indicator
-				if !lastArrival.IsZero() {
-					gap := ts.Sub(lastArrival)
-					if gap >= 3*per {
-						longGapCount++
-					}
-				}
-				lastArrival = ts
-				lastMono = mono
-				haveLast = true
-				return
+
+		// Look at the newest Redfish sample (any chassis).
+		s, got := PeekOne(rfBuf)
+		if !got {
+			if klog.V(5).Enabled() {
+				klog.V(5).Infof(
+					"cal.redfish: tick=%d new=false (no sample in buffer)",
+					totalTicks,
+				)
+			}
+			return
+		}
+
+		monoVal := s.SampleMeta.Mono
+		chassis := s.ChassisID
+		seq := s.Seq
+		watts := s.PowerWatts
+		srcTime := s.SourceTime
+		var freshness time.Duration
+		if !srcTime.IsZero() {
+			freshness = ts.Sub(srcTime)
+		}
+
+		isNew := false
+		var gap time.Duration
+		if !haveLastMono || monoVal != lastMono {
+			// NEW BMC sample observed
+			isNew = true
+			if !lastArrival.IsZero() {
+				gap = ts.Sub(lastArrival)
+				gaps = append(gaps, gap)
+			}
+			lastArrival = ts
+			lastMono = monoVal
+			haveLastMono = true
+			newSamples++
+		}
+
+		if klog.V(5).Enabled() {
+			if isNew {
+				klog.V(5).Infof(
+					"cal.redfish: tick=%d new=true chassis=%s seq=%d watts=%.3f mono=%d freshness=%v gap=%v",
+					totalTicks, chassis, seq, watts, monoVal, freshness, gap,
+				)
+			} else {
+				// klog.V(5).Infof(
+				// 	"cal.redfish: tick=%d new=false chassis=%s seq=%d watts=%.3f mono=%d freshness=%v",
+				// 	totalTicks, chassis, seq, watts, monoVal, freshness,
+				// )
 			}
 		}
-		// If we didn’t see a new sample this tick, treat it as a "drop".
-		// (Collector may still be heartbeat-limited or BMC silent.)
-		errs++
 	})
 
-	// Effective arrival rate (0..1) relative to requested period
-	eff := EffectiveArrivalRate(ms, times)
-	drop := DropRatio(total, okCount)
+	if err := windowCtx.Err(); err != nil && err != context.DeadlineExceeded {
+		klog.V(2).Infof("phase=calibrate component=redfish step=hyperpoll ok=false reason=context_err err=%v",
+			err)
+		redfishReport = nil
+		return 0, false
+	}
+
+	// ---- Derive publish interval from inter-arrival gaps --------------------
+	if len(gaps) < 1 || newSamples < 2 {
+		klog.V(2).Infof("phase=calibrate component=redfish step=hyperpoll ok=false reason=insufficient_samples totalTicks=%d newSamples=%d",
+			totalTicks, newSamples)
+		redfishReport = nil
+		return 0, false
+	}
+
+	medianGap := medianDuration(gaps)
+	if medianGap <= 0 {
+		klog.V(2).Infof("phase=calibrate component=redfish step=hyperpoll ok=false reason=nonpositive_median totalTicks=%d newSamples=%d",
+			totalTicks, newSamples)
+		redfishReport = nil
+		return 0, false
+	}
+
+	observedMs := int(medianGap.Milliseconds())
+	if observedMs < minMs {
+		observedMs = minMs
+	}
+
+	var chosenMs int
+	if autoHeartbeat {
+		// Poll faster than publish interval; let heartbeat handle freshness.
+		chosenMs = observedMs / 2
+		if chosenMs < minMs {
+			chosenMs = minMs
+		}
+	} else {
+		// Poll roughly at the publish interval (but never below guard).
+		chosenMs = observedMs
+	}
+
+	// Simple "effRate" notion for the report: fraction of ticks that saw a NEW sample.
+	effRate := float64(newSamples) / float64(totalTicks)
+	if totalTicks == 0 {
+		effRate = 0
+	}
 
 	pp := PollProbePoint{
-		Ms:      ms,
-		Ok:      true, // assume ok, then demote on failure rules
-		Samples: total,
-		Errs:    errs,
-		EffRate: eff,
-		Notes:   "",
+		Ms:      minMs,
+		Ok:      true,
+		Samples: totalTicks,
+		Errs:    totalTicks - newSamples, // "non-new" ticks as a rough drop proxy
+		EffRate: effRate,
+		Notes:   "hyperpoll",
 	}
 
-	// Failure rules (Redfish-friendly)
-	if drop > 0.05 {
-		pp.Ok = false
-		pp.Notes = "high_drop"
-	}
-	if eff < 0.40 {
-		pp.Ok = false
-		if pp.Notes == "" {
-			pp.Notes = "low_eff_rate"
-		} else {
-			pp.Notes += ",low_eff_rate"
-		}
-	}
-	if longGapCount >= 2 {
-		// Proxy for repeated timeouts/429 or throttling (cannot see HTTP codes directly here)
-		pp.Ok = false
-		if pp.Notes == "" {
-			pp.Notes = "repeated_long_gaps"
-		} else {
-			pp.Notes += ",repeated_long_gaps"
-		}
-	}
+	report.CandidateMs = chosenMs
+	report.Path = []PollProbePoint{pp}
+	report.EarlyStop = false
+	report.Reason = "hyperpoll_median_publish_interval"
 
-	// Final structured log for this probe
-	klog.V(2).Infof("phase=calibrate component=redfish step=probe p=%dms total=%d okTicks=%d drops=%d drop=%.2f effRate=%.2f longGaps=%d ok=%v notes=%s",
-		ms, total, okCount, errs, drop, eff, longGapCount, pp.Ok, pp.Notes)
+	redfishReport = report
 
-	return pp
+	klog.V(2).Infof(
+		"phase=calibrate component=redfish step=summary ok=true medianGap=%v observedMs=%d chosenMs=%d autoHeartbeat=%v totalTicks=%d newSamples=%d effRate=%.2f",
+		medianGap, observedMs, chosenMs, autoHeartbeat, totalTicks, newSamples, effRate,
+	)
+
+	return chosenMs, true
 }
 
-// --- small ints utilities (keep local to this file if you prefer) ---
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
+// medianDuration computes the median of a slice of time.Duration values.
+func medianDuration(xs []time.Duration) time.Duration {
+	if len(xs) == 0 {
+		return 0
 	}
-	return b
+	tmp := make([]time.Duration, len(xs))
+	copy(tmp, xs)
+	sort.Slice(tmp, func(i, j int) bool { return tmp[i] < tmp[j] })
+	n := len(tmp)
+	if n%2 == 1 {
+		return tmp[n/2]
+	}
+	// even -> average middle two
+	return (tmp[n/2-1] + tmp[n/2]) / 2
 }
 
 // Returns (p5, true) on success, or (0, false) if there are no usable samples
