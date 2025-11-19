@@ -86,17 +86,17 @@ extraEnvVars:
   TYCHO_REDFISH_HEARTBEAT_MAX_GAP_MS: "3000" # Heartbeat timeout (milliseconds). Set to 150% of the known BMC publishing frequency, if known. Otherwise set to 15000 as a safe, conservative default.
 
   # CalibrationRaplPollMinMs
-  TYCHO_CALIBRATION_IDLE_BUDGET_SEC: "10"                       # total time allowed for initial idle check
-  TYCHO_CALIBRATION_RAPL_IDLE_ENABLE: "false"                    # measure RAPL idle baseline
+  #TYCHO_CALIBRATION_IDLE_BUDGET_SEC: "10"                       # total time allowed for initial idle check
+  #TYCHO_CALIBRATION_RAPL_IDLE_ENABLE: "false"                    # measure RAPL idle baseline
   TYCHO_CALIBRATION_REDFISH_CONTINUOUS_HEARTBEAT_ENABLE: "true" # keep Redfish connection alive during calibration
   TYCHO_CALIBRATION_REDFISH_POLL_ENABLE: "true"                 # enable Redfish poll-rate calibration
   TYCHO_CALIBRATION_REDFISH_POLL_BUDGET_SEC: "60"               # max duration for Redfish poll-rate probe
-  TYCHO_CALIBRATION_REDFISH_IDLE_ENABLE: "false"                 # measure Redfish idle baseline
+  #TYCHO_CALIBRATION_REDFISH_IDLE_ENABLE: "false"                 # measure Redfish idle baseline
   TYCHO_CALIBRATION_GPU_POLL_ENABLE: "false"                     # enable GPU poll-rate calibration
   TYCHO_CALIBRATION_GPU_POLL_BUDGET_SEC: "30"                   # max duration for GPU poll-rate probe
-  TYCHO_CALIBRATION_GPU_DELAY_ENABLE: "false"                    # enable GPU delay measurement
-  TYCHO_CALIBRATION_GPU_DELAY_BUDGET_SEC: "30"                  # max duration for GPU delay test
-  TYCHO_CALIBRATION_GPU_IDLE_ENABLE: "true"                     # measure GPU idle baseline
+  #TYCHO_CALIBRATION_GPU_DELAY_ENABLE: "false"                    # enable GPU delay measurement
+  #TYCHO_CALIBRATION_GPU_DELAY_BUDGET_SEC: "30"                  # max duration for GPU delay test
+  #TYCHO_CALIBRATION_GPU_IDLE_ENABLE: "true"                     # measure GPU idle baseline
 
   TYCHO_COLLECTOR_GPU_PREFER_DCGM: "false"
   TYCHO_COLLECTOR_GPU_ENABLE_PERPROCESS: "true"

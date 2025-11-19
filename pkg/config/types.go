@@ -122,20 +122,20 @@ const (
 
 	// Tycho calibration config
 
-	defaultTychoCalibrationInitIdleBudgetSec                 = 10 // in sec: Duration of (general) idle testing
-	defaultTychoCalibrationInitRaplPollMinMs                 = 50 // in ms: Poll intervals cannot be shorter
-	defaultTychoCalibrationInitRaplIdleEnabled               = false
+	//defaultTychoCalibrationInitIdleBudgetSec                 = 10 // in sec: Duration of (general) idle testing
+	defaultTychoCalibrationInitRaplPollMinMs = 50 // in ms: Poll intervals cannot be shorter
+	//defaultTychoCalibrationInitRaplIdleEnabled               = false
 	defaultTychoCalibrationRedfishContinuousHeartbeatEnabled = true // continuously adjusts Redfish Heartbeat
 	defaultTychoCalibrationInitRedfishPollEnabled            = false
 	defaultTychoCalibrationInitRedfishPollBudgetSec          = 60  //in sec: Duration of Poll testing
 	defaultTychoCalibrationInitRedfishPollMinMs              = 500 // in ms: Poll intervals cannot be shorter
-	defaultTychoCalibrationInitRedfishIdleEnabled            = false
-	defaultTychoCalibrationInitGpuPollEnabled                = false
-	defaultTychoCalibrationInitGpuPollBudgetSec              = 30 //in sec: Duration of Poll testing
-	defaultTychoCalibrationInitGpuPollMinMs                  = 50 // in ms: Poll intervals cannot be shorter
-	defaultTychoCalibrationInitGpuDelayEnabled               = false
-	defaultTychoCalibrationInitGpuDelayBudgetSec             = 30 // in sec: Duration of Delay Testing
-	defaultTychoCalibrationInitGpuIdleEnabled                = false
+	//defaultTychoCalibrationInitRedfishIdleEnabled            = false
+	defaultTychoCalibrationInitGpuPollEnabled   = false
+	defaultTychoCalibrationInitGpuPollBudgetSec = 30 //in sec: Duration of Poll testing
+	defaultTychoCalibrationInitGpuPollMinMs     = 50 // in ms: Poll intervals cannot be shorter
+	//defaultTychoCalibrationInitGpuDelayEnabled               = false
+	//defaultTychoCalibrationInitGpuDelayBudgetSec             = 30 // in sec: Duration of Delay Testing
+	//defaultTychoCalibrationInitGpuIdleEnabled = false
 
 	// Tycho Analysis Config
 	defaultTychoTrigger            = "timer" // "redfish" | "timer"
