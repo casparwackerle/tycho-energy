@@ -213,9 +213,7 @@ func main() {
 	mono := clock.NewMono(clock.DefaultSource, time.Duration(config.TimebaseQuantumMs())*time.Millisecond)
 
 	// calibrate if necessary
-	needCal := config.CalibrationGpuPollEnabled() ||
-		config.CalibrationGpuDelayEnabled() ||
-		config.CalibrationRedfishPollEnabled()
+	needCal := config.CalibrationGpuPollEnabled() || config.CalibrationRedfishPollEnabled()
 
 	if needCal {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -229,7 +227,6 @@ func main() {
 			calibration.Apply(res) // logs details at V(5) and updates config
 			klog.V(2).Info("TYCHO-CAL: calibration applied")
 		}
-
 		config.ValidateTychoQuick()
 		config.NormalizeTycho()
 	}
@@ -283,9 +280,8 @@ func main() {
 	go func() { _ = eng.Start(tycho_ctx) }()
 	defer tycho_cancel()
 
-	// Force one idle calibration after engine is running
+	// Run one cumulative-energy validation after the engine is warm
 	go func() {
-		// Warm-up so GPU/BPF/RAPL rings have enough data
 		warmup := time.Duration(config.BufferWindowSec()) * time.Second
 		time.Sleep(warmup)
 
@@ -325,15 +321,6 @@ func main() {
 				klog.V(2).Infof("TYCHO-CAL: cumulative energy validation skipped (insufficient GPU data; warmup≈%.0fs)", warmup.Seconds())
 			}
 		}
-
-		// --- Idle calibration (existing) ---
-		resIdle, err := calibration.RunIdleCalibration(ctx)
-		if err != nil {
-			klog.Errorf("TYCHO-CAL: initial idle calibration error: %v", err)
-			return
-		}
-		calibration.Apply(resIdle)
-		klog.V(2).Infof("TYCHO-CAL: initial idle calibration applied: status=%v notes=%v", resIdle.Status, resIdle.Notes)
 	}()
 
 	//--------------------------------------------------------------------------------
