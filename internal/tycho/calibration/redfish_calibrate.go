@@ -2,7 +2,6 @@ package calibration
 
 import (
 	"context"
-	"math"
 	"sort"
 	"time"
 
@@ -32,7 +31,7 @@ func LastRedfishReport() *PollProbeReport {
 //   - After the window, compute the median inter-arrival time between NEW samples.
 //   - Derive a final polling period:
 //   - If continuous heartbeat is enabled:
-//     poll = max(minMs, median_interval / 3)
+//     poll = max(minMs, median_interval / 2)
 //     (poll faster than BMC publish, auto-heartbeat handles freshness).
 //   - Otherwise:
 //     poll = max(minMs, median_interval)
@@ -227,54 +226,4 @@ func medianDuration(xs []time.Duration) time.Duration {
 	}
 	// even -> average middle two
 	return (tmp[n/2-1] + tmp[n/2]) / 2
-}
-
-// Returns (p5, true) on success, or (0, false) if there are no usable samples
-// or the context is canceled.
-func IdleBaselineRedfishFromSnap(
-	ctx context.Context,
-	mono *clock.Mono, // signature parity
-	snap []ring.RedfishSample,
-) (float64, bool) {
-	if len(snap) == 0 {
-		return 0, false
-	}
-
-	// (Optional) Check effective time span
-	// If SampleMeta.Mono exists and you want a minimal span, enforce it here.
-	// Comment out if you don't want a span guard.
-	firstMono := snap[0].SampleMeta.Mono
-	lastMono := snap[0].SampleMeta.Mono
-
-	values := make([]float64, 0, len(snap))
-	for i := 0; i < len(snap); i++ {
-		select {
-		case <-ctx.Done():
-			return 0, false
-		default:
-		}
-		s := snap[i]
-		if s.SampleMeta.Mono < firstMono {
-			firstMono = s.SampleMeta.Mono
-		}
-		if s.SampleMeta.Mono > lastMono {
-			lastMono = s.SampleMeta.Mono
-		}
-		// Accept zeros (idle), skip invalid
-		if s.PowerWatts < 0 || math.IsNaN(s.PowerWatts) || math.IsInf(s.PowerWatts, 0) {
-			continue
-		}
-		values = append(values, s.PowerWatts)
-	}
-
-	if len(values) == 0 {
-		return 0, false
-	}
-
-	// Outlier-robust idle baseline
-	p5, _, n := DeSpikeP5(values)
-	if n == 0 {
-		return 0, false
-	}
-	return p5, true
 }
