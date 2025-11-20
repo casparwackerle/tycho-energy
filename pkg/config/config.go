@@ -117,6 +117,10 @@ type TychoTimingConfig struct {
 	RedfishPollMs         int // note: Redfish.RedfishProbeIntervalInSeconds still exists; this overrides if >0
 	RedfishDelayMs        int
 	RedfishHeartbeatMs    int
+	MetaEnginePollSec     int
+	ProcessPollSec        int
+	KubeletPollSec        int
+	CAdvisorPollSec       int
 	//RedfishAutoHeartbeat  bool
 }
 
@@ -145,10 +149,11 @@ type TychoAnalysisConfig struct {
 }
 
 type TychoCollectorConfig struct {
-	EnableRapl    bool
-	EnableBpf     bool // eBPF/software counters collection gate (separate from Kepler.ExposeBPFMetrics)
-	EnableGpu     bool // separate from Kepler.EnabledGPU to distinguish model vs collector
-	EnableRedfish bool
+	EnableRapl     bool
+	EnableBpf      bool // eBPF/software counters collection gate (separate from Kepler.ExposeBPFMetrics)
+	EnableGpu      bool // separate from Kepler.EnabledGPU to distinguish model vs collector
+	EnableRedfish  bool
+	EnableCAdvisor bool
 	// RAPL specifics
 	PowercapBasePath string
 	RaplDomains      string // comma list: package,core,dram,psys
@@ -273,6 +278,10 @@ func getTychoTimingConfig() TychoTimingConfig {
 		RedfishPollMs:         getIntConfig("TYCHO_REDFISH_POLL_MS", defaultTychoRedfishPollMs),
 		RedfishDelayMs:        getIntConfig("TYCHO_REDFISH_DELAY_MS", defaultTychoRedfishDelayMs),
 		RedfishHeartbeatMs:    getIntConfig("TYCHO_REDFISH_HEARTBEAT_MAX_GAP_MS", defaultTychoRedfishHeartbeatMs),
+		ProcessPollSec:        getIntConfig("TYCHO_PROCESS_POLL_SEC", defaultTychoProcessIntervalSec),
+		KubeletPollSec:        getIntConfig("TYCHO_KUBELETT_POLL_SEC", defaultTychoKubeletIntervalSec),
+		CAdvisorPollSec:       getIntConfig("TYCHO_CADVISOR_POLL_SEC", defaultTychoCAdvisorIntervalSec),
+		MetaEnginePollSec:     getIntConfig("TYCHO_METAENGINE_POLL_SEC", defaultTychoMetaEngineIntervalSec),
 	}
 }
 
@@ -309,6 +318,7 @@ func getTychoCollectorConfig() TychoCollectorConfig {
 		EnableBpf:          getBoolConfig("TYCHO_COLLECTOR_ENABLE_BPF", defaultTychoEnableBpf),
 		EnableGpu:          getBoolConfig("TYCHO_COLLECTOR_ENABLE_GPU", defaultTychoEnableGpu),
 		EnableRedfish:      getBoolConfig("TYCHO_COLLECTOR_ENABLE_REDFISH", defaultTychoEnableRedfish),
+		EnableCAdvisor:     getBoolConfig("TYCHO_COLLECTOR_ENABLE_CADVISOR", defaultTychoEnableCAdvisor),
 		PowercapBasePath:   getConfig("TYCHO_COLLECTOR_POWERCAP_BASE_PATH", defaultTychoPowercapBasePath),
 		RaplDomains:        getConfig("TYCHO_COLLECTOR_RAPL_DOMAINS", defaultTychoRaplDomains),
 		PreferDCGM:         getBoolConfig("TYCHO_COLLECTOR_GPU_PREFER_DCGM", defaultTychoGPUPreferDCGM),
@@ -1030,6 +1040,26 @@ func SetRedfishDelayMs(ms int) {
 
 func RedfishHeartbeatMs() int {
 	return instance.TychoTiming.RedfishHeartbeatMs
+}
+
+func MetadataEnginePeriodSec() int {
+	return instance.TychoTiming.MetaEnginePollSec
+}
+
+func MetadataProcessIntervalSec() int {
+	return instance.TychoTiming.ProcessPollSec
+}
+
+func MetadataKubeletIntervalSec() int {
+	return instance.TychoTiming.KubeletPollSec
+}
+
+func MetadataCADvisorIntervalSec() int {
+	return instance.TychoTiming.CAdvisorPollSec
+}
+
+func EnableMetadataCADvisor() bool {
+	return instance.TychoCollector.EnableCAdvisor
 }
 
 // func CalibrationIdleBudgetSec() int {

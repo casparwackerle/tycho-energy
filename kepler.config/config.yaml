@@ -69,6 +69,7 @@ extraEnvVars:
   TYCHO_COLLECTOR_ENABLE_RAPL: "false"
   TYCHO_COLLECTOR_ENABLE_GPU: "false"
   TYCHO_COLLECTOR_ENABLE_REDFISH: "true"
+  TYCHO_COLLECTOR_ENABLE_CADVISOR: "false"
 
   # Measurement Periods (milliseconds)
   TYCHO_BPF_POLL_MS: "50"
@@ -76,6 +77,10 @@ extraEnvVars:
   TYCHO_GPU_POLL_MS: "500"
   TYCHO_GPU_PHASE_AWARE_SAMPLING: "true" # only enable if TYCHO_CALIBRATION_GPU_POLL_ENABLE=true, or you accurately determined your card's update inteval in TYCHO_GPU_POLL_MS
   TYCHO_REDFISH_POLL_MS: "8000" # Polling cadence (milliseconds). To catch every BMC publish, set this LOWER than the BMC’s actual cadence. If unknown, 1000 ms is a safe, low-overhead default for many servers.
+  TYCHO_PROCESS_POLL_SEC: "5"
+  TYCHO_KUBELETT_POLL_SEC: "10"
+  TYCHO_CADVISOR_POLL_SEC: "15"
+  TYCHO_METAENGINE_POLL_SEC: "1"
 
   # Optional timing extras: Metric delay (i.e. the delay between a workload change and it's representation in the metric). Insert if known, otherwise keep at 0.
   TYCHO_TIMEBASE_QUANTUM_MS: "1"
