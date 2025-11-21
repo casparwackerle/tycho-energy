@@ -49,7 +49,7 @@ resources: {}
 
 # -- Extra environment variables
 extraEnvVars:
-  KEPLER_LOG_LEVEL: "5"           #reduce log level to 5 for finished builds
+  KEPLER_LOG_LEVEL: "2"           #reduce log level to 5 for finished builds
   # METRIC_PATH: "/metrics"
   # BIND_ADDRESS: "0.0.0.0:9102"
   ENABLE_GPU: "false"
@@ -69,7 +69,6 @@ extraEnvVars:
   TYCHO_COLLECTOR_ENABLE_RAPL: "false"
   TYCHO_COLLECTOR_ENABLE_GPU: "false"
   TYCHO_COLLECTOR_ENABLE_REDFISH: "true"
-  TYCHO_COLLECTOR_ENABLE_CADVISOR: "false"
 
   # Measurement Periods (milliseconds)
   TYCHO_BPF_POLL_MS: "50"
@@ -79,7 +78,6 @@ extraEnvVars:
   TYCHO_REDFISH_POLL_MS: "8000" # Polling cadence (milliseconds). To catch every BMC publish, set this LOWER than the BMC’s actual cadence. If unknown, 1000 ms is a safe, low-overhead default for many servers.
   TYCHO_PROCESS_POLL_SEC: "5"
   TYCHO_KUBELETT_POLL_SEC: "10"
-  TYCHO_CADVISOR_POLL_SEC: "15"
   TYCHO_METAENGINE_POLL_SEC: "1"
 
   # Optional timing extras: Metric delay (i.e. the delay between a workload change and it's representation in the metric). Insert if known, otherwise keep at 0.

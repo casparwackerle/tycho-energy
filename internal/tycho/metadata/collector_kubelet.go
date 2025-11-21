@@ -30,15 +30,12 @@ func newKubeletCollector(cfg Config, store *Store) *kubeletCollector {
 
 // regexReplaceContainerIDPrefix removes arbitrary runtime prefixes like
 // "docker://", "containerd://", "cri-o://" from kubelet container IDs.
-var regexReplaceContainerIDPrefix = regexp.MustCompile(`.*//`)
+var containerIDPrefix = regexp.MustCompile(`^[^:]+://`)
 
 // normalizeContainerID standardizes container IDs as used in Tycho by
 // stripping runtime-specific prefixes. Empty input results in empty output.
 func normalizeContainerID(raw string) string {
-	if raw == "" {
-		return ""
-	}
-	return regexReplaceContainerIDPrefix.ReplaceAllString(raw, "")
+	return containerIDPrefix.ReplaceAllString(raw, "")
 }
 
 // mapPodPhase converts a corev1.PodPhase into Tycho's PodPhase type.

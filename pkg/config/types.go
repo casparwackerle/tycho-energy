@@ -121,7 +121,6 @@ const (
 	defaultTychoRedfishHeartbeatMs    = 15000 //realistically possible redish update period, often 15-20 seconds
 	defaultTychoProcessIntervalSec    = 5
 	defaultTychoKubeletIntervalSec    = 10
-	defaultTychoCAdvisorIntervalSec   = 15
 	defaultTychoMetaEngineIntervalSec = 1
 
 	// Tycho calibration config
@@ -152,7 +151,6 @@ const (
 	defaultTychoEnableBpf             = true
 	defaultTychoEnableGpu             = true
 	defaultTychoEnableRedfish         = true
-	defaultTychoEnableCAdvisor        = true
 	defaultTychoPowercapBasePath      = "/sys/class/powercap"
 	defaultTychoRaplDomains           = "package,core,dram,uncore"
 	defaultTychoGPUPreferDCGM         = true

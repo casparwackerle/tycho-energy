@@ -93,8 +93,8 @@ func (pc *processCollector) Collect(ctx context.Context, ts time.Time, mono uint
 
 		meta := &ProcMeta{
 			PID:          pid,
-			StartJiffies: startTimeTicks, // actually kernel ticks; see comment in ProcMeta
-			CgroupID:     0,              //correlated directly with eBPF PID to cgroupID matching
+			StartJiffies: startTimeTicks, // start_time from /proc/<pid>/stat in kernel clock ticks (jiffies, per boot).
+			CgroupID:     0,              // correlated directly with eBPF PID to cgroupID matching
 			ContainerID:  containerID,
 			Command:      command,
 			LastSeenMono: mono,

@@ -15,22 +15,16 @@ type MonoSource interface {
 	From(ts time.Time) uint64
 }
 
-// Controller orchestrates metadata collection from various sources
-// (process/cgroup, kubelet, cAdvisor) and manages the Store lifecycle.
-//
-// It is intended to be called periodically by Tycho's global engine,
-// using wall-clock timestamps from the aligned tickers.
+// config
 type Config struct {
-	Mono             MonoSource
-	MaxAge           time.Duration
-	ProcessInterval  time.Duration
-	KubeletInterval  time.Duration
-	EnableCADvisor   bool
-	CAdvisorInterval time.Duration
+	Mono            MonoSource
+	MaxAge          time.Duration
+	ProcessInterval time.Duration
+	KubeletInterval time.Duration
 }
 
 // Controller orchestrates metadata collection from various sources
-// (process/cgroup, kubelet, cAdvisor) and manages the Store lifecycle.
+// (process/cgroup, kubelet) and manages the Store lifecycle.
 //
 // It is intended to be called periodically by Tycho's global engine,
 // using wall-clock timestamps from the aligned tickers.
@@ -38,14 +32,13 @@ type Controller struct {
 	store *Store
 	cfg   Config
 
-	processCollector  *processCollector
-	kubeletCollector  *kubeletCollector
-	cadvisorCollector *cadvisorCollector
+	processCollector *processCollector
+	kubeletCollector *kubeletCollector
 
 	// Last execution times in wall-clock time.
-	lastProcessScan  time.Time
-	lastKubeletPoll  time.Time
-	lastCAdvisorPoll time.Time
+	lastProcessScan time.Time
+	lastKubeletPoll time.Time
+	lastGC          time.Time
 }
 
 // New constructs a metadata Controller using Tycho's global configuration.
@@ -55,24 +48,20 @@ type Controller struct {
 //   - BufferWindowSec() float64
 //   - MetadataProcessIntervalSec() uint64
 //   - MetadataKubeletIntervalSec() uint64
-//   - MetadataCADvisorIntervalSec() uint64
-//   - EnableMetadataCADvisor() bool
 func New(mono MonoSource) *Controller {
-	winSec := cfg.BufferWindowSec() // already exists; used as MaxAge
+	winSec := cfg.BufferWindowSec() // float64 seconds
 
-	cfg := Config{
-		Mono:             mono,
-		MaxAge:           time.Duration(winSec * int(time.Second)),
-		ProcessInterval:  time.Duration(cfg.MetadataProcessIntervalSec()) * time.Second,
-		KubeletInterval:  time.Duration(cfg.MetadataKubeletIntervalSec()) * time.Second,
-		EnableCADvisor:   cfg.EnableMetadataCADvisor(),
-		CAdvisorInterval: time.Duration(cfg.MetadataCADvisorIntervalSec()) * time.Second,
+	metaCfg := Config{
+		Mono:            mono,
+		MaxAge:          time.Duration(winSec) * time.Second,
+		ProcessInterval: time.Duration(cfg.MetadataProcessIntervalSec()) * time.Second,
+		KubeletInterval: time.Duration(cfg.MetadataKubeletIntervalSec()) * time.Second,
 	}
 
-	klog.Infof("metadata.New: MaxAge=%s, processInterval=%s, kubeletInterval=%s, enableCADvisor=%v, cadvisorInterval=%s",
-		cfg.MaxAge, cfg.ProcessInterval, cfg.KubeletInterval, cfg.EnableCADvisor, cfg.CAdvisorInterval)
+	klog.Infof("metadata.New: MaxAge=%s, processInterval=%s, kubeletInterval=%s",
+		metaCfg.MaxAge, metaCfg.ProcessInterval, metaCfg.KubeletInterval)
 
-	return NewController(cfg)
+	return NewController(metaCfg)
 }
 
 // NewController constructs a new metadata controller and its underlying store.
@@ -83,15 +72,9 @@ func NewController(cfg Config) *Controller {
 		store: store,
 		cfg:   cfg,
 		// Collectors are initialized with references to the store.
-		processCollector:  newProcessCollector(cfg, store),
-		kubeletCollector:  newKubeletCollector(cfg, store),
-		cadvisorCollector: nil,
+		processCollector: newProcessCollector(cfg, store),
+		kubeletCollector: newKubeletCollector(cfg, store),
 	}
-
-	if cfg.EnableCADvisor {
-		ctrl.cadvisorCollector = newCADvisorCollector(cfg, store)
-	}
-
 	return ctrl
 }
 
@@ -111,14 +94,14 @@ func (c *Controller) Name() string {
 //
 // The engine.Manager is expected to call this periodically, passing the
 // aligned wall-clock timestamp used for all collectors. The controller
-// itself handles sub-scheduling of process/kubelet/cAdvisor work.
+// itself handles sub-scheduling of process/kubelet work.
 func (c *Controller) Collect(ctx context.Context, ts time.Time) {
 	var mono uint64
 	if c.cfg.Mono != nil {
 		mono = c.cfg.Mono.From(ts)
 	}
 
-	klog.V(3).Infof("[metadata] tick ts=%s mono=%d", ts.Format(time.RFC3339Nano), mono)
+	klog.V(4).Infof("[metadata] tick ts=%s mono=%d", ts.Format(time.RFC3339Nano), mono)
 
 	// Process metadata
 	if c.shouldRun(ts, c.lastProcessScan, c.cfg.ProcessInterval) {
@@ -134,12 +117,18 @@ func (c *Controller) Collect(ctx context.Context, ts time.Time) {
 		c.kubeletCollector.Collect(ctx, ts, mono)
 	}
 
-	// Simple garbage collection cadence: tie to process interval for now.
-	// We reuse lastCAdvisorPoll as "last GC" timestamp for simplicity.
-	if c.shouldRun(ts, c.lastCAdvisorPoll, c.cfg.ProcessInterval) {
-		klog.V(5).Infof("[metadata] Garbage Collection scheduled at ts=%s mono=%d", ts.Format(time.RFC3339Nano), mono)
-		c.lastCAdvisorPoll = ts
-		c.store.GC(ts)
+	// GC cadence: tied to process interval
+	if c.shouldRun(ts, c.lastGC, c.cfg.ProcessInterval) {
+		klog.V(6).Infof("[metadata] Garbage Collection scheduled at ts=%s mono=%d",
+			ts.Format(time.RFC3339Nano), mono)
+		c.lastGC = ts
+		droppedProcs, droppedContainers, droppedPods := c.store.GC(ts)
+		if klog.V(6).Enabled() && (droppedProcs+droppedContainers+droppedPods) > 0 {
+			klog.V(6).Infof(
+				"[metadata] Garbage Collection removed procs=%d containers=%d pods=%d",
+				droppedProcs, droppedContainers, droppedPods,
+			)
+		}
 	}
 }
 

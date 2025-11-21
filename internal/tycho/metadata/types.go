@@ -27,25 +27,6 @@ const (
 	ContainerStateWaiting    ContainerState = "Waiting"
 )
 
-// ContextContainerStats holds optional, slowly changing resource context
-// from sources like cAdvisor. It is not required for attribution logic
-// but can be useful for analysis and debugging.
-type ContextContainerStats struct {
-	// CPU throttling info (best-effort).
-	CPUThrottledPeriods uint64
-	CPUThrottledTimeNS  uint64
-
-	// Memory usage and limit (bytes); best-effort.
-	MemoryUsageBytes uint64
-	MemoryLimitBytes uint64
-
-	// Optional IO/network summaries.
-	IOReadBytes  uint64
-	IOWriteBytes uint64
-	NetRxBytes   uint64
-	NetTxBytes   uint64
-}
-
 // PodPhase mirrors Kubernetes pod phase semantics at a coarse level.
 type PodPhase string
 
@@ -88,9 +69,6 @@ type ContainerMeta struct {
 	QoSClass    string
 	Labels      map[string]string
 	Annotations map[string]string
-
-	// Optional cAdvisor-enriched metrics.
-	CAdvisor ContextContainerStats
 }
 
 // PodMeta holds pod-level metadata as obtained from kubelet/Kubernetes.
