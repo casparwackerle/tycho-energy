@@ -131,7 +131,7 @@ func (c *Controller) Collect(ctx context.Context, ts time.Time) {
 	if c.cfg.KubeletInterval > 0 && c.shouldRun(ts, c.lastKubeletPoll, c.cfg.KubeletInterval) {
 		klog.V(4).Infof("[metadata] kubeletCollector scheduled at ts=%s mono=%d", ts.Format(time.RFC3339Nano), mono)
 		c.lastKubeletPoll = ts
-		// TODO: c.kubeletCollector.Collect(ctx, ts, mono)
+		c.kubeletCollector.Collect(ctx, ts, mono)
 	}
 
 	// Simple garbage collection cadence: tie to process interval for now.

@@ -46,29 +46,6 @@ type ContextContainerStats struct {
 	NetTxBytes   uint64
 }
 
-// ContainerMeta holds container-level metadata as derived from kubelet and cgroup information.
-type ContainerMeta struct {
-	ContainerID   string
-	ContainerName string
-
-	PodUID    string
-	PodName   string
-	Namespace string
-
-	State ContainerState
-
-	LastSeenMono uint64
-	LastSeenWall time.Time
-
-	// Optional context fields; fill or ignore as needed.
-	QoSClass    string
-	Labels      map[string]string
-	Annotations map[string]string
-
-	// Optional cAdvisor-enriched metrics.
-	CAdvisor ContextContainerStats
-}
-
 // PodPhase mirrors Kubernetes pod phase semantics at a coarse level.
 type PodPhase string
 
@@ -80,6 +57,42 @@ const (
 	PodPhaseFailed    PodPhase = "Failed"
 )
 
+// ContainerMeta holds container-level metadata as derived from kubelet and cgroup information.
+type ContainerMeta struct {
+	ContainerID   string
+	ContainerName string
+
+	PodUID    string
+	PodName   string
+	Namespace string
+
+	// Coarse pod phase this container belongs to, as seen during the last kubelet scan.
+	Phase PodPhase
+
+	// Lifecycle state of this container (Running / Waiting / Terminated / Unknown).
+	State ContainerState
+
+	// ExitCode is set when the container is in a terminated state and kubelet
+	// reported a numeric exit code. Nil means "no code reported / not terminated".
+	ExitCode *int
+
+	LastSeenMono uint64
+	LastSeenWall time.Time
+
+	RequestsCPUMillis int64
+	RequestsMemBytes  int64
+	LimitsCPUMillis   int64
+	LimitsMemBytes    int64
+
+	// Optional context fields; fill or ignore as needed.
+	QoSClass    string
+	Labels      map[string]string
+	Annotations map[string]string
+
+	// Optional cAdvisor-enriched metrics.
+	CAdvisor ContextContainerStats
+}
+
 // PodMeta holds pod-level metadata as obtained from kubelet/Kubernetes.
 type PodMeta struct {
 	PodUID    string
@@ -90,8 +103,16 @@ type PodMeta struct {
 	NodeName string
 	QoSClass string
 
+	OwnerKind string
+	OwnerName string
+
 	LastSeenMono uint64
 	LastSeenWall time.Time
+
+	RequestsCPUMillis int64
+	RequestsMemBytes  int64
+	LimitsCPUMillis   int64
+	LimitsMemBytes    int64
 
 	// Optional: selected labels.
 	Labels map[string]string
