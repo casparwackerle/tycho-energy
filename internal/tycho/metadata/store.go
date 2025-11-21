@@ -12,7 +12,7 @@ type Store struct {
 	mu sync.RWMutex
 
 	// Process-level metadata keyed by PID.
-	// StartTimeNS inside ProcMeta can be used to guard against PID reuse if needed.
+	// StartJiffies inside ProcMeta can be used to guard against PID reuse if needed.
 	procs map[uint64]*ProcMeta
 
 	// ContainerID → ContainerMeta

@@ -49,7 +49,7 @@ resources: {}
 
 # -- Extra environment variables
 extraEnvVars:
-  KEPLER_LOG_LEVEL: "2"           #reduce log level to 5 for finished builds
+  KEPLER_LOG_LEVEL: "5"           #reduce log level to 5 for finished builds
   # METRIC_PATH: "/metrics"
   # BIND_ADDRESS: "0.0.0.0:9102"
   ENABLE_GPU: "false"
@@ -94,7 +94,7 @@ extraEnvVars:
   #TYCHO_CALIBRATION_IDLE_BUDGET_SEC: "10"                       # total time allowed for initial idle check
   #TYCHO_CALIBRATION_RAPL_IDLE_ENABLE: "false"                    # measure RAPL idle baseline
   TYCHO_CALIBRATION_REDFISH_CONTINUOUS_HEARTBEAT_ENABLE: "true" # keep Redfish connection alive during calibration
-  TYCHO_CALIBRATION_REDFISH_POLL_ENABLE: "true"                 # enable Redfish poll-rate calibration
+  TYCHO_CALIBRATION_REDFISH_POLL_ENABLE: "false"                 # enable Redfish poll-rate calibration
   TYCHO_CALIBRATION_REDFISH_POLL_BUDGET_SEC: "60"               # max duration for Redfish poll-rate probe
   #TYCHO_CALIBRATION_REDFISH_IDLE_ENABLE: "false"                 # measure Redfish idle baseline
   TYCHO_CALIBRATION_GPU_POLL_ENABLE: "false"                     # enable GPU poll-rate calibration

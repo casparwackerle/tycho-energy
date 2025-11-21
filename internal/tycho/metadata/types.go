@@ -4,11 +4,11 @@ import "time"
 
 // ProcMeta holds process-level metadata for attribution.
 type ProcMeta struct {
-	PID         uint64 // OS PID
-	StartTimeNS uint64 // kernel start time, for disambiguating PID reuse
-	CgroupID    uint64 // optional; 0 if unknown
-	ContainerID string // normalized container ID, or system sentinel for non-K8s
-	Command     string // best-effort command name, for debugging/inspection
+	PID          uint64 // OS PID
+	StartJiffies uint64 // kernel start time, for disambiguating PID reuse
+	CgroupID     uint64 // optional; 0 if unknown
+	ContainerID  string // normalized container ID, or system sentinel for non-K8s
+	Command      string // best-effort command name, for debugging/inspection
 
 	// Last seen timestamps:
 	// - Mono: Tycho's shared monotonic timebase (same domain as power/utilization).
