@@ -117,6 +117,9 @@ type TychoTimingConfig struct {
 	RedfishPollMs         int // note: Redfish.RedfishProbeIntervalInSeconds still exists; this overrides if >0
 	RedfishDelayMs        int
 	RedfishHeartbeatMs    int
+	MetaEnginePollSec     int
+	ProcessPollSec        int
+	KubeletPollSec        int
 	//RedfishAutoHeartbeat  bool
 }
 
@@ -273,6 +276,9 @@ func getTychoTimingConfig() TychoTimingConfig {
 		RedfishPollMs:         getIntConfig("TYCHO_REDFISH_POLL_MS", defaultTychoRedfishPollMs),
 		RedfishDelayMs:        getIntConfig("TYCHO_REDFISH_DELAY_MS", defaultTychoRedfishDelayMs),
 		RedfishHeartbeatMs:    getIntConfig("TYCHO_REDFISH_HEARTBEAT_MAX_GAP_MS", defaultTychoRedfishHeartbeatMs),
+		ProcessPollSec:        getIntConfig("TYCHO_PROCESS_POLL_SEC", defaultTychoProcessIntervalSec),
+		KubeletPollSec:        getIntConfig("TYCHO_KUBELETT_POLL_SEC", defaultTychoKubeletIntervalSec),
+		MetaEnginePollSec:     getIntConfig("TYCHO_METAENGINE_POLL_SEC", defaultTychoMetaEngineIntervalSec),
 	}
 }
 
@@ -1030,6 +1036,18 @@ func SetRedfishDelayMs(ms int) {
 
 func RedfishHeartbeatMs() int {
 	return instance.TychoTiming.RedfishHeartbeatMs
+}
+
+func MetadataEnginePeriodSec() int {
+	return instance.TychoTiming.MetaEnginePollSec
+}
+
+func MetadataProcessIntervalSec() int {
+	return instance.TychoTiming.ProcessPollSec
+}
+
+func MetadataKubeletIntervalSec() int {
+	return instance.TychoTiming.KubeletPollSec
 }
 
 // func CalibrationIdleBudgetSec() int {

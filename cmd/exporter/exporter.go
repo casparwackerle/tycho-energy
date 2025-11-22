@@ -36,6 +36,7 @@ import (
 	raplCollector "github.com/casparwackerle/tycho-energy/internal/tycho/collectors/rapl"
 	redfishCollector "github.com/casparwackerle/tycho-energy/internal/tycho/collectors/redfish"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/engine"
+	meta "github.com/casparwackerle/tycho-energy/internal/tycho/metadata"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/ring"
 	"github.com/casparwackerle/tycho-energy/pkg/bpf"
 	"github.com/casparwackerle/tycho-energy/pkg/build"
@@ -261,6 +262,7 @@ func main() {
 	r := raplCollector.New(raplCollector.Config{Buf: raplBuf, Mono: mono})
 	rf := redfishCollector.New(redfishCollector.Config{Buf: rfBuf, Mono: mono})
 	g := gpuCollector.New(gpuCollector.Config{Buf: gpuBuf, Mono: mono})
+	m := meta.New(mono)
 
 	ctx_gpu, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -270,11 +272,12 @@ func main() {
 		g.EnablePhaseAware(ctx_gpu, gpuCollector.CollectorSamplerDeps{}) // auto-starts if enabled in config
 		defer g.Close()
 	}
-
+	metadataPeriod := time.Duration(config.MetadataEnginePeriodSec()) * time.Second
 	_ = eng.Register("bpf", time.Duration(config.BpfPollMs())*time.Millisecond, config.EnableBpf(), b.Collect)
 	_ = eng.Register("rapl", time.Duration(config.RaplPollMs())*time.Millisecond, config.EnableRapl(), r.Collect)
 	_ = eng.Register("redfish", time.Duration(config.RedfishPollMs())*time.Millisecond, config.EnableRedfish(), rf.Collect)
 	_ = eng.Register("gpu", time.Duration(config.GpuPollMs())*time.Millisecond, config.EnableGpu(), g.Collect)
+	_ = eng.Register("metadata", metadataPeriod, true, m.Collect)
 
 	tycho_ctx, tycho_cancel := context.WithCancel(context.Background())
 	go func() { _ = eng.Start(tycho_ctx) }()

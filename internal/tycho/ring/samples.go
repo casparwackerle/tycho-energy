@@ -29,9 +29,9 @@ type BpfTick struct {
 }
 
 type BpfProcDelta struct {
-	PID         uint64
-	StartTimeNs uint64 // optional but recommended for cross-tick identity
-	CgroupID    uint64 // attribute, not key
+	PID          uint64
+	StartJiffies uint64 // optional but recommended for cross-tick identity
+	CgroupID     uint64 // attribute, not key
 	// deltas for the tick:
 	ProcessRunUs uint64
 	PageCacheHit uint64
