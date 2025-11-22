@@ -31,7 +31,6 @@ type Collector struct {
 	// Per-chassis book-keeping
 	lastSeq       map[string]uint64
 	lastEmit      map[string]time.Time
-	lastEmittedW  map[string]float64
 	lastSeqTime   map[string]time.Time       // when we last observed seq advance
 	interArrivals map[string][]time.Duration // sliding window for median
 }
@@ -52,7 +51,6 @@ func New(cfg Config) *Collector {
 		expectDyn:     map[string]time.Duration{},
 		lastSeq:       map[string]uint64{},
 		lastEmit:      map[string]time.Time{},
-		lastEmittedW:  map[string]float64{},
 		lastSeqTime:   map[string]time.Time{},
 		interArrivals: map[string][]time.Duration{},
 	}
@@ -188,7 +186,6 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 		c.buf.Push(s)
 		c.lastEmit[chassis] = now
 		c.lastSeq[chassis] = seq
-		c.lastEmittedW[chassis] = watts
 
 		klog.V(5).Infof(
 			"redfish: %s chassis=%s seq=%d watts=%.3f freshness=%v expect=%v (in %v)",

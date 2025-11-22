@@ -31,7 +31,6 @@ func New(cfg Config) *Collector {
 	return &Collector{buf: cfg.Buf, mono: cfg.Mono}
 }
 
-// Collect reads raw RAPL counters (mJ) per socket and appends one sample to the ring.
 // Collect reads raw RAPL counters (mJ) for all sockets and pushes exactly one tick.
 func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 	select {
