@@ -30,4 +30,4 @@ start implementation
 write normalizeTycho function to protect against bad configurations
     ensure the longest delay is used everythere
     If redish is enabled ensure that the expected publish interval is used to calculate buffer size
-    ensure buffer margin is 0 or higher -> at least one full cycle buffer
+    ensure buffer margin is 0 or higher -> at least one full cycle buffer  
