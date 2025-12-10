@@ -17,9 +17,9 @@ package types_test
 import (
 	"sync"
 
+	"github.com/casparwackerle/tycho-energy/pkg/collector/stats/types"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/casparwackerle/tycho-energy/pkg/collector/stats/types"
 )
 
 var _ = Describe("Types", func() {

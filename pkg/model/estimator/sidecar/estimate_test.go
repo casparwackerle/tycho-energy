@@ -22,10 +22,10 @@ import (
 	"net"
 	"os"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
 	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"github.com/casparwackerle/tycho-energy/pkg/model/types"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 var (

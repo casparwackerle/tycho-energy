@@ -17,9 +17,9 @@ limitations under the License.
 package stats
 
 import (
+	"github.com/casparwackerle/tycho-energy/pkg/config"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/casparwackerle/tycho-energy/pkg/config"
 )
 
 var _ = Describe("Test Container Metric", func() {

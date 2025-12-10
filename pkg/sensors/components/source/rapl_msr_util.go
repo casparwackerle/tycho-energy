@@ -27,8 +27,8 @@ import (
 	"math"
 	"syscall"
 
-	"github.com/jaypipes/ghw"
 	"github.com/casparwackerle/tycho-energy/pkg/utils"
+	"github.com/jaypipes/ghw"
 	"k8s.io/klog/v2"
 )
 

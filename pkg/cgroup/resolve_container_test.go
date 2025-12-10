@@ -19,8 +19,8 @@ package cgroup
 import (
 	"testing"
 
-	. "github.com/onsi/gomega"
 	"github.com/casparwackerle/tycho-energy/pkg/utils"
+	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
 )

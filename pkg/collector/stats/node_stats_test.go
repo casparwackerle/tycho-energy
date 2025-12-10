@@ -19,9 +19,9 @@ package stats
 import (
 	"fmt"
 
+	"github.com/casparwackerle/tycho-energy/pkg/config"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/casparwackerle/tycho-energy/pkg/config"
 )
 
 var _ = Describe("Test Node Metric", func() {

@@ -25,9 +25,9 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/casparwackerle/tycho-energy/pkg/utils"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/mem"
-	"github.com/casparwackerle/tycho-energy/pkg/utils"
 	"k8s.io/klog/v2"
 )
 

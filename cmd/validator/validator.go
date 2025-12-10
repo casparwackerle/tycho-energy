@@ -28,11 +28,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jaypipes/ghw"
 	"github.com/casparwackerle/tycho-energy/pkg/sensors/components"
 	"github.com/casparwackerle/tycho-energy/pkg/sensors/components/source"
 	"github.com/casparwackerle/tycho-energy/pkg/sensors/platform"
 	"github.com/casparwackerle/tycho-energy/pkg/utils"
+	"github.com/jaypipes/ghw"
 )
 
 const (

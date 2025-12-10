@@ -26,11 +26,11 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/jaypipes/ghw"
-	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"

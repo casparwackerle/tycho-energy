@@ -19,7 +19,6 @@ package utils
 import (
 	"strconv"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/casparwackerle/tycho-energy/pkg/bpf"
 	"github.com/casparwackerle/tycho-energy/pkg/collector/stats"
 	"github.com/casparwackerle/tycho-energy/pkg/config"
@@ -27,6 +26,7 @@ import (
 	"github.com/casparwackerle/tycho-energy/pkg/metrics/metricfactory"
 	"github.com/casparwackerle/tycho-energy/pkg/model/utils"
 	acc "github.com/casparwackerle/tycho-energy/pkg/sensors/accelerator"
+	"github.com/prometheus/client_golang/prometheus"
 	"k8s.io/klog/v2"
 )
 

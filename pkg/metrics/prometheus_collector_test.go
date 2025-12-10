@@ -28,13 +28,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/casparwackerle/tycho-energy/pkg/bpf"
 	"github.com/casparwackerle/tycho-energy/pkg/collector"
 	"github.com/casparwackerle/tycho-energy/pkg/collector/stats"
 	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"github.com/casparwackerle/tycho-energy/pkg/model"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	acc "github.com/casparwackerle/tycho-energy/pkg/sensors/accelerator"
 	"github.com/casparwackerle/tycho-energy/pkg/sensors/components"

@@ -19,7 +19,6 @@ package metricfactory
 import (
 	"strings"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/casparwackerle/tycho-energy/pkg/bpf"
 	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"github.com/casparwackerle/tycho-energy/pkg/metrics/consts"
@@ -27,6 +26,7 @@ import (
 	acc "github.com/casparwackerle/tycho-energy/pkg/sensors/accelerator"
 	"github.com/casparwackerle/tycho-energy/pkg/sensors/components"
 	"github.com/casparwackerle/tycho-energy/pkg/sensors/platform"
+	"github.com/prometheus/client_golang/prometheus"
 	"k8s.io/klog/v2"
 )
 

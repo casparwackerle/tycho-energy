@@ -19,12 +19,12 @@ package virtualmachine
 import (
 	"sync"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/casparwackerle/tycho-energy/pkg/bpf"
 	"github.com/casparwackerle/tycho-energy/pkg/collector/stats"
 	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"github.com/casparwackerle/tycho-energy/pkg/metrics/metricfactory"
 	"github.com/casparwackerle/tycho-energy/pkg/metrics/utils"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 const (

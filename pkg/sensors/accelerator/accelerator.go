@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/casparwackerle/tycho-energy/pkg/sensors/accelerator/devices"
+	"github.com/pkg/errors"
 	"k8s.io/klog/v2"
 )
 

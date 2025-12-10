@@ -1,10 +1,10 @@
 package manager
 
 import (
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
 	"github.com/casparwackerle/tycho-energy/pkg/bpf"
 	"github.com/casparwackerle/tycho-energy/pkg/config"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 var _ = Describe("Manager", func() {
