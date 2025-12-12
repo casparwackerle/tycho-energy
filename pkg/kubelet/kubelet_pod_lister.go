@@ -24,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -61,7 +62,9 @@ func loadToken(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to read from %q: %v", path, err)
 	}
-	return "Bearer " + string(objToken), nil
+
+	tok := strings.TrimSpace(string(objToken)) // critical: strips \n/\r
+	return "Bearer " + tok, nil
 }
 
 func doFetchPod(url string) (*http.Response, error) {
