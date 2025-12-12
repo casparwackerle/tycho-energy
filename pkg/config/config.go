@@ -551,6 +551,13 @@ func ValidateTychoQuick() {
 				defaultTychoPowercapBasePath, err)
 		}
 	}
+
+	// phase-aware GPU sampling implies GPU polling calibration must be enabled
+	if t.GpuPhaseAwareSampling && c.EnableGpu && !instance.TychoCalibration.GpuPollEnabled {
+		klog.V(2).Infof("TYCHO: GpuPhaseAwareSampling enabled -> enabling GPU polling calibration (GpuPollEnabled=true)")
+		instance.TychoCalibration.GpuPollEnabled = true
+	}
+
 }
 
 // Ensure plausible configuration values, adjust if necessary

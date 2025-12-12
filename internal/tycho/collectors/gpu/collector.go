@@ -914,22 +914,53 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 	if c == nil || c.buf == nil || c.mono == nil || !c.inited || c.disabled {
 		return
 	}
-	if c.events == nil {
+
+	// --------------------------
+	// Mode A: Phase-aware sampler
+	// --------------------------
+	if c.PhaseAwareEnabled && c.events != nil {
+		if ev, ok := c.events.TryDequeue(); ok {
+			c.buf.Push(ring.GpuTick{
+				SampleMeta: ring.SampleMeta{Mono: ev.tObsMono},
+				Devices:    ev.Devices,
+				Processes:  ev.Procs,
+			})
+			klog.V(5).Infof("GPU-COLLECT: pushed tick mono=%d changed=%v devs=%d procs=%d",
+				ev.tObsMono, ev.Changed, len(ev.Devices), len(ev.Procs))
+			c.lastMono = ev.tObsMono
+			c.lastDeviceObsTime = time.Now()
+			c.logTickDebug(ev.Changed, len(ev.Devices), len(ev.Procs))
+		}
 		return
 	}
 
-	if ev, ok := c.events.TryDequeue(); ok {
-		c.buf.Push(ring.GpuTick{
-			SampleMeta: ring.SampleMeta{Mono: ev.tObsMono},
-			Devices:    ev.Devices,
-			Processes:  ev.Procs,
-		})
-		klog.V(5).Infof("GPU-COLLECT: pushed tick mono=%d changed=%v devs=%d procs=%d", ev.tObsMono, ev.Changed, len(ev.Devices), len(ev.Procs))
-		c.lastMono = ev.tObsMono
-		c.lastDeviceObsTime = time.Now()
-		c.logTickDebug(ev.Changed, len(ev.Devices), len(ev.Procs))
+	// -----------------------------------------
+	// Mode B: Non-phase-aware immediate sampling
+	// -----------------------------------------
+	// Collect immediately on engine tick.
+	nowMono := c.mono.From(time.Now())
+
+	devs, okDev := c.readAllDevicesSnapshot()
+	if !okDev || len(devs) == 0 {
+		return
 	}
-	// else: nothing to push this tick
+
+	procs, okProc := c.readPerProcessSnapshot(nowMono)
+	if !okProc {
+		procs = nil
+	}
+
+	c.buf.Push(ring.GpuTick{
+		SampleMeta: ring.SampleMeta{Mono: nowMono},
+		Devices:    devs,
+		Processes:  procs,
+	})
+	klog.V(5).Infof("GPU-COLLECT: immediate push mono=%d devs=%d procs=%d",
+		nowMono, len(devs), len(procs))
+
+	c.lastMono = nowMono
+	c.lastDeviceObsTime = time.Now()
+	c.logTickDebug(true, len(devs), len(procs))
 }
 
 // -----------------------------------------------------------------------------
