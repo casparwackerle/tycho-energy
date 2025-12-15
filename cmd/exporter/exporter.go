@@ -272,12 +272,11 @@ func main() {
 		g.EnablePhaseAware(ctx_gpu, gpuCollector.CollectorSamplerDeps{}) // auto-starts if enabled in config
 		defer g.Close()
 	}
-	metadataPeriod := time.Duration(config.MetadataEnginePeriodSec()) * time.Second
 	_ = eng.Register("bpf", time.Duration(config.BpfPollMs())*time.Millisecond, config.EnableBpf(), b.Collect)
 	_ = eng.Register("rapl", time.Duration(config.RaplPollMs())*time.Millisecond, config.EnableRapl(), r.Collect)
 	_ = eng.Register("redfish", time.Duration(config.RedfishPollMs())*time.Millisecond, config.EnableRedfish(), rf.Collect)
 	_ = eng.Register("gpu", time.Duration(config.GpuPollMs())*time.Millisecond, config.EnableGpu(), g.Collect)
-	_ = eng.Register("metadata", metadataPeriod, true, m.Collect)
+	_ = eng.Register("metadata", time.Duration(config.MetadataEnginePeriodSec())*time.Second, true, m.Collect)
 
 	tycho_ctx, tycho_cancel := context.WithCancel(context.Background())
 	go func() { _ = eng.Start(tycho_ctx) }()

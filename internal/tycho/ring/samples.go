@@ -11,13 +11,6 @@ type SampleMeta struct {
 	Mono uint64
 }
 
-type RaplDomainCounters struct {
-	Pkg    uint64 // mJ raw counter (monotonic, wraps)
-	Core   uint64 // mJ
-	Uncore uint64 // mJ
-	DRAM   uint64 // mJ
-}
-
 type BpfTick struct {
 	SampleMeta // Mono
 	IdleNS     uint64
@@ -41,6 +34,13 @@ type BpfProcDelta struct {
 	CPUCycles    uint64
 	CPUInstr     uint64
 	CacheMiss    uint64
+}
+
+type RaplDomainCounters struct {
+	Pkg    uint64 // mJ raw counter (monotonic, wraps)
+	Core   uint64 // mJ
+	Uncore uint64 // mJ
+	DRAM   uint64 // mJ
 }
 
 type RaplTick struct {
