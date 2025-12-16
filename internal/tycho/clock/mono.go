@@ -50,3 +50,6 @@ func (m *Mono) From(ts time.Time) uint64 {
 func (m *Mono) Now() uint64 {
 	return m.From(m.src.Now())
 }
+
+// Quantum returns the tick duration used by this Mono clock.
+func (m *Mono) Quantum() time.Duration { return m.quantum }

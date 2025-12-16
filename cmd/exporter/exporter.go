@@ -29,6 +29,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis"
+	analysisexport "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/export"
+	analysismetrics "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/metrics"
+	analysisregistry "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/registry"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/calibration"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/clock"
 	bpfCollector "github.com/casparwackerle/tycho-energy/internal/tycho/collectors/bpf"
@@ -264,6 +268,27 @@ func main() {
 	g := gpuCollector.New(gpuCollector.Config{Buf: gpuBuf, Mono: mono})
 	m := meta.New(mono)
 
+	//--------------------------------------------------
+	analysisreg := analysisregistry.New()
+	analysisreg.Register(analysismetrics.NewRaplWindowEnergy())
+
+	sink := analysisexport.NewLogSink()
+
+	analysisEng := analysis.NewEngine(
+		mono,
+		analysis.Rings{Rapl: raplBuf},
+		sink,
+		analysis.NewStateStore(),
+		analysisreg,
+		analysis.Config{
+			WindowDuration: 5 * time.Second,
+			SafetyOffset:   500 * time.Millisecond,
+		},
+	)
+
+	// Run analysis periodically (Slice 0: 5s cadence).
+	_ = eng.Register("analysis", 5*time.Second, true, analysisEng.Collect)
+	//--------------------------------------------------
 	ctx_gpu, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := g.Init(context.Background()); err != nil {
@@ -279,6 +304,7 @@ func main() {
 	_ = eng.Register("metadata", time.Duration(config.MetadataEnginePeriodSec())*time.Second, true, m.Collect)
 
 	tycho_ctx, tycho_cancel := context.WithCancel(context.Background())
+
 	go func() { _ = eng.Start(tycho_ctx) }()
 	defer tycho_cancel()
 

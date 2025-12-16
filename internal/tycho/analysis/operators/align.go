@@ -1,1 +1,1 @@
-package operators
+package analysisops

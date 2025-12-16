@@ -1,1 +1,1 @@
-package series
+package analysisseries
