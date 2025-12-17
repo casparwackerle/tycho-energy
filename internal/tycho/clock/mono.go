@@ -25,6 +25,31 @@ func NewMono(src Source, quantum time.Duration) *Mono {
 	return &Mono{src: src, base: src.Now(), quantum: quantum}
 }
 
+// Quantum returns the tick duration used by this Mono clock.
+func (m *Mono) Quantum() time.Duration { return m.quantum }
+
+// TicksForDurationCeil converts a wall duration to mono ticks, rounding up.
+// This ensures that delay semantics are "at least this much time".
+func (m *Mono) TicksForDurationCeil(d time.Duration) uint64 {
+	q := m.quantum
+	if q <= 0 {
+		q = time.Millisecond
+	}
+	if d <= 0 {
+		return 0
+	}
+	// ceil(d/q) for integers
+	return uint64((d + q - 1) / q)
+}
+
+// TicksForMsCeil is a convenience wrapper for millisecond delays from config.
+func (m *Mono) TicksForMsCeil(ms int) uint64 {
+	if ms <= 0 {
+		return 0
+	}
+	return m.TicksForDurationCeil(time.Duration(ms) * time.Millisecond)
+}
+
 // From converts a timestamp (ideally produced by the same Source)
 // into Tycho's tick index: floor((ts - base) / quantum), then enforces strictly
 // increasing sequence via atomic bump (so collectors never go backward).
@@ -50,6 +75,3 @@ func (m *Mono) From(ts time.Time) uint64 {
 func (m *Mono) Now() uint64 {
 	return m.From(m.src.Now())
 }
-
-// Quantum returns the tick duration used by this Mono clock.
-func (m *Mono) Quantum() time.Duration { return m.quantum }

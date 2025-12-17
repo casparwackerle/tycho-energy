@@ -54,17 +54,17 @@ func (e *Engine) Collect(ctx context.Context, _ time.Time) {
 		Mono:    e.mono,
 		NowMono: nowMono,
 		Window:  win,
-		Policy:  ReadPolicy{SafetyOffset: e.cfg.SafetyOffset},
+		Policy:  ReadPolicy{SafetyOffsetTicks: e.mono.TicksForDurationCeil(e.cfg.SafetyOffset)},
 		Rings:   e.rings,
 		Sink:    e.sink,
 		State:   e.state,
 	}
 
-	klog.V(3).Infof("[analysis] cycle now=%d window=%s", nowMono, win.String())
+	klog.V(2).Infof("[analysis] cycle now=%d window=%s", nowMono, win.String())
 
 	plan := e.planner.BuildPlan(cycle)
 	if plan == nil {
-		klog.V(3).Infof("[analysis] no plan")
+		klog.V(2).Infof("[analysis] no plan")
 		return
 	}
 

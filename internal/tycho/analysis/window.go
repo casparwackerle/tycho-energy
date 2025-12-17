@@ -19,18 +19,39 @@ func (w Window) Contains(mono uint64) bool {
 	return mono >= w.StartMono && mono <= w.EndMono
 }
 
+// ShiftBack returns a window shifted back by dt ticks, preserving width.
+// Underflow clamps to 0.
+func (w Window) ShiftBack(dt uint64) Window {
+	if dt == 0 {
+		return w
+	}
+	var end uint64
+	if w.EndMono > dt {
+		end = w.EndMono - dt
+	} else {
+		end = 0
+	}
+	var start uint64
+	if w.StartMono > dt {
+		start = w.StartMono - dt
+	} else {
+		start = 0
+	}
+	// If clamping caused start > end, clamp start to end.
+	if start > end {
+		start = end
+	}
+	return Window{StartMono: start, EndMono: end}
+}
+
 // SelectWindow computes window bounds using mono.Now() and a safety offset.
 // EndMono = mono.Now() - safetyOffsetTicks
 // StartMono = EndMono - windowTicks
 func SelectWindow(mono *clock.Mono, windowDur time.Duration, safetyOffset time.Duration) Window {
 	now := mono.Now()
-	q := mono.Quantum()
-	if q <= 0 {
-		q = time.Millisecond
-	}
 
-	windowTicks := uint64(windowDur / q)
-	safetyTicks := uint64(safetyOffset / q)
+	windowTicks := mono.TicksForDurationCeil(windowDur)
+	safetyTicks := mono.TicksForDurationCeil(safetyOffset)
 
 	end := now
 	if safetyTicks < end {

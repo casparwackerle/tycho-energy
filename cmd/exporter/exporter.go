@@ -268,9 +268,23 @@ func main() {
 	g := gpuCollector.New(gpuCollector.Config{Buf: gpuBuf, Mono: mono})
 	m := meta.New(mono)
 
+	ctx_gpu, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := g.Init(context.Background()); err != nil {
+		klog.Errorf("gpuCollector init failed: %v", err)
+	} else {
+		g.EnablePhaseAware(ctx_gpu, gpuCollector.CollectorSamplerDeps{}) // auto-starts if enabled in config
+		defer g.Close()
+	}
+	_ = eng.Register("bpf", time.Duration(config.BpfPollMs())*time.Millisecond, config.EnableBpf(), b.Collect)
+	_ = eng.Register("rapl", time.Duration(config.RaplPollMs())*time.Millisecond, config.EnableRapl(), r.Collect)
+	_ = eng.Register("redfish", time.Duration(config.RedfishPollMs())*time.Millisecond, config.EnableRedfish(), rf.Collect)
+	_ = eng.Register("gpu", time.Duration(config.GpuPollMs())*time.Millisecond, config.EnableGpu(), g.Collect)
+	_ = eng.Register("metadata", time.Duration(config.MetadataEnginePeriodSec())*time.Second, true, m.Collect)
+
 	//--------------------------------------------------
 	analysisreg := analysisregistry.New()
-	analysisreg.Register(analysismetrics.NewRaplWindowEnergy())
+	analysisreg.Register(analysismetrics.NewRaplWindowEnergy(mono))
 
 	sink := analysisexport.NewLogSink()
 
@@ -289,19 +303,6 @@ func main() {
 	// Run analysis periodically (Slice 0: 5s cadence).
 	_ = eng.Register("analysis", 5*time.Second, true, analysisEng.Collect)
 	//--------------------------------------------------
-	ctx_gpu, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if err := g.Init(context.Background()); err != nil {
-		klog.Errorf("gpuCollector init failed: %v", err)
-	} else {
-		g.EnablePhaseAware(ctx_gpu, gpuCollector.CollectorSamplerDeps{}) // auto-starts if enabled in config
-		defer g.Close()
-	}
-	_ = eng.Register("bpf", time.Duration(config.BpfPollMs())*time.Millisecond, config.EnableBpf(), b.Collect)
-	_ = eng.Register("rapl", time.Duration(config.RaplPollMs())*time.Millisecond, config.EnableRapl(), r.Collect)
-	_ = eng.Register("redfish", time.Duration(config.RedfishPollMs())*time.Millisecond, config.EnableRedfish(), rf.Collect)
-	_ = eng.Register("gpu", time.Duration(config.GpuPollMs())*time.Millisecond, config.EnableGpu(), g.Collect)
-	_ = eng.Register("metadata", time.Duration(config.MetadataEnginePeriodSec())*time.Second, true, m.Collect)
 
 	tycho_ctx, tycho_cancel := context.WithCancel(context.Background())
 

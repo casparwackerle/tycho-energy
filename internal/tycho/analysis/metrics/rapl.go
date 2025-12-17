@@ -2,20 +2,38 @@ package analysismetrics
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis"
 	analysisctx "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/context"
+	analysisops "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/operators"
+	"github.com/casparwackerle/tycho-energy/internal/tycho/clock"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/ring"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/pkg/sensors/components/source"
+	"k8s.io/klog/v2"
 )
 
-// RaplWindowEnergy is the Slice 0 test metric plugin.
-// Engine must not know anything about this plugin.
+// RaplWindowEnergy is the Slice 0+ metric plugin.
+// Now includes: fixed per-source delay + wrap-aware delta via analysis/ops.
 type RaplWindowEnergy struct {
-	emitAggregateOnly bool
+	mono       *clock.Mono
+	delayTicks uint64
+
+	// wrap modulus in mJ per domain (same across sockets). Cached lazily.
+	once        sync.Once
+	modPkgMJ    uint64
+	modCoreMJ   uint64
+	modUncoreMJ uint64
+	modDramMJ   uint64
+	modErr      error
 }
 
-func NewRaplWindowEnergy() *RaplWindowEnergy {
-	return &RaplWindowEnergy{emitAggregateOnly: true}
+func NewRaplWindowEnergy(mono *clock.Mono) *RaplWindowEnergy {
+	return &RaplWindowEnergy{
+		mono:       mono,
+		delayTicks: mono.TicksForMsCeil(config.RaplDelayMs()),
+	}
 }
 
 func (m *RaplWindowEnergy) ID() analysis.MetricID { return "rapl_energy_mj" }
@@ -30,19 +48,24 @@ func (m *RaplWindowEnergy) Run(c *analysis.Cycle) error {
 		return nil
 	}
 
-	// Copy only in-window samples (best-effort).
+	// Compute effective window ONCE for this metric source and reuse it.
+	w := c.EffectiveWindowTicks(m.delayTicks)
+
+	// Read only in-window samples (best-effort).
 	samples := analysisctx.FilterWindowChrono[ring.RaplTick](
 		r,
-		c.Window.StartMono,
-		c.Window.EndMono,
+		w.StartMono,
+		w.EndMono,
 		func(t ring.RaplTick) uint64 { return t.SampleMeta.Mono },
 	)
 	if len(samples) < 2 {
-		// Not enough data to form a delta.
 		return nil
 	}
 
-	// For each socket, take first and last counters in window.
+	// Load wrap modulus (mJ) lazily once.
+	m.once.Do(func() { m.loadModulusMJ() })
+
+	// For each socket: first/last counters.
 	type firstLast struct {
 		first ring.RaplDomainCounters
 		last  ring.RaplDomainCounters
@@ -57,33 +80,38 @@ func (m *RaplWindowEnergy) Run(c *analysis.Cycle) error {
 				perSocket[socketID] = &firstLast{first: ctrs, last: ctrs, ok: true}
 				continue
 			}
-			// advance last
 			fl.last = ctrs
 		}
 	}
 
-	// Aggregate across sockets: emit one metric per domain label.
+	// Aggregate deltas across sockets.
 	var pkgSum, coreSum, uncoreSum, dramSum uint64
-
 	for _, fl := range perSocket {
 		if fl == nil || !fl.ok {
 			continue
 		}
-		pkgSum += deltaWrapTODO(fl.first.Pkg, fl.last.Pkg)
-		coreSum += deltaWrapTODO(fl.first.Core, fl.last.Core)
-		uncoreSum += deltaWrapTODO(fl.first.Uncore, fl.last.Uncore)
-		dramSum += deltaWrapTODO(fl.first.DRAM, fl.last.DRAM)
+		pkgSum += analysisops.DeltaWrapU64(fl.first.Pkg, fl.last.Pkg, m.modPkgMJ)
+		klog.V(2).Infof(" modPkgMj = %d", m.modPkgMJ)
+
+		coreSum += analysisops.DeltaWrapU64(fl.first.Core, fl.last.Core, m.modCoreMJ)
+		uncoreSum += analysisops.DeltaWrapU64(fl.first.Uncore, fl.last.Uncore, m.modUncoreMJ)
+		dramSum += analysisops.DeltaWrapU64(fl.first.DRAM, fl.last.DRAM, m.modDramMJ)
+	}
+
+	notes := fmt.Sprintf("samples=%d sockets=%d delayTicks=%d", len(samples), len(perSocket), m.delayTicks)
+	if m.modErr != nil {
+		notes += fmt.Sprintf(" wrapModErr=%v", m.modErr)
 	}
 
 	emit := func(domain string, v uint64) {
 		p := analysis.Point{
 			Key:    analysis.Key(m.ID(), analysis.Labels{"domain": domain}),
-			Window: c.Window,
+			Window: w,
 			Unit:   "mJ",
 			Value:  float64(v),
 			Quality: &analysis.Quality{
 				SamplesUsed: len(samples),
-				Notes:       fmt.Sprintf("sockets=%d", len(perSocket)),
+				Notes:       notes,
 			},
 		}
 		c.Sink.Emit(c.Ctx, p)
@@ -93,17 +121,26 @@ func (m *RaplWindowEnergy) Run(c *analysis.Cycle) error {
 	emit("core", coreSum)
 	emit("uncore", uncoreSum)
 	emit("dram", dramSum)
-
 	return nil
 }
 
-// deltaWrapTODO computes end-start assuming monotonic uint64 counters.
-// If wrap handling becomes important, implement it here (or use a shared helper later).
-func deltaWrapTODO(start, end uint64) uint64 {
-	if end >= start {
-		return end - start
+// loadModulusMJ reads max_energy_range_uj for each domain via the components-backed sysfs helpers,
+// then converts to mJ (divide by 1000).
+func (m *RaplWindowEnergy) loadModulusMJ() {
+	sys := &source.PowerSysfs{}
+
+	// Best-effort: if a domain doesn't exist (common), modulus stays 0.
+	// We intentionally do NOT record an error to avoid noisy logs.
+	get := func(fn func() (uint64, error)) uint64 {
+		mJ, err := fn()
+		if err != nil {
+			return 0
+		}
+		return mJ
 	}
-	// TODO: proper wrap handling with known counter width/modulus.
-	// For Slice 0: best-effort, treat as zero.
-	return 0
+
+	m.modPkgMJ = get(sys.GetMaxEnergyRangeFromPackage)
+	m.modCoreMJ = get(sys.GetMaxEnergyRangeFromCore)
+	m.modUncoreMJ = get(sys.GetMaxEnergyRangeFromUncore)
+	m.modDramMJ = get(sys.GetMaxEnergyRangeFromDram)
 }
