@@ -54,6 +54,33 @@ func InitPowerImpl() {
 		return
 	}
 
+	//----------------------------
+	source.ProbeAmdEnergyHwmon()
+	klog.V(5).Infof("cpu vendor: %s (isAMD=%v)", CPUVendorString(), IsAMDCPU())
+	p, ok := source.ProbeAmdEnergyHwmon()
+	klog.Infof("probe ok=%v path=%s", ok, p)
+
+	if ok {
+		r := source.NewAmdEnergyHwmonReader(p)
+		pkgUJ, err := r.ReadAmdEnergyPackageUJ()
+		klog.Infof("amd_energy pkgUJ=%d err=%v", pkgUJ, err)
+		coreUJ, err := r.ReadAmdEnergyCoreTotalUJ()
+		klog.Infof("amd_energy coreTotalUJ=%d err=%v", coreUJ, err)
+	}
+	//-------------------------------------------
+
+	// Prefer amd_energy hwmon on AMD systems when available.
+	if IsAMDCPU() {
+		if hwmonDirs := source.ProbeAllAmdEnergyHwmon(); len(hwmonDirs) > 0 {
+			amdImpl := source.NewPowerAmdEnergyHwmonFromDirs(hwmonDirs)
+			if amdImpl.IsSystemCollectionSupported() {
+				klog.V(1).Infoln("use amd_energy hwmon to obtain power")
+				powerImpl = amdImpl
+				return
+			}
+		}
+	}
+
 	sysfsImpl := &source.PowerSysfs{}
 	if sysfsImpl.IsSystemCollectionSupported() /*&& false*/ {
 		klog.V(1).Infoln("use sysfs to obtain power")

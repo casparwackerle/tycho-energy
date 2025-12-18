@@ -87,6 +87,69 @@ func readEventEnergy(eventName string) map[string]uint64 {
 	return energy
 }
 
+// readEventEnergyUnwrappedMJ reads per-socket energy_uj for a domain, unwraps it in uJ,
+// then returns absolute energy in mJ (uJ/1000).
+//
+// Unwrap rule (single wrap, no reset detection):
+// if raw < prevRaw: wrapAdd += modulus; abs = wrapAdd + raw.
+func (r *PowerSysfs) readEventEnergyUnwrappedMJ(eventName string) map[string]uint64 {
+	energy := map[string]uint64{}
+
+	if r == nil {
+		return energy
+	}
+
+	// Ensure cache is initialized (best-effort).
+	// In practice IsSystemCollectionSupported() already calls initUnwrapCache().
+	r.unwrapOnce.Do(func() { r.initUnwrapCache() })
+
+	for pkID, subTree := range eventPaths {
+		for event, path := range subTree {
+			if strings.Index(event, eventName) != 0 {
+				continue
+			}
+
+			// State must exist (domain unsupported if we couldn't read modulus at init).
+			stMap := r.state[pkID]
+			if stMap == nil {
+				continue
+			}
+			st := stMap[eventName]
+			if st == nil || st.modulusUJ == 0 {
+				// Domain unsupported (silent).
+				continue
+			}
+
+			data, err := os.ReadFile(path + energyFile)
+			if err != nil {
+				klog.V(6).Infof("rapl-sysfs: pk=%s dom=%s read %s failed (%v)", pkID, eventName, energyFile, err)
+				continue
+			}
+
+			rawUJ, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+			if err != nil {
+				klog.V(6).Infof("rapl-sysfs: pk=%s dom=%s parse %s failed (%v)", pkID, eventName, energyFile, err)
+				continue
+			}
+
+			// Unwrap in uJ (no reset detection).
+			if st.hasPrev && rawUJ < st.prevRawUJ {
+				st.wrapAddUJ += st.modulusUJ
+				klog.V(6).Infof("rapl-sysfs: WRAP pk=%s dom=%s prevUJ=%d rawUJ=%d modulusUJ=%d wrapAddUJ=%d",
+					pkID, eventName, st.prevRawUJ, rawUJ, st.modulusUJ, st.wrapAddUJ)
+			}
+			st.prevRawUJ = rawUJ
+			st.hasPrev = true
+
+			absUJ := st.wrapAddUJ + rawUJ
+			absMJ := absUJ / 1000
+
+			energy[pkID] = absMJ
+		}
+	}
+	return energy
+}
+
 func getMaxEnergyRange(eventName string) (uint64, error) {
 	energy := uint64(0)
 	if hasEvent(eventName) {
@@ -115,7 +178,21 @@ func getMaxEnergyRange(eventName string) (uint64, error) {
 	return energy, fmt.Errorf("could not read RAPL energy max range for %s", eventName)
 }
 
-type PowerSysfs struct{}
+type PowerSysfs struct {
+	unwrapOnce sync.Once
+
+	// Per "package name" (e.g. "package-0") and domain ("package","core","uncore","dram")
+	// we cache modulus and unwrap state.
+	modulusUJ map[string]map[string]uint64
+	state     map[string]map[string]*raplUnwrapState
+}
+
+type raplUnwrapState struct {
+	hasPrev   bool
+	prevRawUJ uint64
+	wrapAddUJ uint64
+	modulusUJ uint64
+}
 
 func (PowerSysfs) GetName() string {
 	return "rapl-sysfs"
@@ -130,7 +207,81 @@ func (r *PowerSysfs) IsSystemCollectionSupported() bool {
 		_, err := os.ReadFile(config.SysDir() + "/class/powercap/intel-rapl/intel-rapl:0/energy_uj")
 		systemCollectionSupported = (err == nil)
 	})
-	return systemCollectionSupported
+
+	if !systemCollectionSupported {
+		return false
+	}
+
+	// Initialize unwrap state + modulus cache once per PowerSysfs instance.
+	// This does not change behavior yet; it just prepares cached modulus for later steps.
+	if r != nil {
+		r.unwrapOnce.Do(func() {
+			r.initUnwrapCache()
+		})
+	}
+
+	return true
+}
+
+func (r *PowerSysfs) initUnwrapCache() {
+	// Defensive init (PowerSysfs can be zero-value)
+	if r.modulusUJ == nil {
+		r.modulusUJ = make(map[string]map[string]uint64)
+	}
+	if r.state == nil {
+		r.state = make(map[string]map[string]*raplUnwrapState)
+	}
+
+	// Domains we care about (names must match existing constants)
+	domains := []string{packageEvent, coreEvent, uncoreEvent, dramEvent}
+
+	// For each package ID and each domain, try to read max_energy_range_uj once.
+	for pkID, subTree := range eventPaths {
+		if _, ok := r.modulusUJ[pkID]; !ok {
+			r.modulusUJ[pkID] = make(map[string]uint64)
+		}
+		if _, ok := r.state[pkID]; !ok {
+			r.state[pkID] = make(map[string]*raplUnwrapState)
+		}
+
+		for _, dom := range domains {
+			var (
+				found bool
+				path  string
+			)
+
+			// Find the sysfs subtree entry for this domain (prefix match like existing code).
+			for ev, p := range subTree {
+				if strings.Index(ev, dom) == 0 {
+					found = true
+					path = p
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+
+			data, err := os.ReadFile(path + energyMaxRangeFile)
+			if err != nil {
+				// Missing domain should be silent.
+				klog.V(6).Infof("rapl-sysfs: pk=%s dom=%s no %s (%v)", pkID, dom, energyMaxRangeFile, err)
+				continue
+			}
+
+			raw, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+			if err != nil {
+				klog.V(6).Infof("rapl-sysfs: pk=%s dom=%s parse %s failed (%v)", pkID, dom, energyMaxRangeFile, err)
+				continue
+			}
+
+			// IMPORTANT: store modulus in uJ (no /1000 here). Unwrap happens in uJ.
+			r.modulusUJ[pkID][dom] = raw
+			r.state[pkID][dom] = &raplUnwrapState{modulusUJ: raw}
+
+			klog.V(6).Infof("rapl-sysfs: unwrap cache init pk=%s dom=%s modulusUJ=%d", pkID, dom, raw)
+		}
+	}
 }
 
 func (r *PowerSysfs) GetAbsEnergyFromDram() (uint64, error) {
@@ -152,10 +303,11 @@ func (r *PowerSysfs) GetAbsEnergyFromPackage() (uint64, error) {
 func (r *PowerSysfs) GetAbsEnergyFromNodeComponents() map[int]NodeComponentsEnergy {
 	packageEnergies := make(map[int]NodeComponentsEnergy)
 
-	pkgEnergies := readEventEnergy(packageEvent)
-	coreEnergies := readEventEnergy(coreEvent)
-	dramEnergies := readEventEnergy(dramEvent)
-	uncoreEnergies := readEventEnergy(uncoreEvent)
+	// IMPORTANT: use unwrapped absolute counters (still reported as mJ to keep existing contract).
+	pkgEnergies := r.readEventEnergyUnwrappedMJ(packageEvent)
+	coreEnergies := r.readEventEnergyUnwrappedMJ(coreEvent)
+	dramEnergies := r.readEventEnergyUnwrappedMJ(dramEvent)
+	uncoreEnergies := r.readEventEnergyUnwrappedMJ(uncoreEvent)
 
 	for pkgID, pkgEnergy := range pkgEnergies {
 		coreEnergy := coreEnergies[pkgID]
