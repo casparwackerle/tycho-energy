@@ -55,11 +55,22 @@ func Key(id MetricID, labels Labels) MetricKey {
 	return MetricKey{ID: id, Labels: labels}
 }
 
-// Quality is intentionally minimal in Slice 0.
-// Extend later (staleness, jitter, confidence intervals, etc.).
+// Quality carries minimal, structured execution context for a Point.
+// Keep this small and broadly useful across metrics.
 type Quality struct {
+	// SamplesUsed is the number of raw samples that contributed to this Point
+	// (after window filtering).
 	SamplesUsed int
-	Notes       string
+
+	// SocketsUsed is the number of sockets that contributed to this Point.
+	// For aggregated CPU energy metrics this is valuable context for users.
+	SocketsUsed int
+
+	// DelayTicks is the effective delay applied when selecting the window for this metric.
+	DelayTicks uint64
+
+	// Notes is optional free-form information. Prefer structured fields above.
+	Notes string
 }
 
 // Point is the generic output unit emitted by metrics.

@@ -232,7 +232,7 @@ func (r *AmdEnergyHwmonReader) selectChannelsAndCachePaths() {
 
 		// Uncore (future-proof): could be "uncore", "pp1", "soc"
 		if uncoreIdx < 0 {
-			if strings.Contains(l, "uncore") || strings.Contains(l, "pp1") || strings.Contains(l, "soc") {
+			if strings.Contains(l, "uncore") || strings.Contains(l, "pp1") {
 				uncoreIdx = ch.Index
 			}
 		}

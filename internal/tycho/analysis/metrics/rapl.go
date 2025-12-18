@@ -1,8 +1,6 @@
 package analysismetrics
 
 import (
-	"fmt"
-
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis"
 	analysisctx "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/context"
 	analysisops "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/operators"
@@ -82,18 +80,21 @@ func (m *RaplWindowEnergy) Run(c *analysis.Cycle) error {
 		dramSum += analysisops.DeltaU64(fl.first.DRAM, fl.last.DRAM)
 	}
 
-	notes := fmt.Sprintf("samples=%d sockets=%d delayTicks=%d", len(samples), len(perSocket), m.delayTicks)
+	// Minimal, structured quality: no duplication inside Notes.
+	q := &analysis.Quality{
+		SamplesUsed: len(samples),
+		SocketsUsed: len(perSocket),
+		DelayTicks:  m.delayTicks,
+		Notes:       "", // keep empty unless you have truly exceptional context
+	}
 
 	emit := func(domain string, v uint64) {
 		p := analysis.Point{
-			Key:    analysis.Key(m.ID(), analysis.Labels{"domain": domain}),
-			Window: w,
-			Unit:   "mJ",
-			Value:  float64(v),
-			Quality: &analysis.Quality{
-				SamplesUsed: len(samples),
-				Notes:       notes,
-			},
+			Key:     analysis.Key(m.ID(), analysis.Labels{"domain": domain}),
+			Window:  w,
+			Unit:    "mJ",
+			Value:   float64(v),
+			Quality: q,
 		}
 		c.Sink.Emit(c.Ctx, p)
 	}
