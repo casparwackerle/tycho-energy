@@ -284,13 +284,16 @@ func main() {
 
 	//--------------------------------------------------
 	analysisreg := analysisregistry.New()
-	analysisreg.Register(analysismetrics.NewRaplWindowEnergy(mono))
+	//analysisreg.Register(analysismetrics.NewRaplWindowEnergy(mono))
+	//analysisreg.Register(analysismetrics.NewBpfWindowCounters())
+	//analysisreg.Register(analysismetrics.NewRedfishWindowEnergy())
+	analysisreg.Register(analysismetrics.NewGpuWindowEnergy(mono))
 
 	sink := analysisexport.NewLogSink()
 
 	analysisEng := analysis.NewEngine(
 		mono,
-		analysis.Rings{Rapl: raplBuf},
+		analysis.Rings{Rapl: raplBuf, Bpf: bpfBuf, Redfish: rfBuf, Gpu: gpuBuf},
 		sink,
 		analysis.NewStateStore(),
 		analysisreg,

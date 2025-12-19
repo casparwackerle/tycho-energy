@@ -16,7 +16,10 @@ type ReadPolicy struct {
 
 // Rings is the per-cycle access to raw sample rings.
 type Rings struct {
-	Rapl *ring.Sync[ring.RaplTick]
+	Rapl    *ring.Sync[ring.RaplTick]
+	Bpf     *ring.Sync[ring.BpfTick]
+	Redfish *ring.Sync[ring.RedfishSample]
+	Gpu     *ring.Sync[ring.GpuTick]
 }
 
 // Cycle is a per-run context handed to metrics.
@@ -38,6 +41,15 @@ type Cycle struct {
 
 // Rapl returns the RAPL ring handle (may be nil if not wired/enabled).
 func (c *Cycle) Rapl() *ring.Sync[ring.RaplTick] { return c.Rings.Rapl }
+
+// Bpf returns the eBPF ring handle (may be nil if not wired/enabled).
+func (c *Cycle) Bpf() *ring.Sync[ring.BpfTick] { return c.Rings.Bpf }
+
+// Redfish returns the redfish ring handle (may be nil if not wired/enabled).
+func (c *Cycle) Redfish() *ring.Sync[ring.RedfishSample] { return c.Rings.Redfish }
+
+// Gpu returns the GPU ring handle (may be nil if not wired/enabled).
+func (c *Cycle) Gpu() *ring.Sync[ring.GpuTick] { return c.Rings.Gpu }
 
 // EffectiveWindowTicks returns Cycle.Window shifted back by delayTicks.
 // Cached because a given metric source delay is fixed and reused across derived metrics.
