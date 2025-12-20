@@ -284,9 +284,9 @@ func main() {
 
 	//--------------------------------------------------
 	analysisreg := analysisregistry.New()
-	//analysisreg.Register(analysismetrics.NewRaplWindowEnergy(mono))
-	//analysisreg.Register(analysismetrics.NewBpfWindowCounters())
-	//analysisreg.Register(analysismetrics.NewRedfishWindowEnergy())
+	analysisreg.Register(analysismetrics.NewRaplWindowEnergy(mono))
+	analysisreg.Register(analysismetrics.NewBpfWindowCounters())
+	analysisreg.Register(analysismetrics.NewRedfishWindowEnergy())
 	analysisreg.Register(analysismetrics.NewGpuWindowEnergy(mono))
 
 	sink := analysisexport.NewLogSink()

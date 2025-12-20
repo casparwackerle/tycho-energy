@@ -7,7 +7,7 @@ import (
 	"github.com/casparwackerle/tycho-energy/internal/tycho/ring"
 )
 
-const MetricRedfishSystemEnergyJ analysis.MetricID = "redfish_system_energy_j"
+const MetricRedfishSystemEnergyMJ analysis.MetricID = "redfish_system_energy_mj"
 
 type RedfishWindowEnergy struct{}
 
@@ -77,16 +77,20 @@ func (m *RedfishWindowEnergy) Run(c *analysis.Cycle) error {
 
 		labels := analysis.Labels{"chassis": chassis}
 
+		//convert to millijoule for consistency
+		energyMJ := energyJ * 1000.0
+
 		c.Sink.Emit(c.Ctx, analysis.Point{
-			Key:    analysis.Key(MetricRedfishSystemEnergyJ, labels),
+			Key:    analysis.Key(MetricRedfishSystemEnergyMJ, labels),
 			Window: w,
-			Unit:   "J",
-			Value:  energyJ,
+			Unit:   "mJ",
+			Value:  energyMJ,
 			Quality: &analysis.Quality{
-				SamplesUsed: intervals, // interval segments integrated (not raw samples)
+				SamplesUsed: intervals,
 				DelayTicks:  0,
 			},
 		})
+
 	}
 
 	return nil
