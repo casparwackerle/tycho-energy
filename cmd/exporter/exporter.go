@@ -186,6 +186,8 @@ func main() {
 		config.SetEnableAPIServer(false) // optional: avoid kube API deps early on
 		config.SetEnabledGPU(false)
 	}
+
+	// Optional: GPU accelerator registry (only when GPU is enabled and not empty).
 	if !*tychoEmpty && config.EnableGpu() {
 		r := accelerator.GetRegistry()
 		if a, err := accelerator.New(config.GPU, true); err == nil {
@@ -203,7 +205,7 @@ func main() {
 	}
 	defer bpfExporter.Detach()
 
-	//new eBPF exporter manager
+	// new eBPF exporter manager
 	collMgr := engine.New(bpfExporter)
 	if collMgr == nil {
 		klog.Fatal("could not create a collector manager")
@@ -214,12 +216,12 @@ func main() {
 	if err := collMgr.StatsCollector.Initialize(); err != nil {
 		klog.Fatalf("failed to init stats collector: %v", err)
 	}
-	//start monotonic time
+
+	// start monotonic time
 	mono := clock.NewMono(clock.DefaultSource, time.Duration(config.TimebaseQuantumMs())*time.Millisecond)
 
 	// calibrate if necessary
 	needCal := config.CalibrationGpuPollEnabled() || config.CalibrationRedfishPollEnabled()
-
 	if needCal {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
@@ -236,6 +238,14 @@ func main() {
 		config.NormalizeTycho()
 	}
 
+	// Snapshot enable flags after empty-mode overrides + (optional) calibration normalize.
+	enableBpf := config.EnableBpf()
+	enableRapl := config.EnableRapl()
+	enableRedfish := config.EnableRedfish()
+	enableGpu := config.EnableGpu()
+
+	klog.Infof("[tycho] enabled collectors: bpf=%v rapl=%v redfish=%v gpu=%v", enableBpf, enableRapl, enableRedfish, enableGpu)
+
 	// Central buffer manager
 	bufMgr := ring.NewManager()
 
@@ -246,7 +256,9 @@ func main() {
 	rfSz := ring.SizeForWindow(winSec, config.RedfishPollMs())
 	gpuSz := ring.SizeForWindow(winSec, config.GpuPollMs())
 
-	// Create synchronized typed rings
+	// Create synchronized typed rings.
+	// NOTE: We keep buffer creation unconditional (safe for downstream deps like calibration.Init),
+	// but we gate collectors + analysis plugins so "disabled" means "no work + no emits".
 	bpfBuf := ring.GetOrCreateSync[ring.BpfTick](bufMgr, "bpf", bpfSz)
 	raplBuf := ring.GetOrCreateSync[ring.RaplTick](bufMgr, "rapl", raplSz)
 	rfBuf := ring.GetOrCreateSync[ring.RedfishSample](bufMgr, "redfish", rfSz)
@@ -262,32 +274,73 @@ func main() {
 
 	// Start Engine
 	eng := engine.NewManager()
-	b := bpfCollector.New(bpfCollector.Config{Buf: bpfBuf, Mono: mono, Exp: bpfExporter})
-	r := raplCollector.New(raplCollector.Config{Buf: raplBuf, Mono: mono})
-	rf := redfishCollector.New(redfishCollector.Config{Buf: rfBuf, Mono: mono})
-	g := gpuCollector.New(gpuCollector.Config{Buf: gpuBuf, Mono: mono})
-	m := meta.New(mono)
 
-	ctx_gpu, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if err := g.Init(context.Background()); err != nil {
-		klog.Errorf("gpuCollector init failed: %v", err)
-	} else {
-		g.EnablePhaseAware(ctx_gpu, gpuCollector.CollectorSamplerDeps{}) // auto-starts if enabled in config
-		defer g.Close()
+	// Construct collectors only when enabled.
+	// This is important for GPU because EnablePhaseAware may spawn its own goroutines.
+	var (
+		b  *bpfCollector.Collector
+		r  *raplCollector.Collector
+		rf *redfishCollector.Collector
+		g  *gpuCollector.Collector
+	)
+
+	if enableBpf {
+		b = bpfCollector.New(bpfCollector.Config{Buf: bpfBuf, Mono: mono, Exp: bpfExporter})
+		_ = eng.Register("bpf", time.Duration(config.BpfPollMs())*time.Millisecond, true, b.Collect)
 	}
-	_ = eng.Register("bpf", time.Duration(config.BpfPollMs())*time.Millisecond, config.EnableBpf(), b.Collect)
-	_ = eng.Register("rapl", time.Duration(config.RaplPollMs())*time.Millisecond, config.EnableRapl(), r.Collect)
-	_ = eng.Register("redfish", time.Duration(config.RedfishPollMs())*time.Millisecond, config.EnableRedfish(), rf.Collect)
-	_ = eng.Register("gpu", time.Duration(config.GpuPollMs())*time.Millisecond, config.EnableGpu(), g.Collect)
+
+	if enableRapl {
+		r = raplCollector.New(raplCollector.Config{Buf: raplBuf, Mono: mono})
+		_ = eng.Register("rapl", time.Duration(config.RaplPollMs())*time.Millisecond, true, r.Collect)
+	}
+
+	if enableRedfish {
+		rf = redfishCollector.New(redfishCollector.Config{Buf: rfBuf, Mono: mono})
+		_ = eng.Register("redfish", time.Duration(config.RedfishPollMs())*time.Millisecond, true, rf.Collect)
+	}
+
+	if enableGpu {
+		g = gpuCollector.New(gpuCollector.Config{Buf: gpuBuf, Mono: mono})
+
+		ctxGPU, cancelGPU := context.WithCancel(context.Background())
+		defer cancelGPU()
+
+		if err := g.Init(context.Background()); err != nil {
+			klog.Errorf("gpuCollector init failed: %v", err)
+		} else {
+			g.EnablePhaseAware(ctxGPU, gpuCollector.CollectorSamplerDeps{}) // only when GPU enabled
+			defer g.Close()
+		}
+
+		_ = eng.Register("gpu", time.Duration(config.GpuPollMs())*time.Millisecond, true, g.Collect)
+	}
+
+	// Metadata is always enabled (as in your original code).
+	m := meta.New(mono)
 	_ = eng.Register("metadata", time.Duration(config.MetadataEnginePeriodSec())*time.Second, true, m.Collect)
 
 	//--------------------------------------------------
+	// Analysis plan: register only metrics that are enabled.
+	// This makes disabling immediate (no stale window emissions).
 	analysisreg := analysisregistry.New()
-	analysisreg.Register(analysismetrics.NewRaplWindowEnergy(mono))
-	analysisreg.Register(analysismetrics.NewBpfWindowCounters())
-	analysisreg.Register(analysismetrics.NewRedfishWindowEnergy())
-	analysisreg.Register(analysismetrics.NewGpuWindowEnergy(mono))
+
+	if enableRapl {
+		analysisreg.Register(analysismetrics.NewRaplWindowEnergy(mono))
+	}
+	if enableBpf {
+		analysisreg.Register(analysismetrics.NewBpfWindowCounters())
+	}
+	if enableRedfish {
+		analysisreg.Register(analysismetrics.NewRedfishWindowEnergy())
+	}
+	if enableGpu {
+		analysisreg.Register(analysismetrics.NewGpuWindowEnergy(mono))
+	}
+
+	// Residual only makes sense with Redfish system energy and RAPL.
+	if enableRedfish && enableRapl {
+		analysisreg.Register(analysismetrics.NewSystemResidualEnergy())
+	}
 
 	sink := analysisexport.NewLogSink()
 
@@ -307,21 +360,20 @@ func main() {
 	_ = eng.Register("analysis", 5*time.Second, true, analysisEng.Collect)
 	//--------------------------------------------------
 
-	tycho_ctx, tycho_cancel := context.WithCancel(context.Background())
+	tychoCtx, tychoCancel := context.WithCancel(context.Background())
+	go func() { _ = eng.Start(tychoCtx) }()
+	defer tychoCancel()
 
-	go func() { _ = eng.Start(tycho_ctx) }()
-	defer tycho_cancel()
+	// Run one cumulative-energy validation after the engine is warm (GPU only)
+	if enableGpu {
+		go func() {
+			warmup := time.Duration(config.BufferWindowSec()) * time.Second
+			time.Sleep(warmup)
 
-	// Run one cumulative-energy validation after the engine is warm
-	go func() {
-		warmup := time.Duration(config.BufferWindowSec()) * time.Second
-		time.Sleep(warmup)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+			defer cancel()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancel()
-
-		// --- Cumulative-energy validation (per device) ---
-		{
+			// --- Cumulative-energy validation (per device) ---
 			snap := gpuBuf.SnapshotChrono()
 			if diagMap, ok := calibration.CumEnergyValidationPerDeviceFromSnap(ctx, mono, snap); ok {
 				// Persist in calibration’s own store (if you need it elsewhere)
@@ -345,15 +397,20 @@ func main() {
 				}
 
 				if g != nil {
-					g.SetCumEnergyDiag(validMap) // <-- now matches the gpuCollector signature
+					g.SetCumEnergyDiag(validMap) // matches gpuCollector signature
 				}
-				klog.V(2).Infof("TYCHO-CAL: cumulative energy validation done: devices_valid=%d devices_invalid=%d (warmup≈%.0fs)",
-					valid, invalid, warmup.Seconds())
+				klog.V(2).Infof(
+					"TYCHO-CAL: cumulative energy validation done: devices_valid=%d devices_invalid=%d (warmup≈%.0fs)",
+					valid, invalid, warmup.Seconds(),
+				)
 			} else {
-				klog.V(2).Infof("TYCHO-CAL: cumulative energy validation skipped (insufficient GPU data; warmup≈%.0fs)", warmup.Seconds())
+				klog.V(2).Infof(
+					"TYCHO-CAL: cumulative energy validation skipped (insufficient GPU data; warmup≈%.0fs)",
+					warmup.Seconds(),
+				)
 			}
-		}
-	}()
+		}()
+	}
 
 	//--------------------------------------------------------------------------------
 

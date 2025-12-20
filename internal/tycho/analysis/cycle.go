@@ -28,6 +28,8 @@ type Cycle struct {
 	Mono    *clock.Mono
 	NowMono uint64
 
+	// Window is the analysis window in corrected/event-time domain.
+	// All metrics should emit points with Window = this Window.
 	Window Window
 	Policy ReadPolicy
 
@@ -35,7 +37,11 @@ type Cycle struct {
 	Sink  Sink
 	State *StateStore
 
-	// per-cycle cache: delayTicks -> shifted window
+	// Store is a per-cycle point store populated by a collecting sink wrapper.
+	// It is cycle-local (not a global memoization layer).
+	Store *PointStore
+
+	// per-cycle cache: delayTicks -> shifted window for raw sample selection
 	winCache map[uint64]Window
 }
 
@@ -51,8 +57,16 @@ func (c *Cycle) Redfish() *ring.Sync[ring.RedfishSample] { return c.Rings.Redfis
 // Gpu returns the GPU ring handle (may be nil if not wired/enabled).
 func (c *Cycle) Gpu() *ring.Sync[ring.GpuTick] { return c.Rings.Gpu }
 
-// EffectiveWindowTicks returns Cycle.Window shifted back by delayTicks.
-// Cached because a given metric source delay is fixed and reused across derived metrics.
+// EffectiveWindowTicks returns the raw-sample selection window for a metric
+// with a constant delay in ticks.
+//
+// Semantics:
+//
+//	t_corrected = t_sample - delayTicks
+//
+// We want corrected time within Cycle.Window, so raw samples must fall into:
+//
+//	raw ∈ Cycle.Window shifted forward by delayTicks.
 func (c *Cycle) EffectiveWindowTicks(delayTicks uint64) Window {
 	if delayTicks == 0 {
 		return c.Window
@@ -63,7 +77,7 @@ func (c *Cycle) EffectiveWindowTicks(delayTicks uint64) Window {
 	if w, ok := c.winCache[delayTicks]; ok {
 		return w
 	}
-	w := c.Window.ShiftBack(delayTicks)
+	w := c.Window.ShiftForward(delayTicks)
 	c.winCache[delayTicks] = w
 	return w
 }

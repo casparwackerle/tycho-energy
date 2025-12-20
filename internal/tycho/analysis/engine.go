@@ -49,6 +49,10 @@ func (e *Engine) Collect(ctx context.Context, _ time.Time) {
 	nowMono := e.mono.Now()
 	win := SelectWindow(e.mono, e.cfg.WindowDuration, e.cfg.SafetyOffset)
 
+	// Per-cycle point store and collecting sink wrapper.
+	store := NewPointStore()
+	sink := NewCollectingSink(e.sink, store)
+
 	cycle := &Cycle{
 		Ctx:     ctx,
 		Mono:    e.mono,
@@ -56,8 +60,9 @@ func (e *Engine) Collect(ctx context.Context, _ time.Time) {
 		Window:  win,
 		Policy:  ReadPolicy{SafetyOffsetTicks: e.mono.TicksForDurationCeil(e.cfg.SafetyOffset)},
 		Rings:   e.rings,
-		Sink:    e.sink,
+		Sink:    sink,
 		State:   e.state,
+		Store:   store,
 	}
 
 	klog.V(2).Infof("[analysis] cycle now=%d window=%s", nowMono, win.String())

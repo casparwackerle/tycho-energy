@@ -91,7 +91,7 @@ func (m *RaplWindowEnergy) Run(c *analysis.Cycle) error {
 	emit := func(domain string, v uint64) {
 		p := analysis.Point{
 			Key:     analysis.Key(m.ID(), analysis.Labels{"domain": domain}),
-			Window:  w,
+			Window:  c.Window, // emit corrected window, not raw selection window
 			Unit:    "mJ",
 			Value:   float64(v),
 			Quality: q,

@@ -5,11 +5,14 @@ import (
 	analysisctx "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/context"
 	analysisops "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/operators"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/ring"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
 )
 
 const MetricRedfishSystemEnergyMJ analysis.MetricID = "redfish_system_energy_mj"
 
-type RedfishWindowEnergy struct{}
+type RedfishWindowEnergy struct {
+	delayTicks uint64
+}
 
 func NewRedfishWindowEnergy() *RedfishWindowEnergy { return &RedfishWindowEnergy{} }
 
@@ -28,13 +31,17 @@ func (m *RedfishWindowEnergy) Run(c *analysis.Cycle) error {
 		return nil
 	}
 
-	w := c.EffectiveWindowTicks(0)
+	// Delay is configurable (often 0). Still use the same code path.
+	m.delayTicks = c.Mono.TicksForMsCeil(config.RedfishDelayMs())
+
+	// Raw-sample selection window (forward-shifted).
+	wEff := c.EffectiveWindowTicks(m.delayTicks)
+
 	all := analysisctx.FilterWindowWithPrevChrono[ring.RedfishSample](
-		r, w.StartMono, w.EndMono,
+		r, wEff.StartMono, wEff.EndMono,
 		func(s ring.RedfishSample) uint64 { return s.Mono },
 	)
 
-	// Build per-chassis prev + window slices.
 	prev := map[string]ring.RedfishSample{}
 	prevSet := map[string]bool{}
 	inWin := map[string][]ring.RedfishSample{}
@@ -42,17 +49,16 @@ func (m *RedfishWindowEnergy) Run(c *analysis.Cycle) error {
 	for i := range all {
 		s := all[i]
 		ch := s.ChassisID
-		m := s.Mono
+		t := s.Mono
 
-		if m < w.StartMono {
-			// keep latest < start per chassis
-			if !prevSet[ch] || m >= prev[ch].Mono {
+		if t < wEff.StartMono {
+			if !prevSet[ch] || t >= prev[ch].Mono {
 				prev[ch] = s
 				prevSet[ch] = true
 			}
 			continue
 		}
-		if m > w.EndMono {
+		if t > wEff.EndMono {
 			continue
 		}
 		inWin[ch] = append(inWin[ch], s)
@@ -66,31 +72,40 @@ func (m *RedfishWindowEnergy) Run(c *analysis.Cycle) error {
 			tmp = append(tmp, winSamples...)
 			xs = tmp
 		}
+		if len(xs) == 0 {
+			continue
+		}
+
+		// If no predecessor at/before window start, begin at first sample time.
+		start := wEff.StartMono
+		if xs[0].Mono > start {
+			start = xs[0].Mono
+		}
+		if wEff.EndMono <= start {
+			continue
+		}
 
 		energyJ, intervals := analysisops.IntegrateHeldValueZOH(
 			xs,
-			w.StartMono, w.EndMono,
+			start, wEff.EndMono,
 			func(s ring.RedfishSample) uint64 { return s.Mono },
 			func(s ring.RedfishSample) float64 { return s.PowerWatts },
 			c.Mono.Quantum(),
 		)
 
 		labels := analysis.Labels{"chassis": chassis}
-
-		//convert to millijoule for consistency
 		energyMJ := energyJ * 1000.0
 
 		c.Sink.Emit(c.Ctx, analysis.Point{
 			Key:    analysis.Key(MetricRedfishSystemEnergyMJ, labels),
-			Window: w,
+			Window: c.Window, // corrected shared window
 			Unit:   "mJ",
 			Value:  energyMJ,
 			Quality: &analysis.Quality{
 				SamplesUsed: intervals,
-				DelayTicks:  0,
+				DelayTicks:  m.delayTicks,
 			},
 		})
-
 	}
 
 	return nil

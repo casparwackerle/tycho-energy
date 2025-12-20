@@ -44,6 +44,18 @@ func (w Window) ShiftBack(dt uint64) Window {
 	return Window{StartMono: start, EndMono: end}
 }
 
+// ShiftForward returns a window shifted forward by dt ticks, preserving width.
+// Overflow is not specially handled (uint64 wrap is extremely unlikely in practice).
+func (w Window) ShiftForward(dt uint64) Window {
+	if dt == 0 {
+		return w
+	}
+	return Window{
+		StartMono: w.StartMono + dt,
+		EndMono:   w.EndMono + dt,
+	}
+}
+
 // SelectWindow computes window bounds using mono.Now() and a safety offset.
 // EndMono = mono.Now() - safetyOffsetTicks
 // StartMono = EndMono - windowTicks
