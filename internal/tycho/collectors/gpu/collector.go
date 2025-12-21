@@ -1,3 +1,4 @@
+// file internal/tycho/collectors/gpu/collector.go:
 package gpuCollector
 
 import (

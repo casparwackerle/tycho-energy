@@ -107,7 +107,7 @@ const (
 
 	// Tycho Timing Config
 	defaultTychoTimebaseQuantumMs     = 1
-	defaultTychoBufferWindowSec       = 60  // will be overwritten if too shoft. length of the buffer in seconds. must be longer than longest measurement inverval (likely redfish)
+	defaultTychoBufferWindowSec       = 90  // will be overwritten if too shoft. length of the buffer in seconds. must be longer than longest measurement inverval (likely redfish)
 	defaultTychoBufferMarginCycles    = 3   // must be at least 1
 	defaultTychoRaplPollMs            = 50  //must be equal or multiple of defaultTychoRaplPollMs
 	defaultTychoRaplDelayMs           = 0   //must be equal or multiple of defaultTychoRaplPollMs, assumed to be 0
@@ -119,8 +119,8 @@ const (
 	defaultTychoRedfishPollMs         = 1000  //must be equal or multiple of defaultTychoRaplPollMs. Realistically, Redfish publishes at much slower rates, often 15 or more seconds
 	defaultTychoRedfishDelayMs        = 0     //must be equal or multiple of defaultTychoRaplPollMs, assumed to be 0
 	defaultTychoRedfishHeartbeatMs    = 15000 //realistically possible redish update period, often 15-20 seconds
-	defaultTychoProcessIntervalSec    = 5
-	defaultTychoKubeletIntervalSec    = 10
+	defaultTychoProcessIntervalSec    = 1
+	defaultTychoKubeletIntervalSec    = 5
 	defaultTychoMetaEngineIntervalSec = 1
 
 	// Tycho calibration config
@@ -146,7 +146,7 @@ const (
 	defaultTychoDetectLongestDelay                 = false
 	defaultTychoDelayAfterMs                       = 200 //will be overwritten if there is a metric delay that is longer
 	defaultTychoAnalysisGpuQuantumMs               = 50  //usually same as RAPL/eBPF polling frequency
-	defaultTychoAnalysisGpuHistoryWindowSec        = 90  //likey chaned during runtime.
+	defaultTychoAnalysisGpuHistoryWindowSec        = 60  //likey chaned during runtime.
 	defaultTychoAnalysisGpuSolveWindowSec          = defaultTychoTriggerIntervalSec
 	defaultTychoAnalysisEnableGpuEnergyConstraints = true
 

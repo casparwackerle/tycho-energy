@@ -281,14 +281,14 @@ func getTychoTimingConfig() TychoTimingConfig {
 		RedfishDelayMs:        getIntConfig("TYCHO_REDFISH_DELAY_MS", defaultTychoRedfishDelayMs),
 		RedfishHeartbeatMs:    getIntConfig("TYCHO_REDFISH_HEARTBEAT_MAX_GAP_MS", defaultTychoRedfishHeartbeatMs),
 		ProcessPollSec:        getIntConfig("TYCHO_PROCESS_POLL_SEC", defaultTychoProcessIntervalSec),
-		KubeletPollSec:        getIntConfig("TYCHO_KUBELETT_POLL_SEC", defaultTychoKubeletIntervalSec),
+		KubeletPollSec:        getIntConfig("TYCHO_KUBELET_POLL_SEC", defaultTychoKubeletIntervalSec),
 		MetaEnginePollSec:     getIntConfig("TYCHO_METAENGINE_POLL_SEC", defaultTychoMetaEngineIntervalSec),
 	}
 }
 
 func getTychoCalibrationConfig() TychoCalibrationConfig {
 	return TychoCalibrationConfig{
-		//IdleBudgetSec:                     getIntConfig("TYCHO_CALIBRATION_IDLE_BUDGET_SEC", defaultTychoCalibrationInitIdleBudgetSec),
+		//IdleBudgetSec:                     getIntConfig("TYCHO_CALIBRATION_IDLE_BUDGETF_SEC", defaultTychoCalibrationInitIdleBudgetSec),
 		RaplPollMinMs: getIntConfig("TYCHO_CALIBRATION_RAPL_POLL_MIN_MS", defaultTychoCalibrationInitRaplPollMinMs),
 		//RaplIdleEnabled:                   getBoolConfig("TYCHO_CALIBRATION_RAPL_IDLE_ENABLE", defaultTychoCalibrationInitRaplIdleEnabled),
 		RedfishContinuousHeartbeatEnabled: getBoolConfig("TYCHO_CALIBRATION_REDFISH_CONTINUOUS_HEARTBEAT_ENABLE", defaultTychoCalibrationRedfishContinuousHeartbeatEnabled),
@@ -493,7 +493,6 @@ func logTychoConfigs() {
 	klog.V(5).Infof("STOP TYCHO CONFIGS: ----------------------------------------")
 
 }
-
 func ValidateTychoQuick() {
 	t := &instance.TychoTiming
 	a := &instance.TychoAnalysis
@@ -503,12 +502,14 @@ func ValidateTychoQuick() {
 	if t.TimebaseQuantumMs <= 0 {
 		klog.Fatalf("TYCHO: timebaseQuantumMs must be > 0 (got %d)", t.TimebaseQuantumMs)
 	}
+
 	clampNonNegative := func(p *int, name string) {
 		if *p < 0 {
 			klog.V(2).Infof("TYCHO: %s < 0 (%d) -> clamping to 0", name, *p)
 			*p = 0
 		}
 	}
+
 	for _, fld := range []struct {
 		p *int
 		n string
@@ -518,15 +519,19 @@ func ValidateTychoQuick() {
 		{&t.GpuPollMs, "GpuPollMs"}, {&t.GpuDelayMs, "GpuDelayMs"},
 		{&t.RedfishPollMs, "RedfishPollMs"}, {&t.RedfishDelayMs, "RedfishDelayMs"},
 		{&t.RedfishHeartbeatMs, "RedfishHeartbeatMs"},
-		{&t.BufferWindowSec, "BufferWindowSec"}, {&t.BufferWindowSec, "BufferWindowSec"},
+		{&t.BufferWindowSec, "BufferWindowSec"},
+		{&t.BufferMarginCycles, "BufferMarginCycles"},
 		{&a.DelayAfterMs, "DelayAfterMs"},
 		{&a.GpuQuantumMs, "GpuQuantumMs"},
 		{&a.GpuHistoryWindowSec, "GpuHistoryWindowSec"},
 		{&a.GpuSolveWindowSec, "GpuSolveWindowSec"},
+		{&a.TriggerIntervalSec, "TriggerIntervalSec"},
 	} {
 		clampNonNegative(fld.p, fld.n)
 	}
-	if t.BufferWindowSec == 0 {
+
+	// BufferWindowSec must always be at least 1s for sane ring sizing.
+	if t.BufferWindowSec <= 0 {
 		t.BufferWindowSec = 1
 	}
 
@@ -545,15 +550,19 @@ func ValidateTychoQuick() {
 		a.Trigger = "redfish"
 	}
 
-	// GPU analysis windows constraints (history must cover full buffer; solve must cover trigger interval)
-	if a.GpuHistoryWindowSec == 0 {
-		a.GpuHistoryWindowSec = t.BufferWindowSec
+	// GPU defaults (basic sanity; detailed coupling is in NormalizeTycho).
+	// If GPU is enabled, we want sensible defaults even when user leaves them unset.
+	if c.EnableGpu {
+		if a.GpuQuantumMs == 0 {
+			a.GpuQuantumMs = 50
+		}
+		if a.GpuHistoryWindowSec == 0 {
+			// NEW REQUIREMENT: default to useful history (ring sizing depends on BufferWindowSec;
+			// NormalizeTycho will ensure BufferWindowSec covers this).
+			a.GpuHistoryWindowSec = 60
+		}
 	}
-	if a.GpuHistoryWindowSec < t.BufferWindowSec {
-		klog.V(2).Infof("TYCHO: GpuHistoryWindowSec (%ds) < BufferWindowSec (%ds) -> raising to buffer window",
-			a.GpuHistoryWindowSec, t.BufferWindowSec)
-		a.GpuHistoryWindowSec = t.BufferWindowSec
-	}
+
 	// Solve window: must not be shorter than TriggerIntervalSec; if TriggerIntervalSec is unset/non-positive, assume 5s base.
 	baseSolve := a.TriggerIntervalSec
 	if baseSolve <= 0 {
@@ -566,11 +575,6 @@ func ValidateTychoQuick() {
 		klog.V(2).Infof("TYCHO: GpuSolveWindowSec (%ds) < TriggerIntervalSec (%ds) -> raising to trigger interval",
 			a.GpuSolveWindowSec, baseSolve)
 		a.GpuSolveWindowSec = baseSolve
-	}
-
-	// GpuQuantumMs basic sanity: if unset, default to a plausible fast cadence (50ms); other constraints handled in NormalizeTycho.
-	if a.GpuQuantumMs == 0 {
-		a.GpuQuantumMs = 50
 	}
 
 	// redfish cadence sanity
@@ -599,12 +603,15 @@ func ValidateTychoQuick() {
 		instance.TychoCalibration.GpuPollEnabled = true
 	}
 }
-
-// Ensure plausible configuration values, adjust if necessary
 func NormalizeTycho() {
 	t := &instance.TychoTiming
 	a := &instance.TychoAnalysis
 	c := &instance.TychoCollector
+
+	// ---- NEW POLICY CONSTANTS (not user-configurable for now) ----
+	// GPU fusion needs meaningful raw history in rings.
+	// This is intentionally conservative and can be revisited later.
+	const minGpuHistorySec = 60
 
 	// helpers
 	align := func(ms, q int) int {
@@ -654,8 +661,14 @@ func NormalizeTycho() {
 		}
 		return m
 	}
+	imax := func(a, b int) int {
+		if a > b {
+			return a
+		}
+		return b
+	}
 
-	// Align everything to quantum
+	// Align everything to timebase quantum
 	q := t.TimebaseQuantumMs
 	t.RaplPollMs = align(t.RaplPollMs, q)
 	t.RaplDelayMs = align(t.RaplDelayMs, q)
@@ -676,7 +689,7 @@ func NormalizeTycho() {
 		a.GpuQuantumMs = q
 	}
 
-	// GPU quantum must not be smaller than the (enabled) RAPL/Redfish polling period (can be higher).
+	// GPU quantum must not be smaller than enabled “hard” poll periods (practical floor).
 	minAllowedGpuQ := enabledMinPositive(
 		struct {
 			en bool
@@ -686,25 +699,36 @@ func NormalizeTycho() {
 			en bool
 			v  int
 		}{c.EnableRedfish, t.RedfishPollMs},
+		struct {
+			en bool
+			v  int
+		}{c.EnableGpu, t.GpuPollMs},
+		struct {
+			en bool
+			v  int
+		}{c.EnableBpf, t.BpfPollMs},
 	)
 	if minAllowedGpuQ > 0 && a.GpuQuantumMs < minAllowedGpuQ {
-		klog.V(2).Infof("TYCHO: GpuQuantumMs (%dms) < min(rapl/redfish poll) (%dms) -> raising",
+		klog.V(2).Infof("TYCHO: GpuQuantumMs (%dms) < min(enabled poll) (%dms) -> raising",
 			a.GpuQuantumMs, minAllowedGpuQ)
-		a.GpuQuantumMs = minAllowedGpuQ
-		// re-align after raising
-		a.GpuQuantumMs = align(a.GpuQuantumMs, q)
+		a.GpuQuantumMs = align(minAllowedGpuQ, q)
 	}
 
 	// GPU windows constraints
-	if a.GpuHistoryWindowSec <= 0 {
-		a.GpuHistoryWindowSec = t.BufferWindowSec
-	}
-	if a.GpuHistoryWindowSec < t.BufferWindowSec {
-		klog.V(2).Infof("TYCHO: auto-increasing GpuHistoryWindowSec from %ds to %ds (must cover BufferWindowSec)",
-			a.GpuHistoryWindowSec, t.BufferWindowSec)
-		a.GpuHistoryWindowSec = t.BufferWindowSec
+	if c.EnableGpu {
+		if a.GpuHistoryWindowSec <= 0 {
+			// Default already set in ValidateTychoQuick, but keep robust.
+			a.GpuHistoryWindowSec = minGpuHistorySec
+		}
+		// NEW REQUIREMENT: useful minimum history for fusion and future slices.
+		if a.GpuHistoryWindowSec < minGpuHistorySec {
+			klog.V(2).Infof("TYCHO: auto-increasing GpuHistoryWindowSec from %ds to %ds (minimum useful GPU history)",
+				a.GpuHistoryWindowSec, minGpuHistorySec)
+			a.GpuHistoryWindowSec = minGpuHistorySec
+		}
 	}
 
+	// Solve window coherence
 	baseSolve := a.TriggerIntervalSec
 	if baseSolve <= 0 {
 		baseSolve = 5
@@ -717,13 +741,17 @@ func NormalizeTycho() {
 			a.GpuSolveWindowSec, baseSolve)
 		a.GpuSolveWindowSec = baseSolve
 	}
+	if c.EnableGpu && a.GpuSolveWindowSec > a.GpuHistoryWindowSec {
+		klog.V(2).Infof("TYCHO: GpuSolveWindowSec (%ds) > GpuHistoryWindowSec (%ds) -> clamping to history",
+			a.GpuSolveWindowSec, a.GpuHistoryWindowSec)
+		a.GpuSolveWindowSec = a.GpuHistoryWindowSec
+	}
 
 	if t.BufferMarginCycles < 0 {
 		t.BufferMarginCycles = 0
 	}
 
-	// Ensure DelayAfterMs ≥ longest per-source delay
-	// longest per-source delay (enabled only)
+	// Ensure DelayAfterMs ≥ longest per-source delay (enabled only)
 	longestDelay := enabledMax(
 		struct {
 			en bool
@@ -748,8 +776,7 @@ func NormalizeTycho() {
 		a.DelayAfterMs = longestDelay
 	}
 
-	// Compute fast-sources requirement (acquisition + analysis fire)
-	// acquisition duration: period + delay, enabled only
+	// Compute fast-sources requirement (acquisition + analysis fire), enabled only
 	fastSourcesMs := enabledMax(
 		struct {
 			en bool
@@ -770,28 +797,45 @@ func NormalizeTycho() {
 	)
 	requiredMs := fastSourcesMs + a.DelayAfterMs
 
-	// Compute Redfish coverage if enabled (slow publisher coverage)
+	// Redfish coverage if enabled (slow publisher coverage)
 	if c.EnableRedfish {
 		if t.RedfishHeartbeatMs > requiredMs {
 			requiredMs = t.RedfishHeartbeatMs + a.DelayAfterMs
 		}
 	}
 
-	// Final buffer requirement: required + small safety
-	minBufMs := (requiredMs * (1 + t.BufferMarginCycles)) + 100 // 100 ms safety
-	if t.BufferWindowSec*1000 < minBufMs {
-		newSec := (minBufMs + 999) / 1000 // ceil ms→s
-		klog.V(2).Infof(
-			"TYCHO: auto-increasing BufferWindowSec from %ds to %ds (required=%dms, fast+delayAfter=%dms, redfishCov=%dms, quantum=%dms)",
-			t.BufferWindowSec, newSec, minBufMs, fastSourcesMs+a.DelayAfterMs, t.RedfishHeartbeatMs, q,
-		)
-		t.BufferWindowSec = newSec
-		klog.V(2).Infof("TYCHO buffer calc: fast=%dms, delayAfter=%dms, redfishCov=%dms, safety=100ms => minBufMs=%dms -> %ds",
-			fastSourcesMs, a.DelayAfterMs, t.RedfishHeartbeatMs, minBufMs, newSec)
+	// Compute minimal buffer requirement from timing constraints.
+	// Note: BufferMarginCycles is in “extra window multiples”, so (1+margin) scales requiredMs.
+	minBufMs := (requiredMs * (1 + t.BufferMarginCycles)) + 100 // +100ms safety
+	minBufSecFromTiming := (minBufMs + 999) / 1000              // ceil ms→s
+
+	// NEW: minimal buffer requirement from GPU history.
+	// Because rings are sized from BufferWindowSec for ALL metrics in exporter.go,
+	// BufferWindowSec must be >= GpuHistoryWindowSec if we want that GPU history
+	// to exist in raw samples.
+	minBufSecFromHistory := 0
+	if c.EnableGpu {
+		minBufSecFromHistory = a.GpuHistoryWindowSec
 	}
 
-	// Re-apply GPU history constraint in case BufferWindowSec was increased above.
-	if a.GpuHistoryWindowSec < t.BufferWindowSec {
+	// Enforce BufferWindowSec >= max(timing requirement, GPU-history requirement, 1s).
+	minBufSec := imax(1, imax(minBufSecFromTiming, minBufSecFromHistory))
+	if t.BufferWindowSec < minBufSec {
+		klog.V(2).Infof(
+			"TYCHO: auto-increasing BufferWindowSec from %ds to %ds (timing=%ds, gpuHistory=%ds, requiredMs=%d, quantum=%dms)",
+			t.BufferWindowSec,
+			minBufSec,
+			minBufSecFromTiming,
+			minBufSecFromHistory,
+			minBufMs,
+			q,
+		)
+		t.BufferWindowSec = minBufSec
+	}
+
+	// If BufferWindowSec increased, ensure GPU history still covers it (only if GPU enabled).
+	// This keeps the invariant that GPU history is at least the ring coverage.
+	if c.EnableGpu && a.GpuHistoryWindowSec < t.BufferWindowSec {
 		klog.V(2).Infof("TYCHO: auto-increasing GpuHistoryWindowSec from %ds to %ds (BufferWindowSec increased)",
 			a.GpuHistoryWindowSec, t.BufferWindowSec)
 		a.GpuHistoryWindowSec = t.BufferWindowSec
