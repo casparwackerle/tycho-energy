@@ -141,10 +141,14 @@ type TychoCalibrationConfig struct {
 }
 
 type TychoAnalysisConfig struct {
-	Trigger            string // "redfish" | "timer"
-	TriggerIntervalSec int    // used for "timer"
-	DetectLongestDelay bool
-	DelayAfterMs       int // used for "redfish"
+	Trigger                    string // "redfish" | "timer"
+	TriggerIntervalSec         int    // used for "timer"
+	DetectLongestDelay         bool
+	DelayAfterMs               int // used for "redfish"
+	GpuQuantumMs               int
+	GpuHistoryWindowSec        int
+	GpuSolveWindowSec          int
+	EnableGpuEnergyConstraints bool
 }
 
 type TychoCollectorConfig struct {
@@ -303,10 +307,14 @@ func getTychoCalibrationConfig() TychoCalibrationConfig {
 
 func getTychoAnalysisConfig() TychoAnalysisConfig {
 	return TychoAnalysisConfig{
-		Trigger:            getConfig("TYCHO_ANALYSIS_TRIGGER", defaultTychoTrigger),
-		TriggerIntervalSec: getIntConfig("TYCHO_ANALYSIS_EVERY_SEC", defaultTychoTriggerIntervalSec),
-		DetectLongestDelay: getBoolConfig("TYCHO_ANALYSIS_DETECT_LONGEST_DELAY", defaultTychoDetectLongestDelay),
-		DelayAfterMs:       getIntConfig("TYCHO_ANALYSIS_DELAY_AFTER_MS", defaultTychoDelayAfterMs),
+		Trigger:                    getConfig("TYCHO_ANALYSIS_TRIGGER", defaultTychoTrigger),
+		TriggerIntervalSec:         getIntConfig("TYCHO_ANALYSIS_EVERY_SEC", defaultTychoTriggerIntervalSec),
+		DetectLongestDelay:         getBoolConfig("TYCHO_ANALYSIS_DETECT_LONGEST_DELAY", defaultTychoDetectLongestDelay),
+		DelayAfterMs:               getIntConfig("TYCHO_ANALYSIS_DELAY_AFTER_MS", defaultTychoDelayAfterMs),
+		GpuQuantumMs:               getIntConfig("TYCHO_ANALYSIS_GPU_QUANTUM_MS", defaultTychoAnalysisGpuQuantumMs),
+		GpuHistoryWindowSec:        getIntConfig("TYCHO_ANALYSIS_GPU_HISTORY_WINDOW_SEC", defaultTychoAnalysisGpuHistoryWindowSec),
+		GpuSolveWindowSec:          getIntConfig("TYCHO_ANALYSIS_GPU_SOLVE_WINDOW_SEC", defaultTychoAnalysisGpuSolveWindowSec),
+		EnableGpuEnergyConstraints: getBoolConfig("TYCHO_ANALYSIS_ENABLE_GPU_ENERGY_CONSTRAINTS", defaultTychoAnalysisEnableGpuEnergyConstraints),
 	}
 }
 func getTychoCollectorConfig() TychoCollectorConfig {
@@ -480,6 +488,8 @@ func logTychoConfigs() {
 		instance.TychoCalibration.GpuPollBudgetSec)
 	klog.V(5).Infof("GPU: Prefer DCGM=%t, EnablePerProcess=%t, EnableMIGDiscovery=%t",
 		instance.TychoCollector.PreferDCGM, instance.TychoCollector.EnablePerProcess, instance.TychoCollector.EnableMIGDiscovery)
+	klog.V(5).Infof("GPU Modeling: QuantumMs=%d, HistoryWindowSec=%d, SolveWindow=%d, EnableEnergyConstraints=%t",
+		instance.TychoAnalysis.GpuQuantumMs, instance.TychoAnalysis.GpuHistoryWindowSec, instance.TychoAnalysis.GpuSolveWindowSec, instance.TychoAnalysis.EnableGpuEnergyConstraints)
 	klog.V(5).Infof("STOP TYCHO CONFIGS: ----------------------------------------")
 
 }
@@ -510,6 +520,9 @@ func ValidateTychoQuick() {
 		{&t.RedfishHeartbeatMs, "RedfishHeartbeatMs"},
 		{&t.BufferWindowSec, "BufferWindowSec"}, {&t.BufferWindowSec, "BufferWindowSec"},
 		{&a.DelayAfterMs, "DelayAfterMs"},
+		{&a.GpuQuantumMs, "GpuQuantumMs"},
+		{&a.GpuHistoryWindowSec, "GpuHistoryWindowSec"},
+		{&a.GpuSolveWindowSec, "GpuSolveWindowSec"},
 	} {
 		clampNonNegative(fld.p, fld.n)
 	}
@@ -530,6 +543,34 @@ func ValidateTychoQuick() {
 	} else if a.Trigger != "redfish" {
 		klog.V(2).Infof("TYCHO: unknown trigger=%q -> defaulting to redfish", a.Trigger)
 		a.Trigger = "redfish"
+	}
+
+	// GPU analysis windows constraints (history must cover full buffer; solve must cover trigger interval)
+	if a.GpuHistoryWindowSec == 0 {
+		a.GpuHistoryWindowSec = t.BufferWindowSec
+	}
+	if a.GpuHistoryWindowSec < t.BufferWindowSec {
+		klog.V(2).Infof("TYCHO: GpuHistoryWindowSec (%ds) < BufferWindowSec (%ds) -> raising to buffer window",
+			a.GpuHistoryWindowSec, t.BufferWindowSec)
+		a.GpuHistoryWindowSec = t.BufferWindowSec
+	}
+	// Solve window: must not be shorter than TriggerIntervalSec; if TriggerIntervalSec is unset/non-positive, assume 5s base.
+	baseSolve := a.TriggerIntervalSec
+	if baseSolve <= 0 {
+		baseSolve = 5
+	}
+	if a.GpuSolveWindowSec == 0 {
+		a.GpuSolveWindowSec = baseSolve
+	}
+	if a.GpuSolveWindowSec < baseSolve {
+		klog.V(2).Infof("TYCHO: GpuSolveWindowSec (%ds) < TriggerIntervalSec (%ds) -> raising to trigger interval",
+			a.GpuSolveWindowSec, baseSolve)
+		a.GpuSolveWindowSec = baseSolve
+	}
+
+	// GpuQuantumMs basic sanity: if unset, default to a plausible fast cadence (50ms); other constraints handled in NormalizeTycho.
+	if a.GpuQuantumMs == 0 {
+		a.GpuQuantumMs = 50
 	}
 
 	// redfish cadence sanity
@@ -557,7 +598,6 @@ func ValidateTychoQuick() {
 		klog.V(2).Infof("TYCHO: GpuPhaseAwareSampling enabled -> enabling GPU polling calibration (GpuPollEnabled=true)")
 		instance.TychoCalibration.GpuPollEnabled = true
 	}
-
 }
 
 // Ensure plausible configuration values, adjust if necessary
@@ -595,6 +635,25 @@ func NormalizeTycho() {
 		}
 		return m
 	}
+	enabledMinPositive := func(pairs ...struct {
+		en bool
+		v  int
+	}) int {
+		m := 0
+		set := false
+		for _, p := range pairs {
+			if !p.en || p.v <= 0 {
+				continue
+			}
+			if !set || p.v < m {
+				m, set = p.v, true
+			}
+		}
+		if !set {
+			return 0
+		}
+		return m
+	}
 
 	// Align everything to quantum
 	q := t.TimebaseQuantumMs
@@ -608,6 +667,57 @@ func NormalizeTycho() {
 	t.RedfishDelayMs = align(t.RedfishDelayMs, q)
 	t.RedfishHeartbeatMs = align(t.RedfishHeartbeatMs, q)
 	a.DelayAfterMs = align(a.DelayAfterMs, q)
+
+	// GPU analysis config: keep on the same timebase grid.
+	a.GpuQuantumMs = align(a.GpuQuantumMs, q)
+	if a.GpuQuantumMs < q {
+		klog.V(2).Infof("TYCHO: GpuQuantumMs (%dms) < TimebaseQuantumMs (%dms) -> raising to timebase quantum",
+			a.GpuQuantumMs, q)
+		a.GpuQuantumMs = q
+	}
+
+	// GPU quantum must not be smaller than the (enabled) RAPL/Redfish polling period (can be higher).
+	minAllowedGpuQ := enabledMinPositive(
+		struct {
+			en bool
+			v  int
+		}{c.EnableRapl, t.RaplPollMs},
+		struct {
+			en bool
+			v  int
+		}{c.EnableRedfish, t.RedfishPollMs},
+	)
+	if minAllowedGpuQ > 0 && a.GpuQuantumMs < minAllowedGpuQ {
+		klog.V(2).Infof("TYCHO: GpuQuantumMs (%dms) < min(rapl/redfish poll) (%dms) -> raising",
+			a.GpuQuantumMs, minAllowedGpuQ)
+		a.GpuQuantumMs = minAllowedGpuQ
+		// re-align after raising
+		a.GpuQuantumMs = align(a.GpuQuantumMs, q)
+	}
+
+	// GPU windows constraints
+	if a.GpuHistoryWindowSec <= 0 {
+		a.GpuHistoryWindowSec = t.BufferWindowSec
+	}
+	if a.GpuHistoryWindowSec < t.BufferWindowSec {
+		klog.V(2).Infof("TYCHO: auto-increasing GpuHistoryWindowSec from %ds to %ds (must cover BufferWindowSec)",
+			a.GpuHistoryWindowSec, t.BufferWindowSec)
+		a.GpuHistoryWindowSec = t.BufferWindowSec
+	}
+
+	baseSolve := a.TriggerIntervalSec
+	if baseSolve <= 0 {
+		baseSolve = 5
+	}
+	if a.GpuSolveWindowSec <= 0 {
+		a.GpuSolveWindowSec = baseSolve
+	}
+	if a.GpuSolveWindowSec < baseSolve {
+		klog.V(2).Infof("TYCHO: auto-increasing GpuSolveWindowSec from %ds to %ds (must be >= TriggerIntervalSec)",
+			a.GpuSolveWindowSec, baseSolve)
+		a.GpuSolveWindowSec = baseSolve
+	}
+
 	if t.BufferMarginCycles < 0 {
 		t.BufferMarginCycles = 0
 	}
@@ -680,12 +790,20 @@ func NormalizeTycho() {
 			fastSourcesMs, a.DelayAfterMs, t.RedfishHeartbeatMs, minBufMs, newSec)
 	}
 
+	// Re-apply GPU history constraint in case BufferWindowSec was increased above.
+	if a.GpuHistoryWindowSec < t.BufferWindowSec {
+		klog.V(2).Infof("TYCHO: auto-increasing GpuHistoryWindowSec from %ds to %ds (BufferWindowSec increased)",
+			a.GpuHistoryWindowSec, t.BufferWindowSec)
+		a.GpuHistoryWindowSec = t.BufferWindowSec
+	}
+
 	// Optional compact summary
 	klog.V(2).Infof(
-		"TYCHO EFFECTIVE: poll={rapl:%dms,bpf:%dms,gpu:%dms,redfish:%dms} delay={rapl:%d,bpf:%d,gpu:%d,redfish:%d} fireDelay=%dms buffer=%ds quantum=%dms trigger=%s",
+		"TYCHO EFFECTIVE: poll={rapl:%dms,bpf:%dms,gpu:%dms,redfish:%dms} delay={rapl:%d,bpf:%d,gpu:%d,redfish:%d} fireDelay=%dms buffer=%ds quantum=%dms trigger=%s gpu={q:%dms,history:%ds,solve:%ds,energyConstraints:%t}",
 		t.RaplPollMs, t.BpfPollMs, t.GpuPollMs, t.RedfishPollMs,
 		t.RaplDelayMs, t.BpfDelayMs, t.GpuDelayMs, t.RedfishDelayMs,
 		a.DelayAfterMs, t.BufferWindowSec, q, a.Trigger,
+		a.GpuQuantumMs, a.GpuHistoryWindowSec, a.GpuSolveWindowSec, a.EnableGpuEnergyConstraints,
 	)
 }
 
@@ -1127,6 +1245,38 @@ func DetectLongestDelay() bool {
 
 func DelayAfterMs() int {
 	return instance.TychoAnalysis.DelayAfterMs
+}
+
+func GpuQuantumMs() int {
+	return instance.TychoAnalysis.GpuQuantumMs
+}
+
+func SetGpuQuantumMs(ms int) {
+	instance.TychoAnalysis.GpuQuantumMs = ms
+}
+
+func GpuHistoryWindowSec() int {
+	return instance.TychoAnalysis.GpuHistoryWindowSec
+}
+
+func SetGpuHistoryWindowSec(sec int) {
+	instance.TychoAnalysis.GpuHistoryWindowSec = sec
+}
+
+func GpuSolveWindowSec() int {
+	return instance.TychoAnalysis.GpuSolveWindowSec
+}
+
+func SetGpuSolveWindowSec(sec int) {
+	instance.TychoAnalysis.GpuSolveWindowSec = sec
+}
+
+func EnableGpuEnergyConstraints() bool {
+	return instance.TychoAnalysis.EnableGpuEnergyConstraints
+}
+
+func SetEnableGpuEnergyConstraints(enable bool) {
+	instance.TychoAnalysis.EnableGpuEnergyConstraints = enable
 }
 
 func EnableRapl() bool {

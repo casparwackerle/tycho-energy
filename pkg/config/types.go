@@ -107,7 +107,7 @@ const (
 
 	// Tycho Timing Config
 	defaultTychoTimebaseQuantumMs     = 1
-	defaultTychoBufferWindowSec       = 5   // will be overwritten if too shoft. length of the buffer in seconds. must be longer than longest measurement inverval (likely redfish)
+	defaultTychoBufferWindowSec       = 60  // will be overwritten if too shoft. length of the buffer in seconds. must be longer than longest measurement inverval (likely redfish)
 	defaultTychoBufferMarginCycles    = 3   // must be at least 1
 	defaultTychoRaplPollMs            = 50  //must be equal or multiple of defaultTychoRaplPollMs
 	defaultTychoRaplDelayMs           = 0   //must be equal or multiple of defaultTychoRaplPollMs, assumed to be 0
@@ -141,10 +141,14 @@ const (
 	//defaultTychoCalibrationInitGpuIdleEnabled = false
 
 	// Tycho Analysis Config
-	defaultTychoTrigger            = "timer" // "redfish" | "timer"
-	defaultTychoTriggerIntervalSec = 15      // only used if trigger=timer
-	defaultTychoDetectLongestDelay = false
-	defaultTychoDelayAfterMs       = 200 //will be overwritten if there is a metric delay that is longer
+	defaultTychoTrigger                            = "timer" // "redfish" | "timer"
+	defaultTychoTriggerIntervalSec                 = 5       // only used if trigger=timer
+	defaultTychoDetectLongestDelay                 = false
+	defaultTychoDelayAfterMs                       = 200 //will be overwritten if there is a metric delay that is longer
+	defaultTychoAnalysisGpuQuantumMs               = 50  //usually same as RAPL/eBPF polling frequency
+	defaultTychoAnalysisGpuHistoryWindowSec        = 90  //likey chaned during runtime.
+	defaultTychoAnalysisGpuSolveWindowSec          = defaultTychoTriggerIntervalSec
+	defaultTychoAnalysisEnableGpuEnergyConstraints = true
 
 	// Tycho Collector Config
 	defaultTychoEnableRapl            = true
