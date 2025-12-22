@@ -149,6 +149,11 @@ type TychoAnalysisConfig struct {
 	GpuHistoryWindowSec        int
 	GpuSolveWindowSec          int
 	EnableGpuEnergyConstraints bool
+	FusionQuantumMs            int
+	FusionHorizonSec           int
+	FusionRedfishKernel        string
+	FusionRedfishKernelMs      int
+	FusionDiagnosticsEnabled   bool
 }
 
 type TychoCollectorConfig struct {
@@ -315,6 +320,11 @@ func getTychoAnalysisConfig() TychoAnalysisConfig {
 		GpuHistoryWindowSec:        getIntConfig("TYCHO_ANALYSIS_GPU_HISTORY_WINDOW_SEC", defaultTychoAnalysisGpuHistoryWindowSec),
 		GpuSolveWindowSec:          getIntConfig("TYCHO_ANALYSIS_GPU_SOLVE_WINDOW_SEC", defaultTychoAnalysisGpuSolveWindowSec),
 		EnableGpuEnergyConstraints: getBoolConfig("TYCHO_ANALYSIS_ENABLE_GPU_ENERGY_CONSTRAINTS", defaultTychoAnalysisEnableGpuEnergyConstraints),
+		FusionQuantumMs:            getIntConfig("TYCHO_ANALYSIS_FUSION_QUANTUM_MS", defaultTychoTriggerIntervalSec),
+		FusionHorizonSec:           getIntConfig("TYCHO_ANALYSIS_FUSION_HORIZON_SEC", defaultTychoTriggerIntervalSec),
+		FusionRedfishKernel:        getConfig("TYCHO_ANALYSIS_FUSION_REDFISH_KERNEL", defaultTychoTrigger),
+		FusionRedfishKernelMs:      getIntConfig("TYCHO_ANALYSIS_FUSION_REDFISH_KERNEL_MS", defaultTychoTriggerIntervalSec),
+		FusionDiagnosticsEnabled:   getBoolConfig("TYCHO_ANALYSIS_FUSION_DIAGNOSTICS", defaultTychoDetectLongestDelay),
 	}
 }
 func getTychoCollectorConfig() TychoCollectorConfig {
@@ -1321,6 +1331,26 @@ func EnableGpuEnergyConstraints() bool {
 
 func SetEnableGpuEnergyConstraints(enable bool) {
 	instance.TychoAnalysis.EnableGpuEnergyConstraints = enable
+}
+
+func GetFusionQuantumMs() int {
+	return instance.TychoAnalysis.FusionQuantumMs
+}
+
+func GetFusionHorizonSec() int {
+	return instance.TychoAnalysis.FusionHorizonSec
+}
+
+func GetFusionRedfishKernel() string {
+	return instance.TychoAnalysis.FusionRedfishKernel
+}
+
+func GetFusionRedfishKernelMs() int {
+	return instance.TychoAnalysis.FusionRedfishKernelMs
+}
+
+func GetFusionDiagnosticsEnabled() bool {
+	return instance.TychoAnalysis.FusionDiagnosticsEnabled
 }
 
 func EnableRapl() bool {

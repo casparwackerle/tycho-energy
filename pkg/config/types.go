@@ -149,6 +149,11 @@ const (
 	defaultTychoAnalysisGpuHistoryWindowSec        = 60  //likey chaned during runtime.
 	defaultTychoAnalysisGpuSolveWindowSec          = defaultTychoTriggerIntervalSec
 	defaultTychoAnalysisEnableGpuEnergyConstraints = true
+	defaultTychoAnalysisFusionQuantumMs            = 50
+	defaultTychoAnalysisFusionHorizonSec           = defaultTychoBufferWindowSec
+	defaultTychoAnalysisFusionRedfishKernel        = "avg1s_trailing"
+	defaultTychoAnalysisFusionRedfishKernelMs      = 1000
+	defaultTychoAnalysisFusionDiagnosticsEnabled   = false
 
 	// Tycho Collector Config
 	defaultTychoEnableRapl            = true
