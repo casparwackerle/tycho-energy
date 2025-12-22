@@ -8,18 +8,22 @@ import (
 
 // Default (internal) weights. Not user-configurable for now.
 //
+// Weights are inverse expected error (1/sigma) in the residual's unit.
+// - Instant: noisy -> larger sigma -> smaller weight
+// - Avg(1s): smoother -> smaller sigma -> larger weight
+// - Energy: very reliable when present -> very small sigma_E -> very large weight
+//
 // Semantics:
 // - wInst: pulls the reconstructed signal toward instantaneous readings (fast but noisy)
 // - wAvg: pulls toward NVML "1 second average" (energy accurate but smeared)
 // - wEnergy: pulls toward cumulative energy deltas (if present and enabled)
 // - lambdaD: smoothness prior (2nd difference); discourages unrealistic high-frequency oscillation
-// - ridge: tiny diagonal regularizer to avoid singularities when constraints are sparse
 const (
-	wInst   = 1.0  // moderate
-	wAvg    = 6.0  // high: enforce 1s-average strongly
-	wEnergy = 40.0 // very high: cumulative energy when present
-	lambdaD = 5.0  // smoothness (2nd diff). Tune later if needed.
-	ridge   = 1e-5 // tiny ridge to avoid singularities
+	wInst   = 1.0   // moderate
+	wAvg    = 6.0   // high: enforce 1s-average strongly
+	wEnergy = 40.0  // very high: cumulative energy when present
+	lambdaD = 5.0   // smoothness (2nd diff). Tune later if needed.
+	eps     = 1e-12 // Numerical diagonal stabilization
 )
 
 // Internal solver defaults (not user-configurable for now).
@@ -215,9 +219,10 @@ func Reconstruct(
 	}
 
 	applyA := func(dst, x []float64, useEnergyLocal bool) {
-		// dst += ridge * x
+
+		// Numerical diagonal stabilization
 		for i := 0; i < N; i++ {
-			dst[i] += ridge * x[i]
+			dst[i] += eps * x[i]
 		}
 
 		// Inst: w^2 S^T S is diagonal at inst indices (accumulate duplicates)
