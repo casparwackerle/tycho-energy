@@ -342,6 +342,11 @@ func main() {
 		analysisreg.Register(analysismetrics.NewSystemResidualEnergy())
 	}
 
+	// metric fusion only when all metrics are available.
+	if enableRedfish && enableRapl && enableBpf {
+		analysisreg.Register(analysismetrics.NewFusionSubstrate())
+	}
+
 	sink := analysisexport.NewLogSink()
 
 	analysisEng := analysis.NewEngine(
