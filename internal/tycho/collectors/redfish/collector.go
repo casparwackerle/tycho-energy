@@ -102,6 +102,13 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 		chassis := sys.Chassis()
 		seq := sys.Sequence()
 		watts := sys.Watts()
+		if watts <= 0 {
+			klog.V(6).Infof(
+				"redfish: ignoring invalid power reading chassis=%s watts=%.3f seq=%d",
+				chassis, watts, seq,
+			)
+			return
+		}
 		srcTime := sys.SourceDate() // zero if unknown
 
 		// --- Adaptive learning only if auto-tune is enabled ---

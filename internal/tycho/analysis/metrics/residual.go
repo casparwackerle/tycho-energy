@@ -12,6 +12,9 @@ const (
 	MetricSystemResidualEnergyMJ  analysis.MetricID = "system_residual_energy_mj"
 	MetricSystemEnergyMJ          analysis.MetricID = "system_energy_mj"
 	MetricSystemAccountedEnergyMJ analysis.MetricID = "system_accounted_energy_mj"
+	MetricRedfishEnergyHatMJ      analysis.MetricID = "redfish_energy_hat_mj"
+	MetricRedfishPowerHatMW       analysis.MetricID = "redfish_power_hat_mw"
+	MetricFusionTheta             analysis.MetricID = "fusion_theta" // state key family
 )
 
 type SystemResidualEnergy struct{}
@@ -29,13 +32,33 @@ func (m *SystemResidualEnergy) Run(c *analysis.Cycle) error {
 		return nil
 	}
 
-	// 1) Pick redfish chassis energy (prefer Self).
-	rfPts := c.Store.ListByID(MetricRedfishSystemEnergyMJ)
-	rfMJ, rfChassis, okRF := selectRedfishEnergyMJ(rfPts)
-	if !okRF {
-		// Without system energy, residual is undefined.
-		klog.V(2).Infof("[analysis] residual: missing redfish_system_energy_mj for window=%s", c.Window.String())
-		return nil
+	// 1) Pick system energy:
+	// Prefer fused hat energy (Slice 6b), else fall back to raw Redfish window energy.
+	var (
+		sysMJ      float64
+		sysChassis string
+		sysSrc     string
+		okSys      bool
+	)
+
+	// Prefer fused estimate if present.
+	if hatPts := c.Store.ListByID(analysis.MetricID("redfish_energy_hat_mj")); len(hatPts) > 0 {
+		sysMJ, sysChassis, okSys = selectRedfishEnergyMJ(hatPts)
+		if okSys {
+			sysSrc = "hat"
+		}
+	}
+
+	// Fall back to raw Redfish integration.
+	if !okSys {
+		rfPts := c.Store.ListByID(MetricRedfishSystemEnergyMJ)
+		sysMJ, sysChassis, okSys = selectRedfishEnergyMJ(rfPts)
+		if !okSys {
+			// Without system energy, residual is undefined.
+			klog.V(2).Infof("[analysis] residual: missing system energy for window=%s", c.Window.String())
+			return nil
+		}
+		sysSrc = "redfish"
 	}
 
 	// 2) RAPL total = pkg + dram (explicitly NOT summing core/uncore).
@@ -47,7 +70,7 @@ func (m *SystemResidualEnergy) Run(c *analysis.Cycle) error {
 	gpuMJ := sumByID(c.Store.ListByID(MetricGpuEnergyMJ))
 
 	accounted := raplTotalMJ + gpuMJ
-	residual := rfMJ - accounted
+	residual := sysMJ - accounted
 
 	// Emit residual + optional debug helpers.
 	c.Sink.Emit(c.Ctx, analysis.Point{
@@ -60,10 +83,10 @@ func (m *SystemResidualEnergy) Run(c *analysis.Cycle) error {
 		},
 	})
 	c.Sink.Emit(c.Ctx, analysis.Point{
-		Key:    analysis.Key(MetricSystemEnergyMJ, analysis.Labels{"chassis": rfChassis}),
+		Key:    analysis.Key(MetricSystemEnergyMJ, analysis.Labels{"chassis": sysChassis, "source": sysSrc}),
 		Window: c.Window,
 		Unit:   "mJ",
-		Value:  rfMJ,
+		Value:  sysMJ,
 	})
 	c.Sink.Emit(c.Ctx, analysis.Point{
 		Key:    analysis.Key(MetricSystemAccountedEnergyMJ, nil),
@@ -74,10 +97,11 @@ func (m *SystemResidualEnergy) Run(c *analysis.Cycle) error {
 
 	// Per-cycle breakdown log (fast validation).
 	klog.Infof(
-		"[analysis] residual window=%s chassis=%q redfish_mj=%.3f rapl_pkg_mj=%.3f rapl_dram_mj=%.3f gpu_mj=%.3f residual_mj=%.3f",
+		"[analysis] residual window=%s chassis=%q source=%s sys_mj=%.3f rapl_pkg_mj=%.3f rapl_dram_mj=%.3f gpu_mj=%.3f residual_mj=%.3f",
 		c.Window.String(),
-		rfChassis,
-		rfMJ,
+		sysChassis,
+		sysSrc,
+		sysMJ,
 		raplPkgMJ,
 		raplDramMJ,
 		gpuMJ,
@@ -85,15 +109,16 @@ func (m *SystemResidualEnergy) Run(c *analysis.Cycle) error {
 	)
 
 	// Warn if residual is strongly negative (do not fail).
-	tol := math.Max(0.02*rfMJ, 50000.0) // 2% of system energy or 50 J
+	tol := math.Max(0.02*sysMJ, 50000.0) // 2% of system energy or 50 J
 	if residual < -tol {
 		klog.Warningf(
-			"[analysis] residual negative beyond tolerance window=%s residual_mj=%.3f tol_mj=%.3f (redfish_mj=%.3f accounted_mj=%.3f)",
+			"[analysis] residual negative beyond tolerance window=%s residual_mj=%.3f tol_mj=%.3f (sys_mj=%.3f accounted_mj=%.3f source=%s)",
 			c.Window.String(),
 			residual,
 			tol,
-			rfMJ,
+			sysMJ,
 			accounted,
+			sysSrc,
 		)
 	}
 

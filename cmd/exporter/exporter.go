@@ -337,14 +337,15 @@ func main() {
 		analysisreg.Register(analysismetrics.NewGpuWindowEnergy(mono))
 	}
 
-	// Residual only makes sense with Redfish system energy and RAPL.
-	if enableRedfish && enableRapl {
-		analysisreg.Register(analysismetrics.NewSystemResidualEnergy())
-	}
-
 	// metric fusion only when all metrics are available.
 	if enableRedfish && enableRapl && enableBpf {
 		analysisreg.Register(analysismetrics.NewFusionSubstrate())
+		analysisreg.Register(analysismetrics.NewFusionModel())
+	}
+
+	// Residual only makes sense with Redfish system energy and RAPL.
+	if enableRedfish && enableRapl {
+		analysisreg.Register(analysismetrics.NewSystemResidualEnergy())
 	}
 
 	sink := analysisexport.NewLogSink()

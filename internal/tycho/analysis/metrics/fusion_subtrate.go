@@ -7,7 +7,6 @@ import (
 
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis/fusion"
-	"github.com/casparwackerle/tycho-energy/internal/tycho/ring"
 	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"k8s.io/klog/v2"
 )
@@ -238,65 +237,11 @@ func (m *FusionSubstrate) refreshRedfishObs(
 		chassis, len(cache.RedfishObs), rfDelay, string(kernel))
 }
 
-func getCache(s *analysis.StateStore, key analysis.MetricKey) (*fusion.Cache, bool) {
-	if s == nil {
-		return nil, false
-	}
-	v, ok := s.Get(key)
-	if !ok {
-		return nil, false
-	}
-	c, ok := v.(*fusion.Cache)
-	if ok && c != nil {
-		return c, true
-	}
-	// Also accept non-pointer (in case you store values).
-	cv, ok2 := v.(fusion.Cache)
-	if ok2 {
-		tmp := cv
-		return &tmp, true
-	}
-	return nil, false
-}
-
 func putCache(s *analysis.StateStore, key analysis.MetricKey, cache *fusion.Cache) {
 	if s == nil || cache == nil {
 		return
 	}
 	s.Set(key, cache)
-}
-
-func selectFusionChassis(c *analysis.Cycle) string {
-	// Prefer Self if present in redfish ring; else deterministic fallback.
-	if c == nil || c.Redfish() == nil {
-		return "Self"
-	}
-	seg1, seg2 := c.Redfish().ViewChrono()
-
-	seen := map[string]bool{}
-	for _, seg := range [][]ring.RedfishSample{seg1, seg2} {
-		for i := range seg {
-			ch := seg[i].ChassisID
-			if ch == "" {
-				continue
-			}
-			seen[ch] = true
-		}
-	}
-	if seen["Self"] {
-		return "Self"
-	}
-	// Deterministic smallest.
-	best := ""
-	for ch := range seen {
-		if best == "" || ch < best {
-			best = ch
-		}
-	}
-	if best == "" {
-		best = "Self"
-	}
-	return best
 }
 
 // Safety helper for debugging.
