@@ -50,8 +50,8 @@ resources: {}
 # -- Extra environment variables
 extraEnvVars:
   KEPLER_LOG_LEVEL: "2"           #reduce log level to 5 for finished builds
-  # METRIC_PATH: "/metrics"
-  # BIND_ADDRESS: "0.0.0.0:9102"
+  METRIC_PATH: "/metrics"
+  BIND_ADDRESS: "0.0.0.0:9102"
   ENABLE_GPU: "false"
   ENABLE_QAT: "false"
   ENABLE_EBPF_CGROUPID: "true"

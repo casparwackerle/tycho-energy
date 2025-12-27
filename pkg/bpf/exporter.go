@@ -193,7 +193,7 @@ func (e *exporter) attach() error {
 		numCPU,
 	)
 	if err != nil {
-		return nil
+		return err
 	}
 
 	return nil
@@ -242,8 +242,10 @@ func (e *exporter) Detach() {
 	}
 
 	// Perf events
-	e.perfEvents.close()
-	e.perfEvents = nil
+	if e.perfEvents != nil {
+		e.perfEvents.close()
+		e.perfEvents = nil
+	}
 
 	// Objects
 	e.bpfObjects.Close()
@@ -348,6 +350,9 @@ type hardwarePerfEvents struct {
 }
 
 func (h *hardwarePerfEvents) close() {
+	if h == nil {
+		return
+	}
 	unixClosePerfEvents(h.cpuCyclesPerfEvents)
 	unixClosePerfEvents(h.cpuInstructionsPerfEvents)
 	unixClosePerfEvents(h.cacheMissPerfEvents)

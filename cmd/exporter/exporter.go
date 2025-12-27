@@ -18,19 +18,14 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
-	"fmt"
-	"net/http"
-	_ "net/http/pprof"
-	"os"
-	"os/signal"
-	"sync"
-	"syscall"
+
+	//_ "net/http/pprof"
 	"time"
 
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis"
 	analysisexport "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/export"
+	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis/exporterhttp"
 	analysismetrics "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/metrics"
 	analysisregistry "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/registry"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/calibration"
@@ -45,14 +40,11 @@ import (
 	"github.com/casparwackerle/tycho-energy/pkg/bpf"
 	"github.com/casparwackerle/tycho-energy/pkg/build"
 	"github.com/casparwackerle/tycho-energy/pkg/config"
-	"github.com/casparwackerle/tycho-energy/pkg/metrics"
 	"github.com/casparwackerle/tycho-energy/pkg/sensors/accelerator"
 	"github.com/casparwackerle/tycho-energy/pkg/sensors/components"
 	"github.com/casparwackerle/tycho-energy/pkg/sensors/platform"
-	"gopkg.in/yaml.v3"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"k8s.io/klog/v2"
 )
@@ -114,16 +106,16 @@ func newAppConfig() *AppConfig {
 	return cfg
 }
 
-func healthProbe(w http.ResponseWriter, req *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	_, err := w.Write([]byte(`ok`))
-	if err != nil {
-		klog.Fatalf("%s", fmt.Sprintf("failed to write response: %v", err))
-	}
-}
+// func healthProbe(w http.ResponseWriter, req *http.Request) {
+// 	w.WriteHeader(http.StatusOK)
+// 	_, err := w.Write([]byte(`ok`))
+// 	if err != nil {
+// 		klog.Fatalf("%s", fmt.Sprintf("failed to write response: %v", err))
+// 	}
+// }
 
 func main() {
-	start := time.Now()
+	//start := time.Now()
 	klog.InitFlags(nil)
 	appConfig := newAppConfig() // Initialize appConfig and define flags
 	flag.Parse()                // Parse command-line flags
@@ -134,22 +126,22 @@ func main() {
 
 	klog.Infof("Kepler running on version: %s", build.Version)
 
-	// prometheus
-	registry := metrics.GetRegistry()
-	registry.MustRegister(prometheus.NewGaugeFunc(
-		prometheus.GaugeOpts{
-			Name: "kepler_exporter_build_info",
-			Help: "A metric with a constant '1' value labeled by version, revision, branch, os and arch from which kepler_exporter was built.",
-			ConstLabels: prometheus.Labels{
-				"branch":   build.Branch,
-				"revision": build.Revision,
-				"version":  build.Version,
-				"os":       build.OS,
-				"arch":     build.Arch,
-			},
-		},
-		func() float64 { return 1 },
-	))
+	// // prometheus
+	// registry := metrics.GetRegistry()
+	// registry.MustRegister(prometheus.NewGaugeFunc(
+	// 	prometheus.GaugeOpts{
+	// 		Name: "kepler_exporter_build_info",
+	// 		Help: "A metric with a constant '1' value labeled by version, revision, branch, os and arch from which kepler_exporter was built.",
+	// 		ConstLabels: prometheus.Labels{
+	// 			"branch":   build.Branch,
+	// 			"revision": build.Revision,
+	// 			"version":  build.Version,
+	// 			"os":       build.OS,
+	// 			"arch":     build.Arch,
+	// 		},
+	// 	},
+	// 	func() float64 { return 1 },
+	// ))
 
 	platform.SetIsSystemCollectionSupported(!appConfig.DisablePowerMeter)
 	components.SetIsSystemCollectionSupported(!appConfig.DisablePowerMeter)
@@ -360,6 +352,44 @@ func main() {
 	// Fan-out so logs stay useful while you bring up Prometheus.
 	sink := analysisexport.NewMultiSink(logSink, tychoPromSink)
 
+	// Create Tycho-owned Prometheus registry + HTTP server
+	reg := prometheus.NewRegistry()
+
+	reg.MustRegister(prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Name: "tycho_exporter_build_info",
+			Help: "Constant 1 with build labels.",
+			ConstLabels: prometheus.Labels{
+				"branch":   build.Branch,
+				"revision": build.Revision,
+				"version":  build.Version,
+				"os":       build.OS,
+				"arch":     build.Arch,
+			},
+		},
+		func() float64 { return 1 },
+	))
+
+	// Register Tycho analysis collector into this registry
+	reg.MustRegister(tychoPromSink.Collector())
+
+	// TLS optional
+	tlsCfg, _ := exporterhttp.LoadTLSFromWebConfig(appConfig.TLSFilePath)
+
+	metricPathConfig := config.GetMetricPath(appConfig.MetricsPath)
+	bindAddressConfig := config.GetBindAddress(appConfig.Address)
+
+	httpSrv := exporterhttp.New(exporterhttp.Config{
+		Address:       bindAddressConfig,
+		MetricsPath:   metricPathConfig,
+		EnableHealthz: true,
+		EnableRoot:    true,
+		EnablePprof:   true,
+		TLS:           tlsCfg,
+	}, reg)
+
+	httpSrv.Start()
+
 	analysisEng := analysis.NewEngine(
 		mono,
 		analysis.Rings{Rapl: raplBuf, Bpf: bpfBuf, Redfish: rfBuf, Gpu: gpuBuf},
@@ -428,122 +458,33 @@ func main() {
 		}()
 	}
 
-	//--------------------------------------------------------------------------------
+	httpSrv.RunUntilSignal()
 
-	//starting a CollectorManager instance to collect data and report metrics
-	// if startErr := m.Start(); startErr != nil {
-	// 	klog.Infof("%s", fmt.Sprintf("failed to start : %v", startErr))
-	// }
-
-	metricPathConfig := config.GetMetricPath(appConfig.MetricsPath)
-	bindAddressConfig := config.GetBindAddress(appConfig.Address)
-
-	var certFile, keyFile string
-	tlsConfigured := false
-
-	// Retrieve the TLS config
-	if appConfig.TLSFilePath != "" {
-		configPath := appConfig.TLSFilePath
-
-		configFile, err := os.Open(configPath)
-		if err != nil {
-			klog.Errorf("Error opening config file: %v\n", err)
-		}
-		defer configFile.Close()
-
-		var tlsServerConfig TLSServerConfig
-		decoder := yaml.NewDecoder(configFile)
-		if err := decoder.Decode(&tlsServerConfig); err != nil {
-			klog.Errorf("Error parsing config file: %v\n", err)
-		}
-
-		if tlsServerConfig.TLSConfig.CertFile != "" && tlsServerConfig.TLSConfig.KeyFile != "" {
-			certFile = tlsServerConfig.TLSConfig.CertFile
-			keyFile = tlsServerConfig.TLSConfig.KeyFile
-			tlsConfigured = true
-		}
-	}
-
-	handler := http.ServeMux{}
-
-	// Kepler/collector-manager registry (existing behavior)
-	reg := collMgr.PrometheusCollector.RegisterMetrics()
-
-	// Register Tycho analysis metrics into the SAME registry and thus the SAME /metrics endpoint.
-	// This reuses the Kepler HTTP server unchanged.
-	reg.MustRegister(tychoPromSink.Collector())
-
-	handler.Handle(metricPathConfig, promhttp.HandlerFor(
-		reg,
-		promhttp.HandlerOpts{
-			Registry: reg,
-		},
-	))
-	handler.HandleFunc("/healthz", healthProbe)
-	handler.HandleFunc("/", rootHandler(metricPathConfig))
-	handler.HandleFunc("/debug/pprof/", http.DefaultServeMux.ServeHTTP)
-
-	srv := &http.Server{
-		Addr:    bindAddressConfig,
-		Handler: &handler,
-	}
-
-	klog.Infof("starting to listen on %s", bindAddressConfig)
-	errChan := make(chan error)
-
-	signalChan := make(chan os.Signal, 1)
-	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
-
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if tlsConfigured {
-			// Run server in TLS mode
-			klog.Infof("Starting server with TLS")
-			err = srv.ListenAndServeTLS(certFile, keyFile)
-		} else {
-			// Fall back to non-TLS mode
-			klog.Infof("Starting server without TLS")
-			err = srv.ListenAndServe()
-		}
-
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errChan <- err
-		}
-	}()
-	klog.Infof(startedMsg, time.Since(start))
-	klog.Flush() // force flush to parse the start msg in the e2e test
-
-	// Wait for an exit signal
-
-	ctx := context.Background()
-	select {
-	case err := <-errChan:
-		klog.Fatalf("%s", fmt.Sprintf("failed to listen and serve: %v", err))
-	case <-signalChan:
-		klog.Infof("Received shutdown signal")
-		ctx, cancel := context.WithDeadline(ctx, time.Now().Add(5*time.Second))
-		defer cancel()
-		if err := srv.Shutdown(ctx); err != nil {
-			klog.Fatalf("%s", fmt.Sprintf("failed to shutdown gracefully: %v", err))
-		}
-	}
-	wg.Wait()
 	klog.Infoln(finishingMsg)
-	klog.FlushAndExit(klog.ExitFlushTimeout, 0)
+
+	// Stop the scheduler loop and collectors deterministically.
+	// (Do this explicitly because FlushAndExit will skip defers.)
+	tychoCancel()
+	eng.Stop()           // only if you have it; if not, omit
+	collMgr.Stop()       // explicit, since defer will not run
+	bpfExporter.Detach() // explicit, since defer will not run
+
+	klog.Flush()
+	return
+	//klog.FlushAndExit(klog.ExitFlushTimeout, 0)
+
 }
 
-func rootHandler(metricPathConfig string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if _, err := w.Write([]byte(`<html>
-					<head><title>Energy Stats Exporter</title></head>
-					<body>
-					<h1>Energy Stats Exporter</h1>
-					<p><a href="` + metricPathConfig + `">Metrics</a></p>
-					</body>
-					</html>`)); err != nil {
-			klog.Errorf("%s", fmt.Sprintf("failed to write http response: %v", err))
-		}
-	}
-}
+// func rootHandler(metricPathConfig string) http.HandlerFunc {
+// 	return func(w http.ResponseWriter, r *http.Request) {
+// 		if _, err := w.Write([]byte(`<html>
+// 					<head><title>Energy Stats Exporter</title></head>
+// 					<body>
+// 					<h1>Energy Stats Exporter</h1>
+// 					<p><a href="` + metricPathConfig + `">Metrics</a></p>
+// 					</body>
+// 					</html>`)); err != nil {
+// 			klog.Errorf("%s", fmt.Sprintf("failed to write http response: %v", err))
+// 		}
+// 	}
+// }
