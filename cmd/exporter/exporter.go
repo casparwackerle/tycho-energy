@@ -348,7 +348,17 @@ func main() {
 		analysisreg.Register(analysismetrics.NewSystemResidualEnergy())
 	}
 
-	sink := analysisexport.NewLogSink()
+	// --- Analysis sinks ---
+	logSink := analysisexport.NewLogSink()
+
+	// Prometheus sink for analysis points (registered into the existing registry later).
+	tychoPromSink := analysisexport.NewPrometheusSink(analysisexport.PrometheusConfig{
+		Prefix:      "tycho", // becomes "tycho_"
+		EnableDebug: true,    // window ticks + quality gauges
+	})
+
+	// Fan-out so logs stay useful while you bring up Prometheus.
+	sink := analysisexport.NewMultiSink(logSink, tychoPromSink)
 
 	analysisEng := analysis.NewEngine(
 		mono,
@@ -455,7 +465,14 @@ func main() {
 	}
 
 	handler := http.ServeMux{}
+
+	// Kepler/collector-manager registry (existing behavior)
 	reg := collMgr.PrometheusCollector.RegisterMetrics()
+
+	// Register Tycho analysis metrics into the SAME registry and thus the SAME /metrics endpoint.
+	// This reuses the Kepler HTTP server unchanged.
+	reg.MustRegister(tychoPromSink.Collector())
+
 	handler.Handle(metricPathConfig, promhttp.HandlerFor(
 		reg,
 		promhttp.HandlerOpts{
@@ -465,6 +482,7 @@ func main() {
 	handler.HandleFunc("/healthz", healthProbe)
 	handler.HandleFunc("/", rootHandler(metricPathConfig))
 	handler.HandleFunc("/debug/pprof/", http.DefaultServeMux.ServeHTTP)
+
 	srv := &http.Server{
 		Addr:    bindAddressConfig,
 		Handler: &handler,
