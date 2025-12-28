@@ -346,11 +346,11 @@ func main() {
 	// Prometheus sink for analysis points (registered into the existing registry later).
 	tychoPromSink := analysisexport.NewPrometheusSink(analysisexport.PrometheusConfig{
 		Prefix:      "tycho", // becomes "tycho_"
-		EnableDebug: true,    // window ticks + quality gauges
+		EnableDebug: false,   // window ticks + quality gauges
 	})
 
 	// Fan-out so logs stay useful while you bring up Prometheus.
-	sink := analysisexport.NewMultiSink(logSink, tychoPromSink)
+	sink := analysisexport.NewMultiSink(logSink, analysisexport.NewTruncatingSink(tychoPromSink))
 
 	// Create Tycho-owned Prometheus registry + HTTP server
 	reg := prometheus.NewRegistry()

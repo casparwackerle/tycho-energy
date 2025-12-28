@@ -3,10 +3,12 @@ package analysismetrics
 
 import (
 	"math"
+	"sort"
 
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis/fusion"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/ring"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"k8s.io/klog/v2"
 )
 
@@ -41,6 +43,42 @@ func (m *FusionModel) Run(c *analysis.Cycle) error {
 	}
 	dtSec := float64(cache.QuantumTicks) * monoQuantumSec
 	if dtSec <= 0 {
+		return nil
+	}
+
+	// Warmup policy: until the fusion cache provides solver-ready RedfishObs,
+	// publish raw Redfish power (truth) over the analysis window instead of modelled power.
+	if len(cache.RedfishObs) == 0 {
+		// Redfish samples are in raw time; analysis window is corrected time.
+		rfDelay := c.Mono.TicksForMsCeil(config.RedfishDelayMs())
+		rawStart := c.Window.StartMono + rfDelay
+		rawEnd := c.Window.EndMono + rfDelay
+
+		pMW, ok := avgRedfishPowerMWInRawWindow(c, chassis, rawStart, rawEnd, monoQuantumSec)
+		if !ok {
+			// If we have no Redfish data at all yet, publish nothing (avoid wrong values).
+			klog.V(2).Infof("[analysis] fusion_model chassis=%q warmup raw_redfish unavailable (no samples yet)", chassis)
+			return nil
+		}
+
+		// Energy over analysis window: mW * s = mJ.
+		windowSec := float64(c.Window.EndMono-c.Window.StartMono+1) * monoQuantumSec
+		if windowSec <= 0 {
+			return nil
+		}
+		eMJ := pMW * windowSec
+
+		c.Sink.Emit(c.Ctx, analysis.Point{
+			Key:    analysis.Key(MetricRedfishEnergyHatMJ, analysis.Labels{"chassis": chassis}),
+			Window: c.Window,
+			Unit:   "mJ",
+			Value:  eMJ,
+		})
+
+		klog.V(2).Infof(
+			"[analysis] fusion_model chassis=%q mode=raw_redfish p=%.3f_mW redfish_obs=%d",
+			chassis, pMW, len(cache.RedfishObs),
+		)
 		return nil
 	}
 
@@ -144,6 +182,12 @@ type theta5 struct {
 	Bias  float64
 }
 
+type solverRow struct {
+	x [5]float64
+	y float64
+	w float64
+}
+
 func defaultTheta() theta5 {
 	return theta5{Alpha: 1, Beta: 1, Gamma: 1, Delta: 0, Bias: 0}
 }
@@ -159,34 +203,29 @@ func getTheta(s *analysis.StateStore, key analysis.MetricKey) (theta5, bool) {
 	th, ok := v.(theta5)
 	return th, ok
 }
-
 func fitTheta(cache *fusion.Cache, dtSec, monoQuantumSec float64, prev theta5, hasPrev bool) (theta5, bool) {
+	// --- Defaults (can be promoted to config later) ---
 	const (
-		wRF    = 1.0
-		lambda = 1e-6
-		minObs = 3
+		wRF          = 1.0
+		lambdaScaled = 1e-6 // ridge in scaled space
+		minObs       = 5    // N_min (addendum recommends ~5 for typical horizons)
+		epsScale     = 1e-12
+
+		// Low-excitation gating:
+		// Use only physical meter columns (pkg/dram/gpu) so CPUInstr does not dominate.
+		excTauMW = 1e-3
+
+		// Optional one-pass trimming (IRLS-lite). Keep disabled by default.
+		enableTrim = false
+		trimFrac   = 0.05 // drop top 5% |residual|
 	)
 
 	if cache == nil || dtSec <= 0 || monoQuantumSec <= 0 {
 		return theta5{}, false
 	}
-	if len(cache.RedfishObs) < minObs {
-		return theta5{}, false
-	}
 
-	// Normal equations: (XᵀWᵀWX + λI)θ = XᵀWᵀWy
-	var A [5][5]float64
-	var b [5]float64
-
-	addRow := func(x [5]float64, y float64, w float64) {
-		ww := w * w
-		for i := 0; i < 5; i++ {
-			b[i] += ww * x[i] * y
-			for j := 0; j < 5; j++ {
-				A[i][j] += ww * x[i] * x[j]
-			}
-		}
-	}
+	// Build solver rows (unscaled) from Redfish observations.
+	rows := make([]solverRow, 0, len(cache.RedfishObs))
 
 	for i := range cache.RedfishObs {
 		obs := cache.RedfishObs[i]
@@ -194,14 +233,27 @@ func fitTheta(cache *fusion.Cache, dtSec, monoQuantumSec float64, prev theta5, h
 		if !ok {
 			continue
 		}
-		addRow(x, obs.ValueMW, wRF)
+		rows = append(rows, solverRow{x: x, y: obs.ValueMW, w: wRF})
 	}
 
-	for i := 0; i < 5; i++ {
-		A[i][i] += lambda
+	// Freeze-on-low-information: not enough usable obs.
+	if len(rows) < minObs {
+		return theta5{}, false
 	}
 
-	vec, ok := solve5x5(A, b)
+	// Fix A: compute per-column RMS scales from the actual X used in the solve.
+	// Intercept column is forced to scale=1.
+	scales := rmsScales(rows, epsScale)
+
+	// Fix B: low-excitation gating on physical meters.
+	exc := scales[0] + scales[1] + scales[2]
+	if exc < excTauMW {
+		// skip refit; caller will fall back to prev/default.
+		return theta5{}, false
+	}
+
+	// Fit once (scaled ridge LS), then apply non-negativity + one constrained refit.
+	th, ok := solveThetaScaled(rows, scales, lambdaScaled)
 	if !ok {
 		if hasPrev {
 			return prev, false
@@ -209,24 +261,194 @@ func fitTheta(cache *fusion.Cache, dtSec, monoQuantumSec float64, prev theta5, h
 		return defaultTheta(), false
 	}
 
-	out := theta5{Alpha: vec[0], Beta: vec[1], Gamma: vec[2], Delta: vec[3], Bias: vec[4]}
-	if !finite(out.Alpha) || !finite(out.Beta) || !finite(out.Gamma) || !finite(out.Delta) || !finite(out.Bias) {
+	// Enforce non-negativity constraints.
+	th, nClamped := clampThetaNonNeg(th)
+	if nClamped > 0 {
+		refit, ok2 := refitWithFixedNonNeg(cache, dtSec, monoQuantumSec, th)
+		if ok2 {
+			th = refit
+		}
+	}
+
+	if !finite(th.Alpha) || !finite(th.Beta) || !finite(th.Gamma) || !finite(th.Delta) || !finite(th.Bias) {
 		if hasPrev {
 			return prev, false
 		}
 		return defaultTheta(), false
 	}
-	// Enforce non-negativity constraints.
-	out, nClamped := clampThetaNonNeg(out)
 
-	if nClamped > 0 {
-		refit, ok2 := refitWithFixedNonNeg(cache, dtSec, monoQuantumSec, out)
-		if ok2 {
-			out = refit
+	// Fix D (optional): one-pass trimming against Redfish outliers, then refit.
+	if enableTrim && len(rows) >= minObs {
+		kept := trimRowsByResidual(rows, th, trimFrac)
+		if len(kept) >= minObs {
+			th2, ok2 := solveThetaScaled(kept, scales, lambdaScaled)
+			if ok2 {
+				th2, nClamped2 := clampThetaNonNeg(th2)
+				if nClamped2 > 0 {
+					// constrained refit needs cache access; keep it consistent by running it on cache.
+					refit, ok3 := refitWithFixedNonNeg(cache, dtSec, monoQuantumSec, th2)
+					if ok3 {
+						th2 = refit
+					}
+				}
+				if finite(th2.Alpha) && finite(th2.Beta) && finite(th2.Gamma) && finite(th2.Delta) && finite(th2.Bias) {
+					th = th2
+				}
+			}
 		}
 	}
 
+	// Optional: log scales + excitation at a higher verbosity for debugging.
+	klog.V(4).Infof(
+		"[analysis] fusion_model fit scales(pkg=%.6g dram=%.6g gpu=%.6g instr=%.6g) exc=%.6g rows=%d",
+		scales[0], scales[1], scales[2], scales[3], exc, len(rows),
+	)
+
+	return th, true
+}
+
+// rmsScales computes per-column RMS of X over the provided rows.
+// Intercept scale is forced to 1.
+func rmsScales(rows []solverRow, eps float64) [5]float64 {
+	var s2 [5]float64
+	if len(rows) == 0 {
+		return [5]float64{1, 1, 1, 1, 1}
+	}
+	for i := range rows {
+		x := rows[i].x
+		for j := 0; j < 5; j++ {
+			s2[j] += x[j] * x[j]
+		}
+	}
+	n := float64(len(rows))
+	var scales [5]float64
+	for j := 0; j < 5; j++ {
+		scales[j] = math.Sqrt(s2[j]/n) + eps
+	}
+	// Intercept column: do not scale.
+	scales[4] = 1.0
+	return scales
+}
+
+// solveThetaScaled solves ridge LS in scaled space and returns theta in original units.
+// This uses normal equations on the scaled X.
+func solveThetaScaled(
+	rows []solverRow,
+	scales [5]float64,
+	lambdaScaled float64,
+) (theta5, bool) {
+	if len(rows) == 0 {
+		return theta5{}, false
+	}
+
+	// Normal equations: (X~ᵀ Wᵀ W X~ + λ I) θ~ = X~ᵀ Wᵀ W y
+	var A [5][5]float64
+	var b [5]float64
+
+	addRow := func(xScaled [5]float64, y float64, w float64) {
+		ww := w * w
+		for i := 0; i < 5; i++ {
+			b[i] += ww * xScaled[i] * y
+			for j := 0; j < 5; j++ {
+				A[i][j] += ww * xScaled[i] * xScaled[j]
+			}
+		}
+	}
+
+	for i := range rows {
+		x := rows[i].x
+		var xs [5]float64
+		for j := 0; j < 5; j++ {
+			s := scales[j]
+			if s <= 0 {
+				s = 1
+			}
+			xs[j] = x[j] / s
+		}
+		addRow(xs, rows[i].y, rows[i].w)
+	}
+
+	// Ridge stabilization in scaled space.
+	for i := 0; i < 5; i++ {
+		A[i][i] += lambdaScaled
+	}
+
+	vecScaled, ok := solve5x5(A, b)
+	if !ok {
+		return theta5{}, false
+	}
+
+	// Unscale coefficients: theta_j = theta~_j / s_j (intercept has s=1).
+	var vec [5]float64
+	for j := 0; j < 5; j++ {
+		s := scales[j]
+		if s <= 0 {
+			s = 1
+		}
+		vec[j] = vecScaled[j] / s
+	}
+
+	out := theta5{Alpha: vec[0], Beta: vec[1], Gamma: vec[2], Delta: vec[3], Bias: vec[4]}
+	if !finite(out.Alpha) || !finite(out.Beta) || !finite(out.Gamma) || !finite(out.Delta) || !finite(out.Bias) {
+		return theta5{}, false
+	}
 	return out, true
+}
+
+// trimRowsByResidual drops the largest |residual| fraction and returns the kept subset.
+// Residual is computed in original (unscaled) space using the provided theta.
+func trimRowsByResidual(
+	rows []solverRow,
+	th theta5,
+	frac float64,
+) []solverRow {
+	n := len(rows)
+	if n == 0 || frac <= 0 {
+		return rows
+	}
+	if frac >= 0.5 {
+		frac = 0.5
+	}
+	absr := make([]float64, 0, n)
+	for i := range rows {
+		x := rows[i].x
+		yhat := th.Alpha*x[0] + th.Beta*x[1] + th.Gamma*x[2] + th.Delta*x[3] + th.Bias*x[4]
+		r := yhat - rows[i].y
+		if r < 0 {
+			r = -r
+		}
+		absr = append(absr, r)
+	}
+	sort.Float64s(absr)
+	// Keep (1-frac) fraction => threshold at quantile q = 1-frac.
+	qIdx := int(math.Floor(float64(n-1) * (1.0 - frac)))
+	if qIdx < 0 {
+		qIdx = 0
+	}
+	if qIdx >= n {
+		qIdx = n - 1
+	}
+	tau := absr[qIdx]
+
+	kept := make([]solverRow, 0, n)
+
+	dropped := 0
+	for i := range rows {
+		x := rows[i].x
+		yhat := th.Alpha*x[0] + th.Beta*x[1] + th.Gamma*x[2] + th.Delta*x[3] + th.Bias*x[4]
+		r := yhat - rows[i].y
+		if r < 0 {
+			r = -r
+		}
+		if r <= tau {
+			kept = append(kept, rows[i])
+		} else {
+			dropped++
+		}
+	}
+
+	klog.V(3).Infof("[analysis] fusion_model trim dropped=%d kept=%d tau=%.6g", dropped, len(kept), tau)
+	return kept
 }
 
 // clampThetaNonNeg enforces simple physical constraints.
@@ -682,4 +904,131 @@ func solveDense(A [][]float64, b []float64) ([]float64, bool) {
 		}
 	}
 	return x, true
+}
+
+// avgRedfishPowerMWInRawWindow computes the time-weighted average Redfish power (mW)
+// over the raw-time interval [rawStart, rawEnd] (inclusive-ish).
+// It uses ZOH over sample intervals. Requires at least one usable sample.
+func avgRedfishPowerMWInRawWindow(
+	c *analysis.Cycle,
+	chassis string,
+	rawStart, rawEnd uint64,
+	monoQuantumSec float64,
+) (float64, bool) {
+	if c == nil || c.Redfish() == nil || monoQuantumSec <= 0 {
+		return 0, false
+	}
+	if rawEnd <= rawStart {
+		return 0, false
+	}
+
+	seg1, seg2 := c.Redfish().ViewChrono()
+
+	// Collect samples for the chassis; also keep one predecessor (best-effort) to integrate cleanly.
+	// We keep it simple: scan and select all samples in [rawStart, rawEnd] plus last < rawStart.
+	var prev *ring.RedfishSample
+	samples := make([]ring.RedfishSample, 0, 16)
+
+	ingest := func(seg []ring.RedfishSample) {
+		for i := range seg {
+			s := seg[i]
+			if chassis != "" && s.ChassisID != chassis {
+				continue
+			}
+			t := s.Mono
+			if t < rawStart {
+				// candidate predecessor
+				if prev == nil || t > prev.Mono {
+					tmp := s
+					prev = &tmp
+				}
+				continue
+			}
+			if t > rawEnd {
+				continue
+			}
+			samples = append(samples, s)
+		}
+	}
+	ingest(seg1)
+	ingest(seg2)
+
+	if len(samples) == 0 && prev == nil {
+		return 0, false
+	}
+
+	// Ensure chronological order if the two segments overlapped oddly.
+	if len(samples) > 1 {
+		sort.Slice(samples, func(i, j int) bool { return samples[i].Mono < samples[j].Mono })
+	}
+
+	// If we only have one sample in-window, use it as constant over the whole window.
+	if len(samples) == 1 && prev == nil {
+		pMW := samples[0].PowerWatts * 1000.0
+		return pMW, true
+	}
+
+	// Build a working sequence with predecessor if available.
+	seq := make([]ring.RedfishSample, 0, len(samples)+1)
+	if prev != nil {
+		seq = append(seq, *prev)
+	}
+	seq = append(seq, samples...)
+
+	// Time-weighted integration of power over [rawStart, rawEnd+1) in ticks.
+	// Use ZOH over intervals (t_{i-1}, t_i] with power = sample_i.
+	winLo := rawStart
+	winHi := rawEnd + 1
+
+	var eMJ float64
+	var usedTicks uint64
+
+	for i := 1; i < len(seq); i++ {
+		t0 := seq[i-1].Mono
+		t1 := seq[i].Mono
+		if t1 <= t0 {
+			continue
+		}
+
+		lo := maxU64(winLo, t0)
+		hi := minU64(winHi, t1)
+		if hi <= lo {
+			continue
+		}
+
+		pMW := seq[i].PowerWatts * 1000.0
+		if pMW < 0 {
+			pMW = 0
+		}
+
+		dtTicks := hi - lo
+		usedTicks += dtTicks
+		eMJ += pMW * (float64(dtTicks) * monoQuantumSec)
+	}
+
+	// If we couldn’t integrate (e.g. only predecessor exists), fall back to nearest available sample.
+	if usedTicks == 0 {
+		// Prefer earliest in-window sample, else predecessor.
+		var pMW float64
+		if len(samples) > 0 {
+			pMW = samples[0].PowerWatts * 1000.0
+		} else if prev != nil {
+			pMW = prev.PowerWatts * 1000.0
+		} else {
+			return 0, false
+		}
+		if pMW < 0 {
+			pMW = 0
+		}
+		return pMW, true
+	}
+
+	// Average power = energy / window duration (seconds).
+	winTicks := float64(winHi - winLo)
+	winSec := winTicks * monoQuantumSec
+	if winSec <= 0 {
+		return 0, false
+	}
+	pAvgMW := eMJ / winSec
+	return pAvgMW, true
 }
