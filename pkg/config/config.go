@@ -141,19 +141,21 @@ type TychoCalibrationConfig struct {
 }
 
 type TychoAnalysisConfig struct {
-	Trigger                    string // "redfish" | "timer"
-	TriggerIntervalSec         int    // used for "timer"
-	DetectLongestDelay         bool
-	DelayAfterMs               int // used for "redfish"
-	GpuQuantumMs               int
-	GpuHistoryWindowSec        int
-	GpuSolveWindowSec          int
-	EnableGpuEnergyConstraints bool
-	FusionQuantumMs            int
-	FusionHorizonSec           int
-	FusionRedfishKernel        string
-	FusionRedfishKernelMs      int
-	FusionDiagnosticsEnabled   bool
+	Trigger                       string // "redfish" | "timer"
+	TriggerIntervalSec            int    // used for "timer"
+	DetectLongestDelay            bool
+	DelayAfterMs                  int // used for "redfish"
+	GpuQuantumMs                  int
+	GpuHistoryWindowSec           int
+	GpuSolveWindowSec             int
+	EnableGpuEnergyConstraints    bool
+	FusionQuantumMs               int
+	FusionHorizonSec              int
+	FusionRedfishKernel           string
+	FusionRedfishKernelMs         int
+	FusionDiagnosticsEnabled      bool
+	IdleDiagnosticsEnabled        bool
+	AttributionDiagnosticsEnabled bool
 }
 
 type TychoCollectorConfig struct {
@@ -312,19 +314,21 @@ func getTychoCalibrationConfig() TychoCalibrationConfig {
 
 func getTychoAnalysisConfig() TychoAnalysisConfig {
 	return TychoAnalysisConfig{
-		Trigger:                    getConfig("TYCHO_ANALYSIS_TRIGGER", defaultTychoTrigger),
-		TriggerIntervalSec:         getIntConfig("TYCHO_ANALYSIS_EVERY_SEC", defaultTychoTriggerIntervalSec),
-		DetectLongestDelay:         getBoolConfig("TYCHO_ANALYSIS_DETECT_LONGEST_DELAY", defaultTychoDetectLongestDelay),
-		DelayAfterMs:               getIntConfig("TYCHO_ANALYSIS_DELAY_AFTER_MS", defaultTychoDelayAfterMs),
-		GpuQuantumMs:               getIntConfig("TYCHO_ANALYSIS_GPU_QUANTUM_MS", defaultTychoAnalysisGpuQuantumMs),
-		GpuHistoryWindowSec:        getIntConfig("TYCHO_ANALYSIS_GPU_HISTORY_WINDOW_SEC", defaultTychoAnalysisGpuHistoryWindowSec),
-		GpuSolveWindowSec:          getIntConfig("TYCHO_ANALYSIS_GPU_SOLVE_WINDOW_SEC", defaultTychoAnalysisGpuSolveWindowSec),
-		EnableGpuEnergyConstraints: getBoolConfig("TYCHO_ANALYSIS_ENABLE_GPU_ENERGY_CONSTRAINTS", defaultTychoAnalysisEnableGpuEnergyConstraints),
-		FusionQuantumMs:            getIntConfig("TYCHO_ANALYSIS_FUSION_QUANTUM_MS", defaultTychoTriggerIntervalSec),
-		FusionHorizonSec:           getIntConfig("TYCHO_ANALYSIS_FUSION_HORIZON_SEC", defaultTychoTriggerIntervalSec),
-		FusionRedfishKernel:        getConfig("TYCHO_ANALYSIS_FUSION_REDFISH_KERNEL", defaultTychoTrigger),
-		FusionRedfishKernelMs:      getIntConfig("TYCHO_ANALYSIS_FUSION_REDFISH_KERNEL_MS", defaultTychoTriggerIntervalSec),
-		FusionDiagnosticsEnabled:   getBoolConfig("TYCHO_ANALYSIS_FUSION_DIAGNOSTICS", defaultTychoDetectLongestDelay),
+		Trigger:                       getConfig("TYCHO_ANALYSIS_TRIGGER", defaultTychoTrigger),
+		TriggerIntervalSec:            getIntConfig("TYCHO_ANALYSIS_EVERY_SEC", defaultTychoTriggerIntervalSec),
+		DetectLongestDelay:            getBoolConfig("TYCHO_ANALYSIS_DETECT_LONGEST_DELAY", defaultTychoDetectLongestDelay),
+		DelayAfterMs:                  getIntConfig("TYCHO_ANALYSIS_DELAY_AFTER_MS", defaultTychoDelayAfterMs),
+		GpuQuantumMs:                  getIntConfig("TYCHO_ANALYSIS_GPU_QUANTUM_MS", defaultTychoAnalysisGpuQuantumMs),
+		GpuHistoryWindowSec:           getIntConfig("TYCHO_ANALYSIS_GPU_HISTORY_WINDOW_SEC", defaultTychoAnalysisGpuHistoryWindowSec),
+		GpuSolveWindowSec:             getIntConfig("TYCHO_ANALYSIS_GPU_SOLVE_WINDOW_SEC", defaultTychoAnalysisGpuSolveWindowSec),
+		EnableGpuEnergyConstraints:    getBoolConfig("TYCHO_ANALYSIS_ENABLE_GPU_ENERGY_CONSTRAINTS", defaultTychoAnalysisEnableGpuEnergyConstraints),
+		FusionQuantumMs:               getIntConfig("TYCHO_ANALYSIS_FUSION_QUANTUM_MS", defaultTychoAnalysisFusionQuantumMs),
+		FusionHorizonSec:              getIntConfig("TYCHO_ANALYSIS_FUSION_HORIZON_SEC", defaultTychoAnalysisFusionHorizonSec),
+		FusionRedfishKernel:           getConfig("TYCHO_ANALYSIS_FUSION_REDFISH_KERNEL", defaultTychoAnalysisFusionRedfishKernel),
+		FusionRedfishKernelMs:         getIntConfig("TYCHO_ANALYSIS_FUSION_REDFISH_KERNEL_MS", defaultTychoAnalysisFusionRedfishKernelMs),
+		FusionDiagnosticsEnabled:      getBoolConfig("TYCHO_ANALYSIS_FUSION_DIAGNOSTICS", defaultTychoAnalysisFusionDiagnosticsEnabled),
+		IdleDiagnosticsEnabled:        getBoolConfig("TYCHO_ANALYSIS_IDLE_DIAGNOSTICS", defaultTychoAnalysisIdleDiagnosticsEnabled),
+		AttributionDiagnosticsEnabled: getBoolConfig("TYCHO_ANALYSIS_ATTRIBUTION_DIAGNOSTICS", defaultTychoAnalysisAttributionDiagnosticsEnabled),
 	}
 }
 func getTychoCollectorConfig() TychoCollectorConfig {
@@ -1351,6 +1355,14 @@ func GetFusionRedfishKernelMs() int {
 
 func GetFusionDiagnosticsEnabled() bool {
 	return instance.TychoAnalysis.FusionDiagnosticsEnabled
+}
+
+func GetIdleDiagnosticsEnabled() bool {
+	return instance.TychoAnalysis.IdleDiagnosticsEnabled
+}
+
+func GetAttributionDiagnosticsEnabled() bool {
+	return instance.TychoAnalysis.AttributionDiagnosticsEnabled
 }
 
 func EnableRapl() bool {

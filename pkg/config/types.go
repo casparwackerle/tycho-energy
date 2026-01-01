@@ -141,19 +141,21 @@ const (
 	//defaultTychoCalibrationInitGpuIdleEnabled = false
 
 	// Tycho Analysis Config
-	defaultTychoTrigger                            = "timer" // "redfish" | "timer"
-	defaultTychoTriggerIntervalSec                 = 5       // only used if trigger=timer
-	defaultTychoDetectLongestDelay                 = false
-	defaultTychoDelayAfterMs                       = 200 //will be overwritten if there is a metric delay that is longer
-	defaultTychoAnalysisGpuQuantumMs               = 50  //usually same as RAPL/eBPF polling frequency
-	defaultTychoAnalysisGpuHistoryWindowSec        = 60  //likey chaned during runtime.
-	defaultTychoAnalysisGpuSolveWindowSec          = defaultTychoTriggerIntervalSec
-	defaultTychoAnalysisEnableGpuEnergyConstraints = true
-	defaultTychoAnalysisFusionQuantumMs            = 50
-	defaultTychoAnalysisFusionHorizonSec           = defaultTychoBufferWindowSec
-	defaultTychoAnalysisFusionRedfishKernel        = "avg1s_trailing"
-	defaultTychoAnalysisFusionRedfishKernelMs      = 1000
-	defaultTychoAnalysisFusionDiagnosticsEnabled   = false
+	defaultTychoTrigger                               = "timer" // "redfish" | "timer"
+	defaultTychoTriggerIntervalSec                    = 5       // only used if trigger=timer
+	defaultTychoDetectLongestDelay                    = false
+	defaultTychoDelayAfterMs                          = 200 //will be overwritten if there is a metric delay that is longer
+	defaultTychoAnalysisGpuQuantumMs                  = 50  //usually same as RAPL/eBPF polling frequency
+	defaultTychoAnalysisGpuHistoryWindowSec           = 60  //likey chaned during runtime.
+	defaultTychoAnalysisGpuSolveWindowSec             = defaultTychoTriggerIntervalSec
+	defaultTychoAnalysisEnableGpuEnergyConstraints    = true
+	defaultTychoAnalysisFusionQuantumMs               = 50
+	defaultTychoAnalysisFusionHorizonSec              = defaultTychoBufferWindowSec
+	defaultTychoAnalysisFusionRedfishKernel           = "avg1s_trailing"
+	defaultTychoAnalysisFusionRedfishKernelMs         = 1000
+	defaultTychoAnalysisFusionDiagnosticsEnabled      = false
+	defaultTychoAnalysisIdleDiagnosticsEnabled        = false
+	defaultTychoAnalysisAttributionDiagnosticsEnabled = false
 
 	// Tycho Collector Config
 	defaultTychoEnableRapl            = true

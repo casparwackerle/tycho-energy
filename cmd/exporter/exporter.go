@@ -321,18 +321,24 @@ func main() {
 	}
 	if enableBpf {
 		analysisreg.Register(analysismetrics.NewBpfWindowCounters())
+		analysisreg.Register(analysismetrics.NewBpfProcAggWindow())
 	}
 	if enableRedfish {
 		analysisreg.Register(analysismetrics.NewRedfishWindowEnergy())
 	}
 	if enableGpu {
 		analysisreg.Register(analysismetrics.NewGpuWindowEnergy(mono))
+		analysisreg.Register(analysismetrics.NewGpuIdleDynamic())
 	}
 
 	// metric fusion only when all metrics are available.
 	if enableRedfish && enableRapl && enableBpf {
 		analysisreg.Register(analysismetrics.NewFusionSubstrate())
 		analysisreg.Register(analysismetrics.NewFusionModel())
+	}
+
+	if enableRedfish && enableRapl && enableBpf {
+		analysisreg.Register(analysismetrics.NewRaplIdleDynamic())
 	}
 
 	// Residual only makes sense with Redfish system energy and RAPL.
