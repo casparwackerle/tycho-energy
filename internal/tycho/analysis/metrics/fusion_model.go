@@ -698,27 +698,6 @@ func selectFusionChassis(c *analysis.Cycle) string {
 	return best
 }
 
-// Same cache helpers as fusion_substrate.go
-func getCache(s *analysis.StateStore, key analysis.MetricKey) (*fusion.Cache, bool) {
-	if s == nil {
-		return nil, false
-	}
-	v, ok := s.Get(key)
-	if !ok {
-		return nil, false
-	}
-	c, ok := v.(*fusion.Cache)
-	if ok && c != nil {
-		return c, true
-	}
-	cv, ok2 := v.(fusion.Cache)
-	if ok2 {
-		tmp := cv
-		return &tmp, true
-	}
-	return nil, false
-}
-
 // refitWithFixedNonNeg performs one constrained refit where any of Alpha/Beta/Gamma/Bias
 // that are already at 0 are treated as fixed at 0, and the remaining variables are solved
 // with the same normal-equation approach.

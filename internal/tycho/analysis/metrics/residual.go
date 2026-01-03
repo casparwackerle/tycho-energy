@@ -2,9 +2,9 @@ package analysismetrics
 
 import (
 	"math"
-	"sort"
 
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"k8s.io/klog/v2"
 )
 
@@ -67,34 +67,39 @@ func (m *SystemResidualEnergy) Run(c *analysis.Cycle) error {
 	raplTotalMJ := raplPkgMJ + raplDramMJ
 
 	// 3) GPU total: sum across UUIDs.
-	gpuMJ := sumByID(c.Store.ListByID(MetricGpuEnergyMJ))
+	gpuMJ := sumEnergyBy(
+		"gpu",
+		"total",
+		c.Store.ListByID(MetricGpuEnergyMJ),
+	)
 
 	accounted := raplTotalMJ + gpuMJ
 	residual := sysMJ - accounted
 
-	// Emit residual + optional debug helpers.
-	c.Sink.Emit(c.Ctx, analysis.Point{
-		Key:    analysis.Key(MetricSystemResidualEnergyMJ, nil),
-		Window: c.Window,
-		Unit:   "mJ",
-		Value:  residual,
-		Quality: &analysis.Quality{
-			DelayTicks: 0, // derived metric: no additional delay; components carry their own
-		},
-	})
-	c.Sink.Emit(c.Ctx, analysis.Point{
-		Key:    analysis.Key(MetricSystemEnergyMJ, analysis.Labels{"chassis": sysChassis, "source": sysSrc}),
-		Window: c.Window,
-		Unit:   "mJ",
-		Value:  sysMJ,
-	})
-	c.Sink.Emit(c.Ctx, analysis.Point{
-		Key:    analysis.Key(MetricSystemAccountedEnergyMJ, nil),
-		Window: c.Window,
-		Unit:   "mJ",
-		Value:  accounted,
-	})
-
+	if config.GetFusionDiagnosticsEnabled() {
+		// Emit residual + optional debug helpers.
+		c.Sink.Emit(c.Ctx, analysis.Point{
+			Key:    analysis.Key(MetricSystemResidualEnergyMJ, nil),
+			Window: c.Window,
+			Unit:   "mJ",
+			Value:  residual,
+			Quality: &analysis.Quality{
+				DelayTicks: 0, // derived metric: no additional delay; components carry their own
+			},
+		})
+		c.Sink.Emit(c.Ctx, analysis.Point{
+			Key:    analysis.Key(MetricSystemEnergyMJ, analysis.Labels{"chassis": sysChassis, "source": sysSrc}),
+			Window: c.Window,
+			Unit:   "mJ",
+			Value:  sysMJ,
+		})
+		c.Sink.Emit(c.Ctx, analysis.Point{
+			Key:    analysis.Key(MetricSystemAccountedEnergyMJ, nil),
+			Window: c.Window,
+			Unit:   "mJ",
+			Value:  accounted,
+		})
+	}
 	// Per-cycle breakdown log (fast validation).
 	klog.Infof(
 		"[analysis] residual window=%s chassis=%q source=%s sys_mj=%.3f rapl_pkg_mj=%.3f rapl_dram_mj=%.3f gpu_mj=%.3f residual_mj=%.3f",
@@ -125,15 +130,6 @@ func (m *SystemResidualEnergy) Run(c *analysis.Cycle) error {
 	return nil
 }
 
-func sumByID(ps []analysis.Point) float64 {
-	var s float64
-	for _, p := range ps {
-		// Assume unit correctness (mJ). This slice keeps it minimal.
-		s += p.Value
-	}
-	return s
-}
-
 func getRAPLDomainMJ(c *analysis.Cycle, domain string) float64 {
 	if c == nil || c.Store == nil {
 		return 0
@@ -145,39 +141,4 @@ func getRAPLDomainMJ(c *analysis.Cycle, domain string) float64 {
 		return 0
 	}
 	return p.Value
-}
-
-func selectRedfishEnergyMJ(ps []analysis.Point) (val float64, chassis string, ok bool) {
-	if len(ps) == 0 {
-		return 0, "", false
-	}
-
-	// Prefer chassis="Self"
-	for _, p := range ps {
-		ch := ""
-		if p.Key.Labels != nil {
-			ch = p.Key.Labels["chassis"]
-		}
-		if ch == "Self" {
-			return p.Value, "Self", true
-		}
-	}
-
-	// Else pick deterministically: lexicographically smallest non-empty chassis label,
-	// falling back to first point if labels are missing.
-	type cand struct {
-		ch string
-		v  float64
-	}
-	cands := make([]cand, 0, len(ps))
-	for _, p := range ps {
-		ch := ""
-		if p.Key.Labels != nil {
-			ch = p.Key.Labels["chassis"]
-		}
-		cands = append(cands, cand{ch: ch, v: p.Value})
-	}
-	sort.Slice(cands, func(i, j int) bool { return cands[i].ch < cands[j].ch })
-
-	return cands[0].v, cands[0].ch, true
 }
