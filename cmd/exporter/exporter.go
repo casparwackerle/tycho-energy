@@ -317,7 +317,7 @@ func main() {
 	analysisreg := analysisregistry.New()
 
 	if enableRapl {
-		analysisreg.Register(analysismetrics.NewRaplWindowEnergy(mono))
+		analysisreg.Register(analysismetrics.NewRaplTotals(mono))
 	}
 	if enableBpf {
 		analysisreg.Register(analysismetrics.NewBpfWindowCounters())
@@ -325,6 +325,9 @@ func main() {
 	}
 	if enableRedfish {
 		analysisreg.Register(analysismetrics.NewRedfishWindowEnergy())
+	}
+	if enableRapl && enableBpf {
+		analysisreg.Register(analysismetrics.NewRaplIdleDynamic())
 	}
 	if enableGpu {
 		analysisreg.Register(analysismetrics.NewGpuWindowEnergy(mono))
@@ -335,14 +338,11 @@ func main() {
 	if enableRedfish && enableRapl && enableBpf {
 		analysisreg.Register(analysismetrics.NewFusionSubstrate())
 		analysisreg.Register(analysismetrics.NewFusionModel())
-	}
-
-	if enableRedfish && enableRapl && enableBpf {
-		analysisreg.Register(analysismetrics.NewRaplIdleDynamic())
+		analysisreg.Register(analysismetrics.NewSystemOtherIdleDynamic())
 	}
 
 	// Residual only makes sense with Redfish system energy and RAPL.
-	if enableRedfish && enableRapl {
+	if enableRedfish && enableRapl && config.GetFusionDiagnosticsEnabled() {
 		analysisreg.Register(analysismetrics.NewSystemResidualEnergy())
 	}
 

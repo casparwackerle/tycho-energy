@@ -76,15 +76,25 @@ func (m *ScalarModel) Observe(u float64, pMW float64, now time.Time) (accepted b
 		return false
 	}
 
-	// Min tracker always updates from measurement.
+	// Only consider low-util region at all (baseline + points).
+	if u > m.Cfg.UMax {
+		// Still update prev for stability tracking continuity.
+		m.prevU = u
+		m.prevSet = true
+		return false
+	}
+
+	// Baseline tracker: update from any admissible low-util sample.
+	// This restores "instant baseline" behavior (min observed power),
+	// while still allowing strict gating for model fitting.
 	if pMW < m.minP {
 		m.minP = pMW
 	}
 
-	// Stability gating (after first).
+	// Stability gating applies only to inserting points into bins.
 	if m.prevSet {
 		if math.Abs(u-m.prevU) > m.Cfg.EpsUScalar {
-			// still update prevU and reject insertion
+			// Update prevU and reject insertion (but baseline already updated).
 			m.prevU = u
 			return false
 		}
@@ -92,26 +102,20 @@ func (m *ScalarModel) Observe(u float64, pMW float64, now time.Time) (accepted b
 	m.prevU = u
 	m.prevSet = true
 
-	// Only bin low-util region.
-	if u > m.Cfg.UMax {
-		return false
-	}
-
 	b := m.binIndex(u)
 	if b < 0 || b >= len(m.bins) {
 		return false
 	}
+
 	if len(m.bins[b]) < m.Cfg.KPerBin {
 		m.bins[b] = append(m.bins[b], pMW)
 	} else {
-		// Simple replacement: overwrite oldest in a ring-like way using totalPoints.
 		j := m.totalPoints % m.Cfg.KPerBin
 		m.bins[b][j] = pMW
 	}
 	m.totalPoints++
 	m.newSinceFit++
 
-	// Attempt refit.
 	m.maybeRefit(now)
 	return true
 }
@@ -152,6 +156,54 @@ func (m *ScalarModel) Estimate() (betaMW float64, q ScalarFitQuality) {
 	return beta, q
 }
 
+// func (m *ScalarModel) maybeRefit(now time.Time) {
+// 	if m == nil {
+// 		return
+// 	}
+
+// 	// Time gate.
+// 	if !m.lastFit.IsZero() && now.Sub(m.lastFit) < m.Cfg.RefitEvery {
+// 		return
+// 	}
+
+// 	// Coverage gates.
+// 	bPop := m.binsPopulated()
+// 	if bPop < m.Cfg.MinBinsPopulated {
+// 		return
+// 	}
+// 	if m.totalPoints < m.Cfg.MinTotalPoints {
+// 		return
+// 	}
+// 	if m.newSinceFit < m.Cfg.MinNewPoints && !m.lastFit.IsZero() {
+// 		return
+// 	}
+
+// 	// Build representative points per bin via quantile.
+// 	pts := make([]scalarPt, 0, bPop)
+// 	for i := range m.bins {
+// 		if len(m.bins[i]) == 0 {
+// 			continue
+// 		}
+// 		pq := quantile(m.bins[i], m.Cfg.Quantile)
+// 		uc := m.binCenter(i)
+// 		pts = append(pts, scalarPt{u: uc, p: pq})
+// 	}
+// 	if len(pts) < 2 {
+// 		return
+// 	}
+
+// 	alpha, beta, ok := fitLine(pts)
+// 	if !ok {
+// 		return
+// 	}
+
+// 	m.alpha = alpha
+// 	m.beta = beta
+// 	m.ready = true
+// 	m.lastFit = now
+// 	m.newSinceFit = 0
+// }
+
 func (m *ScalarModel) maybeRefit(now time.Time) {
 	if m == nil {
 		return
@@ -174,15 +226,17 @@ func (m *ScalarModel) maybeRefit(now time.Time) {
 		return
 	}
 
-	// Build representative points per bin via quantile.
+	// Build representative points per bin as a LOWER ENVELOPE.
+	// Use the minimum observed power in each bin (or switch to a tiny quantile
+	// like 0.02 if you want slight robustness against rare glitches).
 	pts := make([]scalarPt, 0, bPop)
 	for i := range m.bins {
 		if len(m.bins[i]) == 0 {
 			continue
 		}
-		pq := quantile(m.bins[i], m.Cfg.Quantile)
+		pRep := minFloat64(m.bins[i])
 		uc := m.binCenter(i)
-		pts = append(pts, scalarPt{u: uc, p: pq})
+		pts = append(pts, scalarPt{u: uc, p: pRep})
 	}
 	if len(pts) < 2 {
 		return
@@ -191,6 +245,24 @@ func (m *ScalarModel) maybeRefit(now time.Time) {
 	alpha, beta, ok := fitLine(pts)
 	if !ok {
 		return
+	}
+
+	// Enforce lower-envelope constraint for the fitted line:
+	// for all (u_i, p_i): alpha*u_i + beta <= p_i
+	//
+	// With alpha fixed, the maximal beta that satisfies all constraints is:
+	// beta_max = min_i (p_i - alpha*u_i)
+	//
+	// If the fitted beta is above that, shift it down.
+	betaMax := math.Inf(1)
+	for _, pt := range pts {
+		b := pt.p - alpha*pt.u
+		if b < betaMax {
+			betaMax = b
+		}
+	}
+	if isFinite(betaMax) && beta > betaMax {
+		beta = betaMax
 	}
 
 	m.alpha = alpha
@@ -308,4 +380,17 @@ func ageSec(t time.Time) float64 {
 		return -1
 	}
 	return time.Since(t).Seconds()
+}
+
+func minFloat64(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	m := xs[0]
+	for i := 1; i < len(xs); i++ {
+		if xs[i] < m {
+			m = xs[i]
+		}
+	}
+	return m
 }
