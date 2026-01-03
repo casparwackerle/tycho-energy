@@ -375,6 +375,15 @@ func (m *RaplIdleDynamic) handleDomain(c *analysis.Cycle, domain string, u float
 	_ = mod.Observe(u, totalMWFromEnergy, now)
 	betaMW, q := mod.Estimate()
 
+	// Asymmetric smoothing to reduce outlier sensitivity.
+	// During warmup (stable=false), we do not allow baseline to rise yet.
+	upPerSec := 0.02
+	downPerSec := 0.20
+	if !stable {
+		upPerSec = 0.0
+	}
+	betaMW = smoothBaselineMW(c.State, "rapl", domain, betaMW, now, upPerSec, downPerSec)
+
 	// Clamp idle power estimate to [0, totalMWForClamp] (Prometheus-visible physical constraint).
 	idleMW := betaMW
 	if idleMW < 0 {
@@ -418,4 +427,71 @@ func (m *RaplIdleDynamic) handleDomain(c *analysis.Cycle, domain string, u float
 		c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricIdleModelMode, ql), Window: c.Window, Unit: "enum", Value: modeToFloat(q.Mode)})
 		c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricIdleModelBetaMW, ql), Window: c.Window, Unit: "mW", Value: q.Beta})
 	}
+}
+
+// smoothBaselineMW applies asymmetric smoothing to a baseline estimate:
+// - decreases are allowed faster than increases, but not instant (to resist outliers)
+// - increases are allowed slowly (to avoid snapping up after a one-off dip)
+//
+// State keys are stored in c.State via stateGetF64/stateSetF64.
+func smoothBaselineMW(state any, component, id string, candidateMW float64, now time.Time, upPerSec, downPerSec float64) float64 {
+	if candidateMW <= 0 {
+		return candidateMW
+	}
+
+	// Keys for baseline + last timestamp (as Unix seconds).
+	baseKey := stateKeyLastSeen(component, id, "baseline_smooth_mw")
+	tKey := stateKeyLastSeen(component, id, "baseline_smooth_t_unix")
+
+	prev, okPrev := stateGetF64(state, baseKey)
+	lastTUnix, okT := stateGetF64(state, tKey)
+
+	// Initialize on first use.
+	if !okPrev || prev <= 0 || !okT || lastTUnix <= 0 || now.IsZero() {
+		stateSetF64(state, baseKey, candidateMW)
+		if !now.IsZero() {
+			stateSetF64(state, tKey, float64(now.UnixNano())/1e9)
+		}
+		return candidateMW
+	}
+
+	nowUnix := float64(now.UnixNano()) / 1e9
+	dt := nowUnix - lastTUnix
+	if dt < 0 {
+		dt = 0
+	}
+	stateSetF64(state, tKey, nowUnix)
+
+	// No time elapsed -> return previous.
+	if dt <= 0 {
+		return prev
+	}
+
+	// Convert per-second rates to a bounded interpolation factor r in [0, 0.25].
+	// r means: move prev toward candidate by fraction r this step.
+	rUp := upPerSec * dt
+	if rUp > 0.25 {
+		rUp = 0.25
+	} else if rUp < 0 {
+		rUp = 0
+	}
+
+	rDown := downPerSec * dt
+	if rDown > 0.25 {
+		rDown = 0.25
+	} else if rDown < 0 {
+		rDown = 0
+	}
+
+	next := prev
+	if candidateMW >= prev {
+		// Increase slowly.
+		next = prev + rUp*(candidateMW-prev)
+	} else {
+		// Decrease faster (but still bounded, so one outlier won't dominate).
+		next = prev + rDown*(candidateMW-prev)
+	}
+
+	stateSetF64(state, baseKey, next)
+	return next
 }
