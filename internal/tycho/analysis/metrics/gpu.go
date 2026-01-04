@@ -664,16 +664,3 @@ func latestGpuUtilInWindow(c *analysis.Cycle, delayTicks uint64) map[string][2]f
 	ingest(seg2)
 	return out
 }
-
-// func clamp01(x float64) float64 {
-// 	if math.IsNaN(x) || math.IsInf(x, 0) {
-// 		return 0
-// 	}
-// 	if x < 0 {
-// 		return 0
-// 	}
-// 	if x > 1 {
-// 		return 1
-// 	}
-// 	return x
-// }
