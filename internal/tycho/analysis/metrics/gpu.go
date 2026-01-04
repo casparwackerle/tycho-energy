@@ -15,7 +15,13 @@ import (
 
 const (
 	MetricGpuEnergyMJ    analysis.MetricID = "gpu_energy_mj"
+	MetricGpuPowerMW     analysis.MetricID = "gpu_power_mw"
 	MetricGpuEnergyState analysis.MetricID = "gpu_energy_state"
+)
+
+const (
+	gpuSourceCorrected = "nvml_corrected"
+	gpuSourceRaw       = "nvml_raw"
 )
 
 type GpuEnergyState struct {
@@ -277,7 +283,6 @@ func (m *GpuWindowEnergy) Run(c *analysis.Cycle) error {
 		if ok && tailSer.DtSec > 0 && len(tailSer.PW) > 0 {
 			overwriteTail(histPW, desiredT0, dtSec, tailSer)
 			merged := gpufuse.Series{
-				UUID:  uuid,
 				T0Sec: desiredT0,
 				DtSec: dtSec,
 				PW:    histPW,
@@ -340,11 +345,14 @@ func (m *GpuWindowEnergy) Run(c *analysis.Cycle) error {
 			powerTotalMW = energyWindowMJ / winSec
 		}
 
-		labelsTotal := analysis.Labels{"gpu_uuid": uuid, "kind": "total"}
-
-		// Aux: per-window energy increment (not part of contract).
+		labelsTotal := analysis.Labels{
+			"gpu_uuid": uuid,
+			"kind":     "total",
+			"source":   gpuSourceCorrected,
+		}
+		// actually per-window
 		c.Sink.Emit(c.Ctx, analysis.Point{
-			Key:    analysis.Key(analysis.MetricID("gpu_energy_window_mj"), labelsTotal),
+			Key:    analysis.Key(analysis.MetricID(MetricGpuEnergyMJ), labelsTotal),
 			Window: c.Window,
 			Unit:   "mJ",
 			Value:  energyWindowMJ,
@@ -354,9 +362,8 @@ func (m *GpuWindowEnergy) Run(c *analysis.Cycle) error {
 			},
 		})
 
-		// Contract: total power gauge.
 		c.Sink.Emit(c.Ctx, analysis.Point{
-			Key:    analysis.Key(analysis.MetricID("gpu_power_mw"), labelsTotal),
+			Key:    analysis.Key(analysis.MetricID(MetricGpuPowerMW), labelsTotal),
 			Window: c.Window,
 			Unit:   "mW",
 			Value:  powerTotalMW,
@@ -368,45 +375,6 @@ func (m *GpuWindowEnergy) Run(c *analysis.Cycle) error {
 	}
 
 	return nil
-}
-
-// copyOverlapInto copies the overlapping part of prev into the new history grid histPW.
-// histPW represents [newT0, newEnd] on step dt.
-func copyOverlapInto(histPW []float64, newT0, dt, newEnd float64, prev gpufuse.Series) {
-	if len(histPW) == 0 || dt <= 0 || prev.DtSec <= 0 || len(prev.PW) == 0 {
-		return
-	}
-
-	prevT0 := prev.T0Sec
-	prevDt := prev.DtSec
-	prevN := len(prev.PW)
-	prevEnd := prevT0 + float64(prevN)*prevDt
-
-	// Overlap interval.
-	a := math.Max(newT0, prevT0)
-	b := math.Min(newEnd, prevEnd)
-	if b <= a {
-		return
-	}
-
-	// Map overlap onto new grid and prev grid. We assume dt matches and grids are aligned enough.
-	// We copy bin-by-bin using time -> index conversions.
-	newI0 := int(math.Floor((a - newT0) / dt))
-	newI1 := int(math.Ceil((b - newT0) / dt))
-	if newI0 < 0 {
-		newI0 = 0
-	}
-	if newI1 > len(histPW) {
-		newI1 = len(histPW)
-	}
-	for i := newI0; i < newI1; i++ {
-		t := newT0 + float64(i)*dt
-		j := int(math.Floor((t - prevT0) / prevDt))
-		if j < 0 || j >= prevN {
-			continue
-		}
-		histPW[i] = prev.PW[j]
-	}
 }
 
 // overwriteTail overwrites the segment covered by tailSer into histPW.
@@ -430,13 +398,6 @@ func overwriteTail(histPW []float64, newT0, dt float64, tailSer gpufuse.Series) 
 		histPW[i] = tailSer.PW[j]
 	}
 }
-
-const (
-	MetricGpuIdlePowerMW  analysis.MetricID = "gpu_idle_power_mw"
-	MetricGpuDynPowerMW   analysis.MetricID = "gpu_dyn_power_mw"
-	MetricGpuIdleEnergyMJ analysis.MetricID = "gpu_idle_energy_mj"
-	MetricGpuDynEnergyMJ  analysis.MetricID = "gpu_dyn_energy_mj"
-)
 
 type GpuIdleDynamic struct {
 	cfg idle.Config
@@ -470,8 +431,8 @@ func (m *GpuIdleDynamic) Run(c *analysis.Cycle) error {
 	// We require both:
 	// - total power gauge (for idle model)
 	// - total window energy (for counter increment)
-	totalPowerPoints := c.Store.ListByID(analysis.MetricID("gpu_power_mw"))
-	totalEnergyWindowPoints := c.Store.ListByID(analysis.MetricID("gpu_energy_window_mj"))
+	totalPowerPoints := c.Store.ListByID(analysis.MetricID(MetricGpuPowerMW))
+	totalEnergyWindowPoints := c.Store.ListByID(analysis.MetricID(MetricGpuEnergyMJ)) //actually per-window
 	if len(totalPowerPoints) == 0 || len(totalEnergyWindowPoints) == 0 {
 		return nil
 	}
@@ -600,20 +561,59 @@ func (m *GpuIdleDynamic) Run(c *analysis.Cycle) error {
 
 		putEnergyState(uuid, st)
 
-		labelsTotal := analysis.Labels{"gpu_uuid": uuid, "kind": "total"}
-		labelsIdle := analysis.Labels{"gpu_uuid": uuid, "kind": "idle"}
-		labelsDyn := analysis.Labels{"gpu_uuid": uuid, "kind": "dynamic"}
+		labelsTotal := analysis.Labels{
+			"gpu_uuid": uuid,
+			"kind":     "total",
+			"source":   gpuSourceCorrected,
+		}
+		labelsIdle := analysis.Labels{
+			"gpu_uuid": uuid,
+			"kind":     "idle",
+			"source":   gpuSourceCorrected,
+		}
+		labelsDyn := analysis.Labels{
+			"gpu_uuid": uuid,
+			"kind":     "dynamic",
+			"source":   gpuSourceCorrected,
+		}
 
-		// Emit contract power gauges (total already exists, but re-emitting is fine; keep or remove as you prefer).
-		c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(analysis.MetricID("gpu_power_mw"), labelsTotal), Window: c.Window, Unit: "mW", Value: totalPowerMW})
-		c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(analysis.MetricID("gpu_power_mw"), labelsIdle), Window: c.Window, Unit: "mW", Value: idleMW})
-		c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(analysis.MetricID("gpu_power_mw"), labelsDyn), Window: c.Window, Unit: "mW", Value: dynMW})
+		c.Sink.Emit(c.Ctx, analysis.Point{
+			Key:    analysis.Key(MetricGpuPowerMW, labelsTotal),
+			Window: c.Window,
+			Unit:   "mW",
+			Value:  totalPowerMW,
+		})
+		c.Sink.Emit(c.Ctx, analysis.Point{
+			Key:    analysis.Key(MetricGpuPowerMW, labelsIdle),
+			Window: c.Window,
+			Unit:   "mW",
+			Value:  idleMW,
+		})
+		c.Sink.Emit(c.Ctx, analysis.Point{
+			Key:    analysis.Key(MetricGpuPowerMW, labelsDyn),
+			Window: c.Window,
+			Unit:   "mW",
+			Value:  dynMW,
+		})
 
-		// Emit contract cumulative energy counters.
-		c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricGpuEnergyMJ, labelsTotal), Window: c.Window, Unit: "mJ", Value: st.TotalMJ})
-		c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricGpuEnergyMJ, labelsIdle), Window: c.Window, Unit: "mJ", Value: st.IdleMJ})
-		c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricGpuEnergyMJ, labelsDyn), Window: c.Window, Unit: "mJ", Value: st.DynamicMJ})
-
+		c.Sink.Emit(c.Ctx, analysis.Point{
+			Key:    analysis.Key(MetricGpuEnergyMJ, labelsTotal),
+			Window: c.Window,
+			Unit:   "mJ",
+			Value:  st.TotalMJ,
+		})
+		c.Sink.Emit(c.Ctx, analysis.Point{
+			Key:    analysis.Key(MetricGpuEnergyMJ, labelsIdle),
+			Window: c.Window,
+			Unit:   "mJ",
+			Value:  st.IdleMJ,
+		})
+		c.Sink.Emit(c.Ctx, analysis.Point{
+			Key:    analysis.Key(MetricGpuEnergyMJ, labelsDyn),
+			Window: c.Window,
+			Unit:   "mJ",
+			Value:  st.DynamicMJ,
+		})
 		diag := config.GetIdleDiagnosticsEnabled()
 		if diag {
 			ql := analysis.Labels{"name": modelName, "gpu_uuid": uuid, "mode": q.Mode}

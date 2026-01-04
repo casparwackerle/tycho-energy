@@ -11,7 +11,6 @@ import (
 	"github.com/casparwackerle/tycho-energy/internal/tycho/clock"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/ring"
 	"github.com/casparwackerle/tycho-energy/pkg/config"
-	"k8s.io/klog/v2"
 )
 
 // -----------------------------------------------------------------------------
@@ -24,12 +23,14 @@ const (
 	MetricRaplPowerMW  analysis.MetricID = "rapl_power_mw"
 )
 
+// Slice 10A: fixed provenance label
+const raplSource = "rapl"
+
 // -----------------------------------------------------------------------------
 // RAPL totals (kind="total")
 // - energy: exported as cumulative (monotonic) by accumulating per-window deltas
 // - power: exported as window-average (delta / dt)
 // -----------------------------------------------------------------------------
-
 // RaplTotals exports unified family metrics for RAPL totals:
 //
 //	tycho_energy_mj{component="rapl",domain="pkg|core|dram|uncore",kind="total"} (cumulative)
@@ -47,30 +48,22 @@ func NewRaplTotals(mono *clock.Mono) *RaplTotals {
 }
 
 // ID identifies the plugin. Emitted metric IDs are MetricEnergyMJ / MetricPowerMW.
+
 func (m *RaplTotals) ID() analysis.MetricID { return "rapl_totals" }
 
 func (m *RaplTotals) IsEnabled(c *analysis.Cycle) bool {
 	return c != nil && c.Rapl() != nil && c.Sink != nil && c.State != nil && c.Mono != nil
 }
+
 func (m *RaplTotals) Run(c *analysis.Cycle) error {
 	r := c.Rapl()
 	if r == nil || c.Sink == nil || c.State == nil {
 		return nil
 	}
-	klog.Infof("[RAPL] ring len=%d", r.Len())
+
 	// Compute effective window ONCE for this source.
 	w := c.EffectiveWindowTicks(m.delayTicks)
 
-	klog.Infof(
-		"[RAPL] window analysis=[%d,%d] effective=[%d,%d] delayTicks=%d",
-		c.Window.StartMono,
-		c.Window.EndMono,
-		w.StartMono,
-		w.EndMono,
-		m.delayTicks,
-	)
-
-	// Read only in-window samples (best-effort).
 	samples := analysisctx.FilterWindowChrono[ring.RaplTick](
 		r,
 		w.StartMono,
@@ -80,7 +73,6 @@ func (m *RaplTotals) Run(c *analysis.Cycle) error {
 	if len(samples) < 2 {
 		return nil
 	}
-	klog.Infof("[RAPL] filtered samples=%d", len(samples))
 
 	dtSec := windowDurSec(c)
 	if dtSec <= 0 {
@@ -90,9 +82,8 @@ func (m *RaplTotals) Run(c *analysis.Cycle) error {
 	// Minimal, structured quality.
 	q := &analysis.Quality{
 		SamplesUsed: len(samples),
-		SocketsUsed: 0, // filled below
+		SocketsUsed: 0,
 		DelayTicks:  m.delayTicks,
-		Notes:       "",
 	}
 
 	// For each socket, track the first and last counters within the window.
@@ -114,8 +105,6 @@ func (m *RaplTotals) Run(c *analysis.Cycle) error {
 		}
 	}
 	q.SocketsUsed = len(perSocket)
-	klog.Infof("[RAPL] sockets used=%d", q.SocketsUsed)
-
 	// Aggregate across sockets:
 	// - end-of-window native cumulative counters: sum(last)
 	// - window increments: sum(last - first) wrap-safe
@@ -126,7 +115,6 @@ func (m *RaplTotals) Run(c *analysis.Cycle) error {
 		if fl == nil || !fl.ok {
 			continue
 		}
-
 		pkgEndMJ += fl.last.Pkg
 		coreEndMJ += fl.last.Core
 		uncoreEndMJ += fl.last.Uncore
@@ -142,14 +130,9 @@ func (m *RaplTotals) Run(c *analysis.Cycle) error {
 		lbl := analysis.Labels{
 			"domain": domain,
 			"kind":   "total",
+			"source": raplSource,
 		}
 
-		klog.Infof(
-			"[RAPL] domain=%s native_end=%d native_inc=%d",
-			domain,
-			endNativeMJ,
-			incMJ,
-		)
 		// Fixed startup offset (per domain). This makes the exported counter start at 0.
 		offKey := stateKeyOffsetU64("rapl", domain, "native_total_mj")
 		offsetMJ, ok := stateGetU64(c.State, offKey)
@@ -158,27 +141,10 @@ func (m *RaplTotals) Run(c *analysis.Cycle) error {
 			stateSetU64(c.State, offKey, offsetMJ)
 		}
 
-		klog.Infof(
-			"[RAPL] domain=%s offset set=%v offset=%d",
-			domain,
-			!ok,
-			offsetMJ,
-		)
-
-		// Adjusted cumulative energy since Tycho start.
 		adjEndMJ := uint64(0)
 		if endNativeMJ >= offsetMJ {
 			adjEndMJ = endNativeMJ - offsetMJ
-		} else {
-			// Defensive against underflow; resets/wrap handling is out of scope by your request.
-			adjEndMJ = 0
 		}
-
-		klog.Infof(
-			"[RAPL] domain=%s adj_cum=%d",
-			domain,
-			adjEndMJ,
-		)
 
 		// Energy is a true counter starting at 0.
 		c.Sink.Emit(c.Ctx, analysis.Point{
@@ -242,21 +208,52 @@ func (m *RaplIdleDynamic) Run(c *analysis.Cycle) error {
 		return nil
 	}
 
-	// Proxy rates from pointstore (if missing, treat as 0 and model stays baseline).
-	cpuRate := getPointValue(c.Store, analysis.Key(MetricBpfCPUInstrRate, nil))   // 1/s
-	dramRate := getPointValue(c.Store, analysis.Key(MetricBpfCacheMissRate, nil)) // 1/s
+	// // Proxy rates from pointstore (if missing, treat as 0 and model stays baseline).
+	// cpuRate := getPointValue(c.Store, analysis.Key(MetricBpfCPUInstrRate, nil))
+	// dramRate := getPointValue(c.Store, analysis.Key(MetricBpfCacheMissRate, nil))
+
+	// now := time.Now()
+
+	// // Track decayed p95 maxima.
+	// cpuP95 := idle.GetOrInitP95(c.State, "cpu_instr_rate", 240, 0.02)
+	// dramP95 := idle.GetOrInitP95(c.State, "dram_cachemiss_rate", 240, 0.02)
+	// if cpuP95 != nil {
+	// 	cpuP95.Observe(cpuRate, now)
+	// }
+	// if dramP95 != nil {
+	// 	dramP95.Observe(dramRate, now)
+	// }
+
+	// amaxCPU := 0.0
+	// if cpuP95 != nil {
+	// 	amaxCPU = cpuP95.Value()
+	// }
+	// amaxDRAM := 0.0
+	// if dramP95 != nil {
+	// 	amaxDRAM = dramP95.Value()
+	// }
+
+	// uCPU := normalizeRate(cpuRate, amaxCPU)
+	// uDRAM := normalizeRate(dramRate, amaxDRAM)
+
+	// // Domains:
+	// // - pkg/core/uncore: use uCPU proxy
+	// // - dram: use uDRAM proxy
+	// stableCPU := cpuP95 != nil && cpuP95.Ready()
+	// stableDRAM := dramP95 != nil && dramP95.Ready()
+
+	// Proxy rates from raw ebpf ticks (no dependency on bpf metrics in pointstore).
+	cpuRate, dramRate, _, ok := bpfProcRatesInWindow(c)
+	if !ok {
+		cpuRate = 0
+		dramRate = 0
+	}
 
 	now := time.Now()
 
-	// Track decayed p95 maxima.
+	// Continue exactly as before:
 	cpuP95 := idle.GetOrInitP95(c.State, "cpu_instr_rate", 240, 0.02)
 	dramP95 := idle.GetOrInitP95(c.State, "dram_cachemiss_rate", 240, 0.02)
-	if cpuP95 != nil {
-		cpuP95.Observe(cpuRate, now)
-	}
-	if dramP95 != nil {
-		dramP95.Observe(dramRate, now)
-	}
 
 	amaxCPU := 0.0
 	if cpuP95 != nil {
@@ -270,27 +267,6 @@ func (m *RaplIdleDynamic) Run(c *analysis.Cycle) error {
 	uCPU := normalizeRate(cpuRate, amaxCPU)
 	uDRAM := normalizeRate(dramRate, amaxDRAM)
 
-	klog.Infof(
-		"[RAPL-IDLE] proxies cpuRate=%g dramRate=%g amaxCPU=%g readyCPU=%v amaxDRAM=%g readyDRAM=%v uCPU=%g uDRAM=%g",
-		cpuRate, dramRate,
-		amaxCPU, func() bool {
-			if cpuP95 == nil {
-				return false
-			}
-			return cpuP95.Ready()
-		}(),
-		amaxDRAM, func() bool {
-			if dramP95 == nil {
-				return false
-			}
-			return dramP95.Ready()
-		}(),
-		uCPU, uDRAM,
-	)
-
-	// Domains:
-	// - pkg/core/uncore: use uCPU proxy
-	// - dram: use uDRAM proxy
 	stableCPU := cpuP95 != nil && cpuP95.Ready()
 	stableDRAM := dramP95 != nil && dramP95.Ready()
 
@@ -301,25 +277,28 @@ func (m *RaplIdleDynamic) Run(c *analysis.Cycle) error {
 
 	return nil
 }
-func (m *RaplIdleDynamic) handleDomain(c *analysis.Cycle, domain string, u float64, dtSec float64, now time.Time, stable bool) {
-	// NOTE: stable is currently unused. If you later want to disable stability gating
-	// until p95 is ready, thread it into the model config or Observe logic.
 
-	if c == nil || c.Sink == nil || c.Store == nil || c.State == nil {
+func (m *RaplIdleDynamic) handleDomain(
+	c *analysis.Cycle,
+	domain string,
+	u float64,
+	dtSec float64,
+	now time.Time,
+	stable bool,
+) {
+	if c == nil || c.Sink == nil || c.Store == nil || c.State == nil || dtSec <= 0 {
 		return
 	}
-	if dtSec <= 0 {
-		return
-	}
 
-	// --- Keys we need ---
 	totalEnergyKey := analysis.Key(MetricRaplEnergyMJ, analysis.Labels{
 		"domain": domain,
 		"kind":   "total",
+		"source": raplSource,
 	})
 	totalPowerKey := analysis.Key(MetricRaplPowerMW, analysis.Labels{
 		"domain": domain,
 		"kind":   "total",
+		"source": raplSource,
 	})
 
 	// --- Prefer the exported total power series for clamping (Prometheus-visible guarantee) ---
@@ -329,7 +308,6 @@ func (m *RaplIdleDynamic) handleDomain(c *analysis.Cycle, domain string, u float
 		clampTotalMW = exportTotalMW
 	}
 
-	// --- We still need window energy to keep conservation exact (idleDelta + dynDelta = totalDelta) ---
 	totalCumMJf, ok := getPointValueOk(c.Store, totalEnergyKey)
 	if !ok {
 		// Total energy not available. Avoid poisoning / inconsistent state.
@@ -349,34 +327,23 @@ func (m *RaplIdleDynamic) handleDomain(c *analysis.Cycle, domain string, u float
 	if deltaTotalMJf < 0 {
 		deltaTotalMJf = 0
 	}
-	// Integer total delta in mJ (rounded once).
 	deltaTotalMJ := uint64(deltaTotalMJf + 0.5)
 
-	// Window-average total power derived from energy delta.
 	totalMWFromEnergy := float64(deltaTotalMJ) / dtSec
-
-	// Choose the total power we use for *clamping*.
-	// If exported total power exists, use that (guarantees idle<=total in Prometheus).
-	// Otherwise fall back to energy-derived total.
 	totalMWForClamp := totalMWFromEnergy
 	if clampTotalMW > 0 {
 		totalMWForClamp = clampTotalMW
 	}
 
-	// --- Idle model per domain ---
 	modelName := "rapl_" + domain
 	mod := idle.GetOrInitScalar(c.State, modelName, m.cfg)
 	if mod == nil {
 		return
 	}
 
-	// Observe the measured total power (energy-derived) against utilization proxy.
-	// This keeps the model consistent with the same energy source used for conservation.
 	_ = mod.Observe(u, totalMWFromEnergy, now)
 	betaMW, q := mod.Estimate()
 
-	// Asymmetric smoothing to reduce outlier sensitivity.
-	// During warmup (stable=false), we do not allow baseline to rise yet.
 	upPerSec := 0.02
 	downPerSec := 0.20
 	if !stable {
@@ -384,7 +351,6 @@ func (m *RaplIdleDynamic) handleDomain(c *analysis.Cycle, domain string, u float
 	}
 	betaMW = smoothBaselineMW(c.State, "rapl", domain, betaMW, now, upPerSec, downPerSec)
 
-	// Clamp idle power estimate to [0, totalMWForClamp] (Prometheus-visible physical constraint).
 	idleMW := betaMW
 	if idleMW < 0 {
 		idleMW = 0
@@ -393,32 +359,34 @@ func (m *RaplIdleDynamic) handleDomain(c *analysis.Cycle, domain string, u float
 		idleMW = totalMWForClamp
 	}
 
-	// Convert idle power to integer window energy (mJ), then enforce conservation exactly.
-	// IMPORTANT: conservation is with respect to deltaTotalMJ (energy-derived total).
 	idleDeltaMJ := uint64(idleMW*dtSec + 0.5)
 	if idleDeltaMJ > deltaTotalMJ {
 		idleDeltaMJ = deltaTotalMJ
 	}
 	dynDeltaMJ := deltaTotalMJ - idleDeltaMJ
 
-	// Derive emitted powers from integer energies (keeps invariants exact).
 	idleMW = float64(idleDeltaMJ) / dtSec
 	dynMW := float64(dynDeltaMJ) / dtSec
 
-	// Cumulative (monotonic) idle/dynamic energies as uint64, starting at 0.
 	idleCumMJ := stateAddU64(c.State, stateKeyCumEnergyU64("rapl", domain, "idle"), idleDeltaMJ)
 	dynCumMJ := stateAddU64(c.State, stateKeyCumEnergyU64("rapl", domain, "dynamic"), dynDeltaMJ)
 
-	labelsIdle := analysis.Labels{"domain": domain, "kind": "idle"}
-	labelsDyn := analysis.Labels{"domain": domain, "kind": "dynamic"}
+	labelsIdle := analysis.Labels{
+		"domain": domain,
+		"kind":   "idle",
+		"source": raplSource,
+	}
+	labelsDyn := analysis.Labels{
+		"domain": domain,
+		"kind":   "dynamic",
+		"source": raplSource,
+	}
 
-	// Unified family emissions.
 	c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricRaplPowerMW, labelsIdle), Window: c.Window, Unit: "mW", Value: idleMW})
 	c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricRaplPowerMW, labelsDyn), Window: c.Window, Unit: "mW", Value: dynMW})
 	c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricRaplEnergyMJ, labelsIdle), Window: c.Window, Unit: "mJ", Value: float64(idleCumMJ)})
 	c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricRaplEnergyMJ, labelsDyn), Window: c.Window, Unit: "mJ", Value: float64(dynCumMJ)})
 
-	// Optional idle diagnostics unchanged (still separate metrics).
 	if config.GetIdleDiagnosticsEnabled() {
 		ql := analysis.Labels{"name": modelName, "domain": domain, "mode": q.Mode}
 		c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricIdleModelReady, ql), Window: c.Window, Unit: "bool", Value: boolToFloat(q.Ready)})
@@ -494,4 +462,78 @@ func smoothBaselineMW(state any, component, id string, candidateMW float64, now 
 
 	stateSetF64(state, baseKey, next)
 	return next
+}
+
+// bpfProcRatesInWindow computes the same proxy rates as BpfProcAggWindow
+// (bpf_cpu_instr_per_s and bpf_cache_miss_per_s), but directly from raw ebpf ticks.
+// This removes the dependency on the bpf metric outputs being present in c.Store.
+func bpfProcRatesInWindow(c *analysis.Cycle) (cpuInstrPerSec float64, cacheMissPerSec float64, used int, ok bool) {
+	if c == nil || c.Mono == nil || c.Bpf() == nil {
+		return 0, 0, 0, false
+	}
+
+	// Match the ebpf metric logic: apply configurable delay, and integrate over effective window.
+	delayTicks := c.Mono.TicksForMsCeil(config.BpfDelayMs())
+	wEff := c.EffectiveWindowTicks(delayTicks)
+
+	// Include predecessor tick for interval attribution (same as bpf.go).
+	ticks := analysisctx.FilterWindowWithPrevChrono[ring.BpfTick](
+		c.Bpf(),
+		wEff.StartMono, wEff.EndMono,
+		func(t ring.BpfTick) uint64 { return t.Mono },
+	)
+	if len(ticks) < 2 {
+		return 0, 0, 0, false
+	}
+
+	// Integrate sum of per-proc deltas, conservatively weighted by overlap.
+	dInstr, usedInstr := analysisops.IntegrateDeltaWindow(
+		ticks, wEff.StartMono, wEff.EndMono,
+		func(t ring.BpfTick) uint64 { return t.Mono },
+		func(t ring.BpfTick) float64 {
+			var s uint64
+			for i := range t.Procs {
+				s += t.Procs[i].CPUInstr
+			}
+			return float64(s)
+		},
+	)
+
+	dMiss, usedMiss := analysisops.IntegrateDeltaWindow(
+		ticks, wEff.StartMono, wEff.EndMono,
+		func(t ring.BpfTick) uint64 { return t.Mono },
+		func(t ring.BpfTick) float64 {
+			var s uint64
+			for i := range t.Procs {
+				s += t.Procs[i].CacheMiss
+			}
+			return float64(s)
+		},
+	)
+
+	// Compute dtSec from the cycle's corrected window (not wEff), same as bpf.go.
+	dtTicks := uint64(0)
+	if c.Window.EndMono > c.Window.StartMono {
+		dtTicks = c.Window.EndMono - c.Window.StartMono
+	}
+	q := c.Mono.Quantum()
+	if q <= 0 {
+		q = time.Millisecond
+	}
+	dtSec := float64(time.Duration(dtTicks)*q) / float64(time.Second)
+	if dtSec <= 0 {
+		return 0, 0, 0, false
+	}
+
+	// Rates per second.
+	cpuRate := dInstr / dtSec
+	dramRate := dMiss / dtSec
+
+	// For "used", pick the limiting one (conservative).
+	used = usedInstr
+	if usedMiss < used {
+		used = usedMiss
+	}
+
+	return cpuRate, dramRate, used, true
 }
