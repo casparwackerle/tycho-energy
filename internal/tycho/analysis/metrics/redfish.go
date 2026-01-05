@@ -1,3 +1,4 @@
+// file: internal/tycho/analysis/metrics/redifsh.go
 package analysismetrics
 
 import (
@@ -9,6 +10,9 @@ import (
 )
 
 const MetricRedfishSystemEnergyMJ analysis.MetricID = "redfish_system_energy_mj"
+
+// Slice 10A: fixed provenance label for raw Redfish-derived system observation.
+const redfishSourceRaw = "redfish_raw"
 
 type RedfishWindowEnergy struct {
 	delayTicks uint64
@@ -93,7 +97,10 @@ func (m *RedfishWindowEnergy) Run(c *analysis.Cycle) error {
 			c.Mono.Quantum(),
 		)
 
-		labels := analysis.Labels{"chassis": chassis}
+		labels := analysis.Labels{
+			"chassis": chassis,
+			"source":  redfishSourceRaw,
+		}
 		energyMJ := energyJ * 1000.0
 
 		c.Sink.Emit(c.Ctx, analysis.Point{

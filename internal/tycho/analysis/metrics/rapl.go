@@ -208,40 +208,6 @@ func (m *RaplIdleDynamic) Run(c *analysis.Cycle) error {
 		return nil
 	}
 
-	// // Proxy rates from pointstore (if missing, treat as 0 and model stays baseline).
-	// cpuRate := getPointValue(c.Store, analysis.Key(MetricBpfCPUInstrRate, nil))
-	// dramRate := getPointValue(c.Store, analysis.Key(MetricBpfCacheMissRate, nil))
-
-	// now := time.Now()
-
-	// // Track decayed p95 maxima.
-	// cpuP95 := idle.GetOrInitP95(c.State, "cpu_instr_rate", 240, 0.02)
-	// dramP95 := idle.GetOrInitP95(c.State, "dram_cachemiss_rate", 240, 0.02)
-	// if cpuP95 != nil {
-	// 	cpuP95.Observe(cpuRate, now)
-	// }
-	// if dramP95 != nil {
-	// 	dramP95.Observe(dramRate, now)
-	// }
-
-	// amaxCPU := 0.0
-	// if cpuP95 != nil {
-	// 	amaxCPU = cpuP95.Value()
-	// }
-	// amaxDRAM := 0.0
-	// if dramP95 != nil {
-	// 	amaxDRAM = dramP95.Value()
-	// }
-
-	// uCPU := normalizeRate(cpuRate, amaxCPU)
-	// uDRAM := normalizeRate(dramRate, amaxDRAM)
-
-	// // Domains:
-	// // - pkg/core/uncore: use uCPU proxy
-	// // - dram: use uDRAM proxy
-	// stableCPU := cpuP95 != nil && cpuP95.Ready()
-	// stableDRAM := dramP95 != nil && dramP95.Ready()
-
 	// Proxy rates from raw ebpf ticks (no dependency on bpf metrics in pointstore).
 	cpuRate, dramRate, _, ok := bpfProcRatesInWindow(c)
 	if !ok {

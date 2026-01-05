@@ -320,11 +320,10 @@ func main() {
 		analysisreg.Register(analysismetrics.NewRaplTotals(mono))
 	}
 	if enableBpf {
-		analysisreg.Register(analysismetrics.NewBpfWindowCounters())
-		analysisreg.Register(analysismetrics.NewBpfProcAggWindow())
+		analysisreg.Register(analysismetrics.NewBpfSystemMetrics())
 	}
 	if enableRedfish {
-		analysisreg.Register(analysismetrics.NewRedfishWindowEnergy())
+		analysisreg.Register(analysismetrics.NewRedfishWindowEnergy()) //only do this if fusion is not available
 	}
 	if enableRapl && enableBpf {
 		analysisreg.Register(analysismetrics.NewRaplIdleDynamic())
@@ -338,7 +337,7 @@ func main() {
 	if enableRedfish && enableRapl && enableBpf {
 		analysisreg.Register(analysismetrics.NewFusionSubstrate())
 		analysisreg.Register(analysismetrics.NewFusionModel())
-		analysisreg.Register(analysismetrics.NewSystemOtherIdleDynamic())
+		analysisreg.Register(analysismetrics.NewSystemResidualIdleDynamic())
 	}
 
 	// Residual only makes sense with Redfish system energy and RAPL.
@@ -356,7 +355,8 @@ func main() {
 	})
 
 	// Fan-out so logs stay useful while you bring up Prometheus.
-	sink := analysisexport.NewMultiSink(logSink, analysisexport.NewTruncatingSink(tychoPromSink))
+	// sink := analysisexport.NewMultiSink(logSink, analysisexport.NewTruncatingSink(tychoPromSink))
+	sink := analysisexport.NewMultiSink(logSink, tychoPromSink)
 
 	// Create Tycho-owned Prometheus registry + HTTP server
 	reg := prometheus.NewRegistry()

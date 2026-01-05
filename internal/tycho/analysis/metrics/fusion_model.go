@@ -69,7 +69,13 @@ func (m *FusionModel) Run(c *analysis.Cycle) error {
 		eMJ := pMW * windowSec
 
 		c.Sink.Emit(c.Ctx, analysis.Point{
-			Key:    analysis.Key(MetricRedfishEnergyHatMJ, analysis.Labels{"chassis": chassis}),
+			Key: analysis.Key(
+				MetricRedfishEnergyHatMJ,
+				analysis.Labels{
+					"chassis": chassis,
+					"source":  "redfish_raw",
+				},
+			),
 			Window: c.Window,
 			Unit:   "mJ",
 			Value:  eMJ,
@@ -158,7 +164,13 @@ func (m *FusionModel) Run(c *analysis.Cycle) error {
 	}
 
 	c.Sink.Emit(c.Ctx, analysis.Point{
-		Key:    analysis.Key(MetricRedfishEnergyHatMJ, analysis.Labels{"chassis": chassis}),
+		Key: analysis.Key(
+			MetricRedfishEnergyHatMJ,
+			analysis.Labels{
+				"chassis": chassis,
+				"source":  "redfish_corrected",
+			},
+		),
 		Window: c.Window,
 		Unit:   "mJ",
 		Value:  eHatMJ,
