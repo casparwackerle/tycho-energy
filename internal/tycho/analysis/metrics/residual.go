@@ -3,163 +3,212 @@ package analysismetrics
 
 import (
 	"math"
+	"time"
 
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis"
-	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis/idle"
 	"k8s.io/klog/v2"
 )
 
 const (
-	MetricSystemResidualEnergyMJ  analysis.MetricID = "system_residual_energy_mj"
-	MetricSystemEnergyMJ          analysis.MetricID = "system_energy_mj"
-	MetricSystemAccountedEnergyMJ analysis.MetricID = "system_accounted_energy_mj"
-	MetricRedfishEnergyHatMJ      analysis.MetricID = "redfish_energy_hat_mj"
-	MetricRedfishPowerHatMW       analysis.MetricID = "redfish_power_hat_mw"
-	MetricFusionTheta             analysis.MetricID = "fusion_theta" // state key family
+	MetricResidualPowerMW  analysis.MetricID = "residual_power_mw"
+	MetricResidualEnergyMJ analysis.MetricID = "residual_energy_mj"
+
+	MetricResidualNegativePowerMW analysis.MetricID = "residual_negative_mw" // diag only
+	MetricFusionTheta             analysis.MetricID = "fusion_theta"         // state key family
+
+	residualKindTotal   = "total"
+	residualKindIdle    = "idle"
+	residualKindDynamic = "dynamic"
 )
 
-const (
-	//raplSource          = "rapl"
-	//gpuSourceCorrected  = "nvml_corrected"
-	//redfishSourceRaw    = "redfish_raw"
-	fusionSourceHat     = "fusion_hat"
-	residualSource      = redfishSourceRaw // residual is defined relative to the raw system observation at this stage
-	systemEnergyKindHat = "hat"
-)
+type Residual struct{}
 
-type SystemResidualEnergy struct{}
+func NewResidual() *Residual { return &Residual{} }
 
-func NewSystemResidualEnergy() *SystemResidualEnergy { return &SystemResidualEnergy{} }
+func (m *Residual) ID() analysis.MetricID { return "residual" }
 
-func (m *SystemResidualEnergy) ID() analysis.MetricID { return "system_residual_energy" }
-
-func (m *SystemResidualEnergy) IsEnabled(c *analysis.Cycle) bool {
-	return c != nil && c.Sink != nil && c.Store != nil
+func (m *Residual) IsEnabled(c *analysis.Cycle) bool {
+	return c != nil && c.Sink != nil && c.Store != nil && c.State != nil && c.Mono != nil
 }
 
-func (m *SystemResidualEnergy) Run(c *analysis.Cycle) error {
-	if c == nil || c.Sink == nil || c.Store == nil {
+func (m *Residual) Run(c *analysis.Cycle) error {
+	if c == nil || c.Sink == nil || c.Store == nil || c.State == nil || c.Mono == nil {
 		return nil
 	}
 
-	// 1) Pick system energy:
-	// Prefer fused hat energy, else fall back to raw Redfish window energy.
-	var (
-		sysMJ      float64
-		sysChassis string
-		sysSrc     string // for logging only ("hat" or "redfish")
-		okSys      bool
-	)
-
-	// Prefer fused estimate if present.
-	if hatPts := c.Store.ListByID(MetricRedfishEnergyHatMJ); len(hatPts) > 0 {
-		sysMJ, sysChassis, okSys = selectRedfishEnergyMJ(hatPts)
-		if okSys {
-			sysSrc = systemEnergyKindHat
-		}
+	monoQuantumSec := c.Mono.Quantum().Seconds()
+	if monoQuantumSec <= 0 {
+		return nil
+	}
+	winSec := float64(c.Window.EndMono-c.Window.StartMono+1) * monoQuantumSec
+	if winSec <= 0 {
+		return nil
 	}
 
-	// Fall back to raw Redfish integration.
-	if !okSys {
-		rfPts := c.Store.ListByID(MetricRedfishSystemEnergyMJ)
-		sysMJ, sysChassis, okSys = selectRedfishEnergyMJ(rfPts)
-		if !okSys {
-			klog.V(2).Infof("[analysis] residual: missing system energy for window=%s", c.Window.String())
-			return nil
-		}
-		sysSrc = "redfish"
+	// Prefer corrected system power, else raw (warmup).
+	sysP, chassis, source, ok := getSystemPower(c)
+	if !ok {
+		return nil
 	}
 
-	// Map to Slice 10A-style provenance label for the emitted system energy debug series.
-	sysSourceLabel := redfishSourceRaw
-	if sysSrc == systemEnergyKindHat {
-		sysSourceLabel = fusionSourceHat
+	// System window energy from average power.
+	sysEWinMJ := sysP * winSec
+
+	// Accounted window energy from average power (aligned semantics).
+	raplPW := raplTotalPowerMW(c) // pkg + dram
+	gpuPW := gpuTotalPowerMW(c)   // sum over gpu_uuid
+
+	accEWinMJ := (raplPW + gpuPW) * winSec
+
+	// Residual window energy and power.
+	resWinMJ := sysEWinMJ - accEWinMJ
+	resMW := resWinMJ / winSec
+
+	// For counters and idle split, clamp at 0 (no negative energy).
+	resWinMJClamp := math.Max(0, resWinMJ)
+	resMWClamp := resWinMJClamp / winSec
+
+	// Idle model on clamped residual power.
+	cfg := idle.DefaultConfig()
+	model := idle.GetOrInitScalar(c.State, "residual", cfg)
+	if model == nil {
+		return nil
+	}
+	now := time.Now()
+	model.Observe(0.0, resMWClamp, now)
+	idleMW, _ := model.Estimate()
+
+	dynMW := math.Max(0, resMWClamp-idleMW)
+
+	idleWinMJ := idleMW * winSec
+	dynWinMJ := dynMW * winSec
+
+	labelsBase := analysis.Labels{
+		"chassis": chassis,
+		"source":  source, // follows active system source; raw during warmup, corrected afterwards
 	}
 
-	// 2) RAPL total = pkg + dram (explicitly NOT summing core/uncore).
-	raplPkgMJ := getRAPLDomainTotalMJ(c, "pkg")
-	raplDramMJ := getRAPLDomainTotalMJ(c, "dram")
-	raplTotalMJ := raplPkgMJ + raplDramMJ
-
-	// 3) GPU total: sum across UUIDs for kind="total" and source="nvml_corrected".
-	gpuMJ := sumGpuTotalEnergyMJCorrected(c)
-
-	accounted := raplTotalMJ + gpuMJ
-	residual := sysMJ - accounted
-
-	if config.GetFusionDiagnosticsEnabled() {
-		// Emit residual + optional debug helpers.
-		//
-		// Slice 10A: all emitted series carry a source label.
-		// Residual is defined relative to the raw system observation in this slice.
-		resLabels := analysis.Labels{
-			"chassis": sysChassis,
-			"source":  residualSource,
-		}
-
+	emitPower := func(kind string, v float64) {
+		labels := copyLabels(labelsBase)
+		labels["kind"] = kind
 		c.Sink.Emit(c.Ctx, analysis.Point{
-			Key:    analysis.Key(MetricSystemResidualEnergyMJ, resLabels),
+			Key:    analysis.Key(MetricResidualPowerMW, labels),
 			Window: c.Window,
-			Unit:   "mJ",
-			Value:  residual,
-			Quality: &analysis.Quality{
-				DelayTicks: 0, // derived metric: components carry their own
-			},
-		})
-
-		c.Sink.Emit(c.Ctx, analysis.Point{
-			Key:    analysis.Key(MetricSystemEnergyMJ, analysis.Labels{"chassis": sysChassis, "source": sysSourceLabel}),
-			Window: c.Window,
-			Unit:   "mJ",
-			Value:  sysMJ,
-		})
-
-		c.Sink.Emit(c.Ctx, analysis.Point{
-			Key:    analysis.Key(MetricSystemAccountedEnergyMJ, analysis.Labels{"chassis": sysChassis, "source": residualSource}),
-			Window: c.Window,
-			Unit:   "mJ",
-			Value:  accounted,
+			Unit:   "mW",
+			Value:  v,
 		})
 	}
+
+	emitPower(residualKindTotal, resMW)   // may be negative (diagnostic value)
+	emitPower(residualKindIdle, idleMW)   // >= 0
+	emitPower(residualKindDynamic, dynMW) // >= 0
+
+	emitEnergyCounter := func(kind string, winAddMJ float64) {
+		labels := copyLabels(labelsBase)
+		labels["kind"] = kind
+		if winAddMJ < 0 || math.IsNaN(winAddMJ) || math.IsInf(winAddMJ, 0) {
+			winAddMJ = 0
+		}
+
+		key := analysis.Key(MetricResidualEnergyMJ, labels)
+		var prev float64
+		if v, ok := c.State.Get(key); ok {
+			if f, ok2 := v.(float64); ok2 {
+				prev = f
+			}
+		}
+		next := prev + winAddMJ
+		c.State.Set(key, next)
+
+		c.Sink.Emit(c.Ctx, analysis.Point{
+			Key:    analysis.Key(MetricResidualEnergyMJ, labels),
+			Window: c.Window,
+			Unit:   "mJ",
+			Value:  next,
+		})
+	}
+
+	emitEnergyCounter(residualKindTotal, resWinMJClamp)
+	emitEnergyCounter(residualKindIdle, idleWinMJ)
+	emitEnergyCounter(residualKindDynamic, dynWinMJ)
+
+	if resMW < 0 {
+		labels := copyLabels(labelsBase)
+		labels["kind"] = residualKindTotal
+		c.Sink.Emit(c.Ctx, analysis.Point{
+			Key:    analysis.Key(MetricResidualNegativePowerMW, labels),
+			Window: c.Window,
+			Unit:   "mW",
+			Value:  resMW,
+		})
+	}
+
+	// Optional: log if residual is persistently negative, helps debug conservation issues.
+	if resMW < -1e3 {
+		klog.V(4).Infof("[analysis] residual negative chassis=%q source=%q resMW=%.3f sysP=%.3f raplP=%.3f gpuP=%.3f",
+			chassis, source, resMW, sysP, raplPW, gpuPW)
+	}
+
 	return nil
 }
 
-// Slice 10A: RAPL energy metrics now include source="rapl" and kind="total".
-func getRAPLDomainTotalMJ(c *analysis.Cycle, domain string) float64 {
+func getSystemPower(c *analysis.Cycle) (pMW float64, chassis, source string, ok bool) {
 	if c == nil || c.Store == nil {
-		return 0
+		return 0, "", "", false
 	}
-	key := analysis.Key(
-		analysis.MetricID("rapl_energy_mj"),
-		analysis.Labels{
-			"domain": domain,
-			"kind":   "total",
-			"source": raplSource,
-		},
-	)
-	p, ok := c.Store.GetExact(key)
-	if !ok {
-		return 0
-	}
-	return p.Value
-}
 
-// Slice 10A: GPU energy points do not have a "component" label, so we sum by labels.
-// We also lock to the corrected provenance for contract consistency.
-func sumGpuTotalEnergyMJCorrected(c *analysis.Cycle) float64 {
-	if c == nil || c.Store == nil {
-		return 0
+	pts := c.Store.ListByID(MetricSystemPowerMW)
+	if len(pts) == 0 {
+		return 0, "", "", false
 	}
-	ps := c.Store.ListByID(MetricGpuEnergyMJ)
-	sum := 0.0
-	for _, p := range ps {
+
+	// Prefer corrected.
+	for _, p := range pts {
 		if p.Key.Labels == nil {
 			continue
 		}
-		if k := p.Key.Labels["kind"]; k != "" && k != "total" {
+		if p.Key.Labels["source"] == redfishSourceCorrected && p.Key.Labels["kind"] == systemKindTotal {
+			ch := p.Key.Labels["chassis"]
+			if ch == "" {
+				ch = "Self"
+			}
+			return p.Value, ch, redfishSourceCorrected, true
+		}
+	}
+	// Else raw.
+	for _, p := range pts {
+		if p.Key.Labels == nil {
 			continue
 		}
-		if s := p.Key.Labels["source"]; s != gpuSourceCorrected {
+		if p.Key.Labels["source"] == redfishSourceRaw && p.Key.Labels["kind"] == systemKindTotal {
+			ch := p.Key.Labels["chassis"]
+			if ch == "" {
+				ch = "Self"
+			}
+			return p.Value, ch, redfishSourceRaw, true
+		}
+	}
+
+	return 0, "", "", false
+}
+
+func raplTotalPowerMW(c *analysis.Cycle) float64 {
+	if c == nil || c.Store == nil {
+		return 0
+	}
+	sum := 0.0
+	for _, domain := range []string{"pkg", "dram"} {
+		key := analysis.Key(
+			analysis.MetricID("rapl_power_mw"),
+			analysis.Labels{
+				"domain": domain,
+				"kind":   "total",
+				"source": "rapl",
+			},
+		)
+		p, ok := c.Store.GetExact(key)
+		if !ok {
 			continue
 		}
 		v := p.Value
@@ -169,4 +218,39 @@ func sumGpuTotalEnergyMJCorrected(c *analysis.Cycle) float64 {
 		sum += v
 	}
 	return sum
+}
+
+func gpuTotalPowerMW(c *analysis.Cycle) float64 {
+	if c == nil || c.Store == nil {
+		return 0
+	}
+	// Try using the canonical GPU power metric ID if it exists in your package.
+	// If MetricGpuPowerMW is not defined, replace it with analysis.MetricID(MetricGpuPowerMW).
+	ps := c.Store.ListByID(analysis.MetricID(MetricGpuPowerMW))
+	sum := 0.0
+	for _, p := range ps {
+		if p.Key.Labels == nil {
+			continue
+		}
+		if p.Key.Labels["source"] != "nvml_corrected" {
+			continue
+		}
+		if k := p.Key.Labels["kind"]; k != "" && k != "total" {
+			continue
+		}
+		v := p.Value
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+			v = 0
+		}
+		sum += v
+	}
+	return sum
+}
+
+func copyLabels(in analysis.Labels) analysis.Labels {
+	out := analysis.Labels{}
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

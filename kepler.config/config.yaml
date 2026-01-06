@@ -87,7 +87,7 @@ extraEnvVars:
   TYCHO_BPF_DELAY_MS: "0"
   TYCHO_RAPL_DELAY_MS: "0"
   TYCHO_GPU_DELAY_MS: "200"
-  TYCHO_REDFISH_DELAY_MS: "0" 
+  TYCHO_REDFISH_DELAY_MS: "1000" 
   TYCHO_REDFISH_HEARTBEAT_MAX_GAP_MS: "3000" # Heartbeat timeout (milliseconds). Set to 150% of the known BMC publishing frequency, if known. Otherwise set to 15000 as a safe, conservative default.
 
   # CalibrationRaplPollMinMs

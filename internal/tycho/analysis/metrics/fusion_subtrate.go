@@ -13,6 +13,7 @@ import (
 
 const (
 	MetricFusionCache analysis.MetricID = "fusion_cache" // state key family
+	MetricFusionReady analysis.MetricID = "fusion_ready" // state key family
 )
 
 type FusionSubstrate struct {
@@ -167,6 +168,10 @@ func (m *FusionSubstrate) Run(c *analysis.Cycle) error {
 
 	// Redfish observations (refresh every cycle; cheap and simplifies correctness).
 	m.refreshRedfishObs(c, cache, chassis, kernel, kernelMs)
+
+	// Readiness flag: corrected system/residual should take over when RedfishObs are available.
+	readyKey := analysis.Key(MetricFusionReady, analysis.Labels{"chassis": chassis})
+	c.State.Set(readyKey, len(cache.RedfishObs) > 0)
 
 	putCache(c.State, key, cache)
 

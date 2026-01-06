@@ -2,6 +2,8 @@
 package analysismetrics
 
 import (
+	"time"
+
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis"
 	analysisctx "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/context"
 	analysisops "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/operators"
@@ -9,29 +11,47 @@ import (
 	"github.com/casparwackerle/tycho-energy/pkg/config"
 )
 
-const MetricRedfishSystemEnergyMJ analysis.MetricID = "redfish_system_energy_mj"
+const (
+	// Canonical system families
+	MetricSystemPowerMW  analysis.MetricID = "system_power_mw"
+	MetricSystemEnergyMJ analysis.MetricID = "system_energy_mj"
 
-// Slice 10A: fixed provenance label for raw Redfish-derived system observation.
-const redfishSourceRaw = "redfish_raw"
+	// Slice 10A provenance
+	redfishSourceRaw       = "redfish_raw"
+	redfishSourceCorrected = "redfish_corrected"
 
-type RedfishWindowEnergy struct {
+	systemKindTotal = "total"
+)
+
+type SystemRawFromRedfish struct {
 	delayTicks uint64
 }
 
-func NewRedfishWindowEnergy() *RedfishWindowEnergy { return &RedfishWindowEnergy{} }
+func NewSystemRawFromRedfish() *SystemRawFromRedfish { return &SystemRawFromRedfish{} }
 
-func (m *RedfishWindowEnergy) ID() analysis.MetricID { return "redfish_window_energy" }
+func (m *SystemRawFromRedfish) ID() analysis.MetricID { return "system_raw_from_redfish" }
 
-func (m *RedfishWindowEnergy) IsEnabled(c *analysis.Cycle) bool {
-	return c != nil && c.Sink != nil && c.Redfish() != nil && c.Mono != nil
+func (m *SystemRawFromRedfish) IsEnabled(c *analysis.Cycle) bool {
+	return c != nil && c.Sink != nil && c.Redfish() != nil && c.Mono != nil && c.State != nil
 }
 
-func (m *RedfishWindowEnergy) Run(c *analysis.Cycle) error {
-	if c == nil || c.Sink == nil || c.Mono == nil {
+func (m *SystemRawFromRedfish) Run(c *analysis.Cycle) error {
+	if c == nil || c.Sink == nil || c.Mono == nil || c.State == nil {
 		return nil
 	}
 	r := c.Redfish()
 	if r == nil {
+		return nil
+	}
+
+	monoQuantumSec := c.Mono.Quantum().Seconds()
+	if monoQuantumSec <= 0 {
+		return nil
+	}
+
+	// Window duration (seconds), inclusive-ish consistent with existing code base.
+	windowSec := float64(c.Window.EndMono-c.Window.StartMono+1) * monoQuantumSec
+	if windowSec <= 0 {
 		return nil
 	}
 
@@ -69,6 +89,15 @@ func (m *RedfishWindowEnergy) Run(c *analysis.Cycle) error {
 	}
 
 	for chassis, winSamples := range inWin {
+		// If corrected is ready for this chassis, do not emit raw canonical system metrics anymore.
+		// This enforces: warmup uses raw; afterwards everything uses corrected.
+		readyKey := analysis.Key(MetricFusionReady, analysis.Labels{"chassis": chassis})
+		if v, ok := c.State.Get(readyKey); ok {
+			if b, ok2 := v.(bool); ok2 && b {
+				continue
+			}
+		}
+
 		xs := winSamples
 		if prevSet[chassis] {
 			tmp := make([]ring.RedfishSample, 0, len(winSamples)+1)
@@ -94,20 +123,48 @@ func (m *RedfishWindowEnergy) Run(c *analysis.Cycle) error {
 			start, wEff.EndMono,
 			func(s ring.RedfishSample) uint64 { return s.Mono },
 			func(s ring.RedfishSample) float64 { return s.PowerWatts },
-			c.Mono.Quantum(),
+			time.Duration(c.Mono.Quantum()),
 		)
+
+		energyMJWin := energyJ * 1000.0
+		if energyMJWin < 0 {
+			energyMJWin = 0
+		}
+		pMW := energyMJWin / windowSec
 
 		labels := analysis.Labels{
 			"chassis": chassis,
 			"source":  redfishSourceRaw,
+			"kind":    systemKindTotal,
 		}
-		energyMJ := energyJ * 1000.0
+
+		// Accumulate counter in state (reset on restart is acceptable).
+		energyKey := analysis.Key(MetricSystemEnergyMJ, labels)
+		var prevCum float64
+		if v, ok := c.State.Get(energyKey); ok {
+			if f, ok2 := v.(float64); ok2 {
+				prevCum = f
+			}
+		}
+		newCum := prevCum + energyMJWin
+		c.State.Set(energyKey, newCum)
 
 		c.Sink.Emit(c.Ctx, analysis.Point{
-			Key:    analysis.Key(MetricRedfishSystemEnergyMJ, labels),
-			Window: c.Window, // corrected shared window
+			Key:    analysis.Key(MetricSystemPowerMW, labels),
+			Window: c.Window,
+			Unit:   "mW",
+			Value:  pMW,
+			Quality: &analysis.Quality{
+				SamplesUsed: intervals,
+				DelayTicks:  m.delayTicks,
+			},
+		})
+
+		c.Sink.Emit(c.Ctx, analysis.Point{
+			Key:    analysis.Key(MetricSystemEnergyMJ, labels),
+			Window: c.Window,
 			Unit:   "mJ",
-			Value:  energyMJ,
+			Value:  newCum,
 			Quality: &analysis.Quality{
 				SamplesUsed: intervals,
 				DelayTicks:  m.delayTicks,

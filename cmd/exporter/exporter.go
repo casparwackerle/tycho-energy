@@ -323,7 +323,7 @@ func main() {
 		analysisreg.Register(analysismetrics.NewBpfSystemMetrics())
 	}
 	if enableRedfish {
-		analysisreg.Register(analysismetrics.NewRedfishWindowEnergy()) //only do this if fusion is not available
+		//analysisreg.Register(analysismetrics.NewRedfishWindowEnergy()) //only do this if fusion is not available
 	}
 	if enableRapl && enableBpf {
 		analysisreg.Register(analysismetrics.NewRaplIdleDynamic())
@@ -337,12 +337,14 @@ func main() {
 	if enableRedfish && enableRapl && enableBpf {
 		analysisreg.Register(analysismetrics.NewFusionSubstrate())
 		analysisreg.Register(analysismetrics.NewFusionModel())
-		analysisreg.Register(analysismetrics.NewSystemResidualIdleDynamic())
+		analysisreg.Register(analysismetrics.NewSystemRawFromRedfish())
+		analysisreg.Register(analysismetrics.NewResidual())
+		//analysisreg.Register(analysismetrics.NewSystemResidualIdleDynamic())
 	}
 
 	// Residual only makes sense with Redfish system energy and RAPL.
 	if enableRedfish && enableRapl && config.GetFusionDiagnosticsEnabled() {
-		analysisreg.Register(analysismetrics.NewSystemResidualEnergy())
+		//analysisreg.Register(analysismetrics.NewSystemResidualEnergy())
 	}
 
 	// --- Analysis sinks ---

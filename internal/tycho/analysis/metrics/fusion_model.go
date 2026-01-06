@@ -8,7 +8,6 @@ import (
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis/fusion"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/ring"
-	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"k8s.io/klog/v2"
 )
 
@@ -46,45 +45,9 @@ func (m *FusionModel) Run(c *analysis.Cycle) error {
 		return nil
 	}
 
-	// Warmup policy: until the fusion cache provides solver-ready RedfishObs,
-	// publish raw Redfish power (truth) over the analysis window instead of modelled power.
 	if len(cache.RedfishObs) == 0 {
-		// Redfish samples are in raw time; analysis window is corrected time.
-		rfDelay := c.Mono.TicksForMsCeil(config.RedfishDelayMs())
-		rawStart := c.Window.StartMono + rfDelay
-		rawEnd := c.Window.EndMono + rfDelay
-
-		pMW, ok := avgRedfishPowerMWInRawWindow(c, chassis, rawStart, rawEnd, monoQuantumSec)
-		if !ok {
-			// If we have no Redfish data at all yet, publish nothing (avoid wrong values).
-			klog.V(2).Infof("[analysis] fusion_model chassis=%q warmup raw_redfish unavailable (no samples yet)", chassis)
-			return nil
-		}
-
-		// Energy over analysis window: mW * s = mJ.
-		windowSec := float64(c.Window.EndMono-c.Window.StartMono+1) * monoQuantumSec
-		if windowSec <= 0 {
-			return nil
-		}
-		eMJ := pMW * windowSec
-
-		c.Sink.Emit(c.Ctx, analysis.Point{
-			Key: analysis.Key(
-				MetricRedfishEnergyHatMJ,
-				analysis.Labels{
-					"chassis": chassis,
-					"source":  "redfish_raw",
-				},
-			),
-			Window: c.Window,
-			Unit:   "mJ",
-			Value:  eMJ,
-		})
-
-		klog.V(2).Infof(
-			"[analysis] fusion_model chassis=%q mode=raw_redfish p=%.3f_mW redfish_obs=%d",
-			chassis, pMW, len(cache.RedfishObs),
-		)
+		// Warmup policy: publish no corrected system series.
+		// Canonical system metrics during warmup come from raw Redfish integration (SystemRawFromRedfish).
 		return nil
 	}
 
@@ -154,32 +117,44 @@ func (m *FusionModel) Run(c *analysis.Cycle) error {
 		// mW * s = mJ
 		eHatMJ += pHat[i] * overlapSec
 
-		// Note: bin label is high cardinality for Prometheus.
-		// c.Sink.Emit(c.Ctx, analysis.Point{
-		// 	Key:    analysis.Key(MetricRedfishPowerHatMW, analysis.Labels{"chassis": chassis, "bin": k.String()}),
-		// 	Window: c.Window,
-		// 	Unit:   "mW",
-		// 	Value:  pHat[i],
-		// })
 	}
 
+	// Canonical corrected system series: power (window avg) + energy (counter).
+	windowSec := float64(c.Window.EndMono-c.Window.StartMono+1) * monoQuantumSec
+	if windowSec <= 0 {
+		return nil
+	}
+	pMW := eHatMJ / windowSec
+
+	labels := analysis.Labels{
+		"chassis": chassis,
+		"source":  "redfish_corrected",
+		"kind":    "total",
+	}
+
+	// Counter in state.
+	energyKey := analysis.Key(MetricSystemEnergyMJ, labels)
+	var prevCum float64
+	if v, ok := c.State.Get(energyKey); ok {
+		if f, ok2 := v.(float64); ok2 {
+			prevCum = f
+		}
+	}
+	newCum := prevCum + eHatMJ
+	c.State.Set(energyKey, newCum)
+
 	c.Sink.Emit(c.Ctx, analysis.Point{
-		Key: analysis.Key(
-			MetricRedfishEnergyHatMJ,
-			analysis.Labels{
-				"chassis": chassis,
-				"source":  "redfish_corrected",
-			},
-		),
+		Key:    analysis.Key(MetricSystemPowerMW, labels),
+		Window: c.Window,
+		Unit:   "mW",
+		Value:  pMW,
+	})
+	c.Sink.Emit(c.Ctx, analysis.Point{
+		Key:    analysis.Key(MetricSystemEnergyMJ, labels),
 		Window: c.Window,
 		Unit:   "mJ",
-		Value:  eHatMJ,
+		Value:  newCum,
 	})
-
-	klog.V(2).Infof(
-		"[analysis] fusion_model chassis=%q theta(alpha=%.4f beta=%.4f gamma=%.4f delta=%.6g bias=%.3f) redfish_obs=%d",
-		chassis, theta.Alpha, theta.Beta, theta.Gamma, theta.Delta, theta.Bias, len(cache.RedfishObs),
-	)
 
 	return nil
 }
