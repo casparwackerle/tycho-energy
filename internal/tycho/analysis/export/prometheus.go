@@ -138,6 +138,39 @@ func (s *PrometheusSink) Emit(_ context.Context, p analysis.Point) {
 	}
 }
 
+// Delete implements analysis.Sink. It removes a time-series so it disappears from /metrics.
+func (s *PrometheusSink) Delete(_ context.Context, key analysis.MetricKey) {
+	if s == nil {
+		return
+	}
+
+	// Defensive copy: labels map is mutable.
+	labels := key.Labels.Clone()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	f := s.families[key.ID]
+	if f == nil {
+		return
+	}
+
+	// Build label values in the family's fixed order.
+	lv := make([]string, len(f.labelKeys))
+	for i, k := range f.labelKeys {
+		lv[i] = labels[k]
+	}
+
+	serKey := seriesKey(f.name, f.labelKeys, lv)
+
+	delete(f.series, serKey)
+
+	// Optional: if family becomes empty, drop it too (keeps memory tidy).
+	if len(f.series) == 0 {
+		delete(s.families, key.ID)
+	}
+}
+
 // --- Collector implementation ---
 
 type tychoAnalysisCollector struct {

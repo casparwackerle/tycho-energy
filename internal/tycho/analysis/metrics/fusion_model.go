@@ -125,23 +125,73 @@ func (m *FusionModel) Run(c *analysis.Cycle) error {
 		return nil
 	}
 	pMW := eHatMJ / windowSec
-
 	labels := analysis.Labels{
 		"chassis": chassis,
-		"source":  "redfish_corrected",
-		"kind":    "total",
+		"source":  redfishSourceCorrected,
+		"kind":    systemKindTotal,
 	}
 
-	// Counter in state.
-	energyKey := analysis.Key(MetricSystemEnergyMJ, labels)
-	var prevCum float64
-	if v, ok := c.State.Get(energyKey); ok {
+	const MetricFusionTakeoverDone analysis.MetricID = "fusion_takeover_done" // state-only
+
+	takeoverKey := analysis.Key(MetricFusionTakeoverDone, analysis.Labels{"chassis": chassis})
+	if _, done := c.State.Get(takeoverKey); !done {
+
+		// Delete raw system series
+		rawSys := analysis.Labels{"chassis": chassis, "source": redfishSourceRaw, "kind": systemKindTotal}
+		c.Sink.Delete(c.Ctx, analysis.Key(MetricSystemPowerMW, rawSys))
+		c.Sink.Delete(c.Ctx, analysis.Key(MetricSystemEnergyMJ, rawSys))
+
+		// Delete raw residual series (strings to avoid cross-file const deps)
+		for _, k := range []string{"total", "idle", "dynamic"} {
+			rawRes := analysis.Labels{"chassis": chassis, "source": redfishSourceRaw, "kind": k}
+			c.Sink.Delete(c.Ctx, analysis.Key(MetricResidualPowerMW, rawRes))
+			c.Sink.Delete(c.Ctx, analysis.Key(MetricResidualEnergyMJ, rawRes))
+		}
+
+		// Optional: delete raw negative diag
+		rawNeg := analysis.Labels{"chassis": chassis, "source": redfishSourceRaw, "kind": "total"}
+		c.Sink.Delete(c.Ctx, analysis.Key(MetricResidualNegativePowerMW, rawNeg))
+
+		c.State.Set(takeoverKey, true)
+	}
+
+	// 1) Determine offset once (seed from last raw system counter).
+	offKey := analysis.Key(MetricSystemEnergyOffsetMJ, analysis.Labels{
+		"chassis": chassis,
+		"kind":    systemKindTotal,
+	})
+	var offset float64
+	if v, ok := c.State.Get(offKey); ok {
 		if f, ok2 := v.(float64); ok2 {
-			prevCum = f
+			offset = f
+		}
+	} else {
+		rawKey := analysis.Key(MetricSystemEnergyMJ, analysis.Labels{
+			"chassis": chassis,
+			"source":  redfishSourceRaw,
+			"kind":    systemKindTotal,
+		})
+		if v2, ok2 := c.State.Get(rawKey); ok2 {
+			if f2, ok3 := v2.(float64); ok3 {
+				offset = f2
+			}
+		}
+		c.State.Set(offKey, offset)
+	}
+
+	// 2) Accumulate corrected local counter (state-only, no offset).
+	localKey := analysis.Key(MetricSystemEnergyLocalMJ, labels)
+	var prevLocal float64
+	if v, ok := c.State.Get(localKey); ok {
+		if f, ok2 := v.(float64); ok2 {
+			prevLocal = f
 		}
 	}
-	newCum := prevCum + eHatMJ
-	c.State.Set(energyKey, newCum)
+	newLocal := prevLocal + eHatMJ
+	c.State.Set(localKey, newLocal)
+
+	// 3) Exported cumulative counter includes offset.
+	exportCum := offset + newLocal
 
 	c.Sink.Emit(c.Ctx, analysis.Point{
 		Key:    analysis.Key(MetricSystemPowerMW, labels),
@@ -153,7 +203,7 @@ func (m *FusionModel) Run(c *analysis.Cycle) error {
 		Key:    analysis.Key(MetricSystemEnergyMJ, labels),
 		Window: c.Window,
 		Unit:   "mJ",
-		Value:  newCum,
+		Value:  exportCum,
 	})
 
 	return nil

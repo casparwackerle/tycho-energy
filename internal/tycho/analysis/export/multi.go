@@ -27,3 +27,9 @@ func (m *MultiSink) Emit(ctx context.Context, p analysis.Point) {
 		s.Emit(ctx, p)
 	}
 }
+
+func (m *MultiSink) Delete(ctx context.Context, key analysis.MetricKey) {
+	for _, s := range m.sinks {
+		s.Delete(ctx, key)
+	}
+}

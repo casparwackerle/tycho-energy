@@ -85,6 +85,7 @@ type Point struct {
 // Sink consumes generic points. Slice 0 uses a log sink.
 type Sink interface {
 	Emit(ctx context.Context, p Point)
+	Delete(ctx context.Context, key MetricKey)
 }
 
 // Metric is the plugin interface.

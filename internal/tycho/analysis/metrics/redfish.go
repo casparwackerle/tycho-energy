@@ -13,8 +13,12 @@ import (
 
 const (
 	// Canonical system families
-	MetricSystemPowerMW  analysis.MetricID = "system_power_mw"
-	MetricSystemEnergyMJ analysis.MetricID = "system_energy_mj"
+	MetricSystemPowerMW          analysis.MetricID = "system_power_mw"
+	MetricSystemEnergyMJ         analysis.MetricID = "system_energy_mj"
+	MetricSystemEnergyLocalMJ    analysis.MetricID = "system_energy_local_mj"    // state-only
+	MetricSystemEnergyOffsetMJ   analysis.MetricID = "system_energy_offset_mj"   // state-only
+	MetricResidualEnergyLocalMJ  analysis.MetricID = "residual_energy_local_mj"  // state-only
+	MetricResidualEnergyOffsetMJ analysis.MetricID = "residual_energy_offset_mj" // state-only
 
 	// Slice 10A provenance
 	redfishSourceRaw       = "redfish_raw"

@@ -104,28 +104,100 @@ func (m *Residual) Run(c *analysis.Cycle) error {
 	emitPower(residualKindIdle, idleMW)   // >= 0
 	emitPower(residualKindDynamic, dynMW) // >= 0
 
+	// emitEnergyCounter := func(kind string, winAddMJ float64) {
+	// 	labels := copyLabels(labelsBase)
+	// 	labels["kind"] = kind
+	// 	if winAddMJ < 0 || math.IsNaN(winAddMJ) || math.IsInf(winAddMJ, 0) {
+	// 		winAddMJ = 0
+	// 	}
+
+	// 	key := analysis.Key(MetricResidualEnergyMJ, labels)
+	// 	var prev float64
+	// 	if v, ok := c.State.Get(key); ok {
+	// 		if f, ok2 := v.(float64); ok2 {
+	// 			prev = f
+	// 		}
+	// 	}
+	// 	next := prev + winAddMJ
+	// 	c.State.Set(key, next)
+
+	// 	c.Sink.Emit(c.Ctx, analysis.Point{
+	// 		Key:    analysis.Key(MetricResidualEnergyMJ, labels),
+	// 		Window: c.Window,
+	// 		Unit:   "mJ",
+	// 		Value:  next,
+	// 	})
+	// }
+
 	emitEnergyCounter := func(kind string, winAddMJ float64) {
+
 		labels := copyLabels(labelsBase)
 		labels["kind"] = kind
+
+		if source == redfishSourceRaw {
+			// Warmup: just accumulate raw as before.
+			key := analysis.Key(MetricResidualEnergyMJ, labels)
+			var prev float64
+			if v, ok := c.State.Get(key); ok {
+				if f, ok2 := v.(float64); ok2 {
+					prev = f
+				}
+			}
+			next := prev + winAddMJ
+			c.State.Set(key, next)
+			c.Sink.Emit(c.Ctx, analysis.Point{Key: key, Window: c.Window, Unit: "mJ", Value: next})
+			return
+		}
+
+		// Clamp before accumulating to keep monotonic counters.
 		if winAddMJ < 0 || math.IsNaN(winAddMJ) || math.IsInf(winAddMJ, 0) {
 			winAddMJ = 0
 		}
 
-		key := analysis.Key(MetricResidualEnergyMJ, labels)
-		var prev float64
-		if v, ok := c.State.Get(key); ok {
+		// Offset key is per (chassis, kind). It is independent of source, and seeded once when corrected starts.
+		offKey := analysis.Key(MetricResidualEnergyOffsetMJ, analysis.Labels{
+			"chassis": chassis,
+			"kind":    kind,
+		})
+
+		var offset float64
+		if v, ok := c.State.Get(offKey); ok {
 			if f, ok2 := v.(float64); ok2 {
-				prev = f
+				offset = f
+			}
+		} else {
+			// Seed offset from the last raw residual counter of the same kind.
+			rawKey := analysis.Key(MetricResidualEnergyMJ, analysis.Labels{
+				"chassis": chassis,
+				"source":  redfishSourceRaw,
+				"kind":    kind,
+			})
+			if v2, ok2 := c.State.Get(rawKey); ok2 {
+				if f2, ok3 := v2.(float64); ok3 {
+					offset = f2
+				}
+			}
+			c.State.Set(offKey, offset)
+		}
+
+		// Local corrected accumulator is stored separately (state-only).
+		localKey := analysis.Key(MetricResidualEnergyLocalMJ, labels) // includes corrected source
+		var prevLocal float64
+		if v, ok := c.State.Get(localKey); ok {
+			if f, ok2 := v.(float64); ok2 {
+				prevLocal = f
 			}
 		}
-		next := prev + winAddMJ
-		c.State.Set(key, next)
+		newLocal := prevLocal + winAddMJ
+		c.State.Set(localKey, newLocal)
+
+		exportCum := offset + newLocal
 
 		c.Sink.Emit(c.Ctx, analysis.Point{
 			Key:    analysis.Key(MetricResidualEnergyMJ, labels),
 			Window: c.Window,
 			Unit:   "mJ",
-			Value:  next,
+			Value:  exportCum,
 		})
 	}
 

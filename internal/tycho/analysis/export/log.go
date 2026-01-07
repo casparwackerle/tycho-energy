@@ -38,6 +38,10 @@ func (s *LogSink) Emit(_ context.Context, p analysis.Point) {
 	)
 }
 
+func (s *LogSink) Delete(ctx context.Context, key analysis.MetricKey) {
+	// no-op
+}
+
 func formatLabels(m map[string]string) string {
 	if len(m) == 0 {
 		return ""
