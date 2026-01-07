@@ -54,3 +54,4 @@ bpf_backup/
 
 scripts/venv
 scripts/.venv
+scripts/delay_hist_*

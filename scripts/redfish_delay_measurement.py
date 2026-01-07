@@ -25,6 +25,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional, Tuple, List
 from pathlib import Path
+import datetime
 
 import requests
 import numpy as np
@@ -126,7 +127,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--insecure", action="store_true", default=True, help="Disable TLS verification (default: true)")
     p.add_argument("--secure", dest="insecure", action="store_false", help="Enable TLS verification")
 
-    p.add_argument("--hist-out", default="redfish_delay_hist.png", help="Histogram output file (default: redfish_delay_hist.png)")
+    p.add_argument("--hist-out", default="delay_hist_redfish.png", help="Histogram output file (default: redfish_delay_hist.png)")
     p.add_argument("--seed", type=int, default=0, help="Random seed (0 = time-based)")
 
     return p.parse_args()
@@ -416,13 +417,15 @@ def main() -> None:
     end = math.ceil(dmax / bin_width) * bin_width
     bins = np.arange(start, end + bin_width, bin_width)
 
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     plt.hist(arr, bins=bins)
     plt.xlabel("Delay (seconds)")
     plt.ylabel("Count")
     plt.title(f"Redfish reaction delay distribution (bin={bin_width*1000:.0f} ms)")
     plt.tight_layout()
-    plt.savefig(hist_path, dpi=150)
-    print(f"\nHistogram written to: {hist_path}")
+    plt.savefig("{hist_path}_{ts}", dpi=150)
+    print(f"\nHistogram written to: {"{hist_path}_{ts}"}")
 
 
 if __name__ == "__main__":
