@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional, Tuple, List
 from pathlib import Path
-import datetime
+from datetime import datetime
 
 import requests
 import numpy as np
@@ -108,8 +108,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--path", default=DEFAULT_REDFISH_PATH, help=f"Redfish power resource path (default {DEFAULT_REDFISH_PATH})")
 
     p.add_argument("--trials", type=int, default=50, help="Number of trials (default: 50)")
-    p.add_argument("--cooldown-sec", type=float, default=30.0, help="Cooldown between trials (default: 30)")
+    p.add_argument("--cooldown-sec", type=float, default=60.0, help="Cooldown between trials (default: 30)")
     p.add_argument("--baseline-sec", type=float, default=5.0, help="Baseline window length in seconds (default: 5)")
+    p.add_argument("--post-stress-grace-sec", type=float, default=10.0, help="Extra time after stress ends to keep polling (default: 10)")
 
     p.add_argument("--threshold-pct", type=float, default=10.0, help="Threshold above baseline in percent (default: 10)")
     p.add_argument("--consecutive", type=int, default=3, help="Consecutive samples above threshold (default: 3)")
@@ -181,6 +182,35 @@ def sleep_with_jitter(base_sec: float, jitter_ms: int) -> None:
         jitter_sec = random.uniform(-jitter_ms, jitter_ms) / 1000.0
     time.sleep(max(0.0, base_sec + jitter_sec))
 
+def wait_for_power_below(
+    session: requests.Session,
+    url: str,
+    auth: Tuple[str, str],
+    verify_tls: bool,
+    target_w: float,
+    hold_sec: float,
+    timeout_sec: float,
+    poll_ms: int,
+) -> bool:
+    """
+    Wait until power stays <= target_w for hold_sec continuously.
+    Returns True if achieved, False if timed out.
+    """
+    t_deadline = time.monotonic() + timeout_sec
+    t_ok_start: Optional[float] = None
+
+    while time.monotonic() < t_deadline:
+        w, _, ok = redfish_power_w(session, url, auth, verify_tls)
+        now = time.monotonic()
+        if ok and w is not None and w <= target_w:
+            if t_ok_start is None:
+                t_ok_start = now
+            if (now - t_ok_start) >= hold_sec:
+                return True
+        else:
+            t_ok_start = None
+        time.sleep(poll_ms / 1000.0)
+    return False
 
 
 
@@ -196,15 +226,22 @@ def run_one_trial(
     threshold_pct: float,
     consecutive: int,
     stress_sec: float,
+    post_stress_grace_sec: float,
     workers: int,
 ) -> TrialResult:
     poll_ms_used = poll_ms
+
+    # Optional: ensure we've cooled down from previous run.
+    # If previous baseline exists, main() can pass it in; simplest version uses a fixed target.
+    # For now, do nothing here; see Change 4 for wiring previous baseline.
 
     # --- Baseline collection (mean over baseline_sec) ---
     baseline_vals: List[float] = []
     req_ms_list: List[float] = []
     req_count = 0
     err_count = 0
+    recent_ok: List[bool] = []
+    recent_req_ms: List[float] = []
 
     baseline_deadline = time.monotonic() + baseline_sec
     while time.monotonic() < baseline_deadline:
@@ -236,7 +273,7 @@ def run_one_trial(
             req_ms_p95=p95,
         )
 
-    baseline_w = float(sum(baseline_vals) / len(baseline_vals))
+    baseline_w = float(np.median(np.array(baseline_vals, dtype=float)))
     threshold_w = baseline_w * (1.0 + (threshold_pct / 100.0))
 
     # --- Start stress-ng (t0) ---
@@ -256,7 +293,7 @@ def run_one_trial(
     delay_sec: Optional[float] = None
 
     # Some systems show Redfish values on a coarse tick; give a small grace after stress end
-    deadline = t0 + stress_sec + 5.0
+    deadline = t0 + stress_sec + post_stress_grace_sec  # requires passing arg, see note below
 
     # Reset per-phase request latency stats (baseline already collected, but keep all for diagnostics)
     while time.monotonic() < deadline:
@@ -264,27 +301,40 @@ def run_one_trial(
         req_ms_list.append(req_ms)
         req_count += 1
 
+        recent_ok.append(ok and (w is not None))
+        recent_req_ms.append(req_ms)
+        if len(recent_ok) > 20:
+            recent_ok.pop(0)
+            recent_req_ms.pop(0)
+
+        first_cross_t: Optional[float] = None
+
+        # inside the loop:
         if ok and w is not None:
+            now = time.monotonic()  # timestamp for *this* observation point (post-request)
             if w >= threshold_w:
+                if above_count == 0:
+                    first_cross_t = now
                 above_count += 1
                 if above_count >= consecutive:
-                    # reaction time = timestamp of this sample - t0
-                    delay_sec = time.monotonic() - t0
+                    # Report FIRST crossing time, not the Nth confirmation sample
+                    delay_sec = (first_cross_t - t0) if first_cross_t is not None else (now - t0)
                     break
             else:
                 above_count = 0
+                first_cross_t = None
         else:
             err_count += 1
             above_count = 0
+            first_cross_t = None
+
 
         # backoff rule: if error rate or latency is too high, increase poll interval (cap poll_max_ms)
         # - if we get 3 errors in the last ~10 reqs, back off
-        if req_count >= 10:
-            recent = 10
-            recent_errs = err_count  # err_count is cumulative; approximate with overall rate
-            overall_err_rate = recent_errs / max(1, req_count)
-            req_p95 = float(np.percentile(req_ms_list, 95)) if req_ms_list else 0.0
-            if (overall_err_rate > 0.10 or req_p95 > (0.8 * poll_ms_used)) and poll_ms_used < poll_max_ms:
+        if len(recent_ok) >= 10:
+            recent_err_rate = 1.0 - (sum(1 for x in recent_ok if x) / len(recent_ok))
+            recent_p95 = float(np.percentile(recent_req_ms, 95))
+            if (recent_err_rate > 0.10 or recent_p95 > (0.8 * poll_ms_used)) and poll_ms_used < poll_max_ms:
                 poll_ms_used = min(poll_max_ms, int(round(poll_ms_used * 1.5)))
 
         sleep_with_jitter(poll_ms_used / 1000.0, jitter_ms)
@@ -335,9 +385,24 @@ def main() -> None:
     print("")
 
     session = requests.Session()
+    prev_baseline_w: Optional[float] = None
 
     results: List[TrialResult] = []
     for i in range(args.trials):
+        
+        if prev_baseline_w is not None:
+            # Wait until power returns near previous baseline (+5%) for 10s, up to 120s
+            wait_for_power_below(
+                session=session,
+                url=url,
+                auth=auth,
+                verify_tls=verify_tls,
+                target_w=prev_baseline_w * 1.05,
+                hold_sec=10.0,
+                timeout_sec=120.0,
+                poll_ms=500,
+            )
+
         tr = run_one_trial(
             session=session,
             url=url,
@@ -350,9 +415,12 @@ def main() -> None:
             threshold_pct=args.threshold_pct,
             consecutive=args.consecutive,
             stress_sec=args.stress_sec,
+            post_stress_grace_sec=args.post_stress_grace_sec,
             workers=workers,
         )
         results.append(tr)
+        if not math.isnan(tr.baseline_w):
+            prev_baseline_w = tr.baseline_w
 
         det = "OK" if tr.delay_sec is not None else "MISS"
         err_rate = tr.err_count / max(1, tr.req_count)
@@ -417,15 +485,32 @@ def main() -> None:
     end = math.ceil(dmax / bin_width) * bin_width
     bins = np.arange(start, end + bin_width, bin_width)
 
+    # --- Histogram ---
+    plt.figure()
+
+    bin_width = 0.1  # seconds (100 ms). Try 0.05 for 50 ms.
+    dmin = float(arr.min())
+    dmax = float(arr.max())
+
+    # Create bin edges that align nicely
+    start = math.floor(dmin / bin_width) * bin_width
+    end = math.ceil(dmax / bin_width) * bin_width
+    bins = np.arange(start, end + bin_width, bin_width)
+
+    # Base output path (saved next to this script, regardless of CWD)
+    hist_path = SCRIPT_DIR / args.hist_out
+
+    # Timestamped output file
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = hist_path.with_name(f"{hist_path.stem}_{ts}{hist_path.suffix}")
 
     plt.hist(arr, bins=bins)
     plt.xlabel("Delay (seconds)")
     plt.ylabel("Count")
     plt.title(f"Redfish reaction delay distribution (bin={bin_width*1000:.0f} ms)")
     plt.tight_layout()
-    plt.savefig("{hist_path}_{ts}", dpi=150)
-    print(f"\nHistogram written to: {"{hist_path}_{ts}"}")
+    plt.savefig(out_path, dpi=150)
+    print(f"\nHistogram written to: {out_path}")
 
 
 if __name__ == "__main__":
