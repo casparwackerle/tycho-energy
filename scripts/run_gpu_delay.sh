@@ -6,7 +6,7 @@ PY="$ROOT/.venv/bin/python3"
 SCRIPT="$ROOT/scripts/gpu_delay_measurement.py"
 
 exec "$PY" "$SCRIPT" \
-  --runs 10 \
+  --runs 50 \
   --idle-seconds 10 \
   --burn-seconds 10 \
   --sample-interval-ms 50 \
@@ -20,7 +20,8 @@ exec "$PY" "$SCRIPT" \
   --confirm-samples 2 \
   --hist \
   --hist-bins 50 \
-  --hist-outdir "$OUTDIR"
+  --hist-outdir "$OUTDIR" \ 
+  --insecure
 
 
 # RUN with:
