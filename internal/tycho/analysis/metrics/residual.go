@@ -7,6 +7,7 @@ import (
 
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis/idle"
+	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"k8s.io/klog/v2"
 )
 
@@ -16,6 +17,21 @@ const (
 
 	MetricResidualNegativePowerMW analysis.MetricID = "residual_negative_mw" // diag only
 	MetricFusionTheta             analysis.MetricID = "fusion_theta"         // state key family
+
+	// Slice 11 diagnostics
+	MetricResidualTransient    analysis.MetricID = "residual_transient"      // diag: 0/1
+	MetricResidualPartsSlopeMW analysis.MetricID = "residual_parts_slope_mw" // diag: Δ(P_rapl+P_gpu)
+
+	// Slice 11 state-only keys (avoid collisions with exported metric IDs)
+	MetricResidualLastPartsPowerMW    analysis.MetricID = "residual_last_parts_power_mw_state"
+	MetricResidualDeficitMW           analysis.MetricID = "residual_deficit_mw"
+	MetricResidualTransientHold       analysis.MetricID = "residual_transient_hold_state"
+	MetricResidualTakeoverDone        analysis.MetricID = "residual_takeover_done" // state-only
+	MetricResidualWindowUsable        analysis.MetricID = "residual_window_usable"
+	MetricResidualIdleBaselineMW      analysis.MetricID = "residual_idle_baseline_mw"
+	MetricResidualtransientNow        analysis.MetricID = "residual_transient_now"
+	MetricResidualtransientHold       analysis.MetricID = "residual_transient_hold"
+	MetricResidualIdleBaselineMWState analysis.MetricID = "residual_idle_baseline_mw_state"
 
 	residualKindTotal   = "total"
 	residualKindIdle    = "idle"
@@ -58,36 +74,263 @@ func (m *Residual) Run(c *analysis.Cycle) error {
 	// Accounted window energy from average power (aligned semantics).
 	raplPW := raplTotalPowerMW(c) // pkg + dram
 	gpuPW := gpuTotalPowerMW(c)   // sum over gpu_uuid
+	partsPW := raplPW + gpuPW
+	accEWinMJ := partsPW * winSec
 
-	accEWinMJ := (raplPW + gpuPW) * winSec
-
-	// Residual window energy and power.
+	// Residual window energy and power (may be negative).
 	resWinMJ := sysEWinMJ - accEWinMJ
 	resMW := resWinMJ / winSec
 
-	// For counters and idle split, clamp at 0 (no negative energy).
+	// Clamp at 0 for counters and split (no negative residual energy).
+	resClamped := resWinMJ < 0
 	resWinMJClamp := math.Max(0, resWinMJ)
 	resMWClamp := resWinMJClamp / winSec
 
-	// Idle model on clamped residual power.
+	// ---------------------------
+	// Slice 11A: transient detection (conservative heuristics)
+	// ---------------------------
+
+	// Conservative defaults; promote to config later.
+	const (
+		thetaRiseMW    = 20000.0 // 20 W step in parts power
+		thetaDeficitMW = 10000.0 // 10 W system lag behind parts indicates misalignment
+		epsNearMW      = 500.0   // residual near-zero
+		minLearnMW     = 5000.0  // do not learn below 5 W residual
+		transientHoldN = 3       // keep gating for 3 windows after transient clears
+	)
+
+	// Per-chassis slope state
+	lastPartsKey := analysis.Key(analysis.MetricID(MetricResidualLastPartsPowerMW), analysis.Labels{"chassis": chassis})
+	var lastParts float64
+	if v, ok := c.State.Get(lastPartsKey); ok {
+		if f, ok2 := v.(float64); ok2 {
+			lastParts = f
+		}
+	}
+	partsSlope := partsPW - lastParts
+	c.State.Set(lastPartsKey, partsPW)
+
+	// Sustained lag indicator: parts ahead of system.
+	deficitMW := partsPW - sysP // >0 => system behind parts
+
+	nearZero := resMWClamp <= epsNearMW
+
+	// Primary transient classification:
+	//  - strong lag behind parts (covers variable / long Redfish delay)
+	//  - or sharp parts step coupled with clamp/near-zero (edge trigger)
+	transientNow := (deficitMW > thetaDeficitMW) || ((partsSlope > thetaRiseMW) && (resClamped || nearZero))
+
+	// Hold / cooldown to prevent flapping and early ungating
+	holdKey := analysis.Key(analysis.MetricID(MetricResidualTransientHold), analysis.Labels{"chassis": chassis})
+	hold := 0
+	if v, ok := c.State.Get(holdKey); ok {
+		if i, ok2 := v.(int); ok2 {
+			hold = i
+		}
+	}
+	if transientNow {
+		hold = transientHoldN
+	} else if hold > 0 {
+		hold--
+	}
+	c.State.Set(holdKey, hold)
+
+	transient := transientNow || (hold > 0)
+
+	// Window usability explicitly for residual idle/dynamic split:
+	// usable means "safe to learn and interpret split as physically meaningful".
+	windowUsable := (!transient) && (!resClamped)
+
+	labelsBase := analysis.Labels{
+		"chassis": chassis,
+		"source":  source, // raw during warmup, corrected afterwards
+	}
+
+	// ---------------------------
+	// Raw -> corrected takeover: delete raw residual series once corrected is active
+	// ---------------------------
+	if source == redfishSourceCorrected {
+		takeoverKey := analysis.Key(MetricResidualTakeoverDone, analysis.Labels{"chassis": chassis})
+		if _, done := c.State.Get(takeoverKey); !done {
+
+			// Delete raw residual power series
+			for _, kind := range []string{residualKindTotal, residualKindIdle, residualKindDynamic} {
+				c.Sink.Delete(c.Ctx, analysis.Key(MetricResidualPowerMW, analysis.Labels{
+					"chassis": chassis,
+					"source":  redfishSourceRaw,
+					"kind":    kind,
+				}))
+			}
+
+			// Delete raw residual energy series
+			for _, kind := range []string{residualKindTotal, residualKindIdle, residualKindDynamic} {
+				c.Sink.Delete(c.Ctx, analysis.Key(MetricResidualEnergyMJ, analysis.Labels{
+					"chassis": chassis,
+					"source":  redfishSourceRaw,
+					"kind":    kind,
+				}))
+			}
+
+			// Delete raw negative residual diag series (if present)
+			c.Sink.Delete(c.Ctx, analysis.Key(MetricResidualNegativePowerMW, analysis.Labels{
+				"chassis": chassis,
+				"source":  redfishSourceRaw,
+				"kind":    residualKindTotal,
+			}))
+
+			// Delete raw window usability series
+			c.Sink.Delete(c.Ctx, analysis.Key(analysis.MetricID(MetricResidualWindowUsable), analysis.Labels{
+				"chassis": chassis,
+				"source":  redfishSourceRaw,
+			}))
+
+			// Delete legacy baseline series if it ever existed with a source label.
+			// (Your PrometheusSink keeps the first-seen label schema, so old series can stick around.)
+			c.Sink.Delete(c.Ctx, analysis.Key(analysis.MetricID(MetricResidualIdleBaselineMW), analysis.Labels{
+				"chassis": chassis,
+				"source":  redfishSourceRaw,
+			}))
+			c.Sink.Delete(c.Ctx, analysis.Key(analysis.MetricID(MetricResidualIdleBaselineMW), analysis.Labels{
+				"chassis": chassis,
+				"source":  redfishSourceCorrected,
+			}))
+
+			c.State.Set(takeoverKey, true)
+
+			if config.GetIdleDiagnosticsEnabled() {
+				c.Sink.Emit(c.Ctx, analysis.Point{
+					Key:    analysis.Key(analysis.MetricID(MetricResidualtransientNow), analysis.Labels{"chassis": chassis}),
+					Window: c.Window,
+					Unit:   "bool",
+					Value:  boolToFloat(transientNow),
+				})
+				c.Sink.Emit(c.Ctx, analysis.Point{
+					Key:    analysis.Key(analysis.MetricID(MetricResidualtransientHold), analysis.Labels{"chassis": chassis}),
+					Window: c.Window,
+					Unit:   "count",
+					Value:  float64(hold),
+				})
+			}
+		}
+	}
+
+	// ---------------------------
+	// Valuable diagnostics (always-on)
+	// ---------------------------
+
+	// 1) transient flag (0/1)
+	if config.GetIdleDiagnosticsEnabled() {
+		c.Sink.Emit(c.Ctx, analysis.Point{
+			Key:    analysis.Key(analysis.MetricID(MetricResidualTransient), analysis.Labels{"chassis": chassis}),
+			Window: c.Window,
+			Unit:   "bool",
+			Value:  boolToFloat(transient),
+		})
+	}
+
+	// 2) window usability flag (0/1) specifically for residual idle/dynamic interpretation
+	{
+		c.Sink.Emit(c.Ctx, analysis.Point{
+			Key:    analysis.Key(analysis.MetricID(MetricResidualWindowUsable), analysis.Labels{"chassis": chassis}),
+			Window: c.Window,
+			Unit:   "bool",
+			Value:  boolToFloat(windowUsable),
+		})
+	}
+	if config.GetIdleDiagnosticsEnabled() {
+		// 3) parts slope + deficit are typically valuable for end users tuning thresholds and understanding artifacts
+		c.Sink.Emit(c.Ctx, analysis.Point{
+			Key:    analysis.Key(analysis.MetricID(MetricResidualPartsSlopeMW), analysis.Labels{"chassis": chassis}),
+			Window: c.Window,
+			Unit:   "mW",
+			Value:  partsSlope,
+		})
+		c.Sink.Emit(c.Ctx, analysis.Point{
+			Key:    analysis.Key(analysis.MetricID(MetricResidualDeficitMW), analysis.Labels{"chassis": chassis}),
+			Window: c.Window,
+			Unit:   "mW",
+			Value:  deficitMW,
+		})
+	}
+
+	// ---------------------------
+	// Slice 11B: gated residual idle learning + separate baseline export
+	// ---------------------------
+
 	cfg := idle.DefaultConfig()
 	model := idle.GetOrInitScalar(c.State, "residual", cfg)
 	if model == nil {
 		return nil
 	}
-	now := time.Now()
-	model.Observe(0.0, resMWClamp, now)
-	idleMW, _ := model.Estimate()
 
+	now := time.Now()
+
+	// Learn only when window is usable AND residual is meaningful.
+	// Also: only learn on corrected source (recommended), so warmup never pollutes the baseline.
+	allowLearn := (source == redfishSourceCorrected) && windowUsable && (resMWClamp >= minLearnMW)
+
+	// Persisted baseline (state) used for unusable windows.
+	lastIdleKey := analysis.Key(analysis.MetricID(MetricResidualIdleBaselineMWState), analysis.Labels{"chassis": chassis})
+
+	getLast := func() (float64, bool) {
+		if v, ok := c.State.Get(lastIdleKey); ok {
+			if f, ok2 := v.(float64); ok2 && f >= 0 && !math.IsNaN(f) && !math.IsInf(f, 0) {
+				return f, true
+			}
+		}
+		return 0, false
+	}
+	setLast := func(v float64) {
+		if v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+			return
+		}
+		c.State.Set(lastIdleKey, v)
+	}
+
+	// baselineMW is the *model state* (export separately), independent of clamp.
+	var baselineMW float64
+
+	if allowLearn {
+		model.Observe(0.0, resMWClamp, now)
+
+		est, _ := model.Estimate()
+		if est < 0 || math.IsNaN(est) || math.IsInf(est, 0) {
+			est = 0
+		}
+
+		baselineMW = est
+		setLast(baselineMW)
+	} else {
+		if prev, ok := getLast(); ok {
+			baselineMW = prev
+		} else {
+			baselineMW = 0
+		}
+	}
+
+	// Export baseline as a separate diagnostic/model-state metric (accuracy-first, no conservation claim).
+	baseLabels := analysis.Labels{"chassis": chassis}
+
+	c.Sink.Emit(c.Ctx, analysis.Point{
+		Key:    analysis.Key(analysis.MetricID(MetricResidualIdleBaselineMW), baseLabels),
+		Window: c.Window,
+		Unit:   "mW",
+		Value:  baselineMW,
+	})
+
+	// Canonical idle/dynamic must remain conservative and conserve exactly:
+	// total_clamped = idle + dynamic, with idle <= total_clamped.
+	idleMW := baselineMW
+	if math.IsNaN(idleMW) || math.IsInf(idleMW, 0) || idleMW < 0 {
+		idleMW = 0
+	}
+	if idleMW > resMWClamp {
+		idleMW = resMWClamp
+	}
 	dynMW := math.Max(0, resMWClamp-idleMW)
 
 	idleWinMJ := idleMW * winSec
 	dynWinMJ := dynMW * winSec
-
-	labelsBase := analysis.Labels{
-		"chassis": chassis,
-		"source":  source, // follows active system source; raw during warmup, corrected afterwards
-	}
 
 	emitPower := func(kind string, v float64) {
 		labels := copyLabels(labelsBase)
@@ -100,37 +343,16 @@ func (m *Residual) Run(c *analysis.Cycle) error {
 		})
 	}
 
-	emitPower(residualKindTotal, resMW)   // may be negative (diagnostic value)
-	emitPower(residualKindIdle, idleMW)   // >= 0
-	emitPower(residualKindDynamic, dynMW) // >= 0
+	// total (diagnostic signed) + idle/dynamic (conservative)
+	emitPower(residualKindTotal, resMW)   // may be negative (diagnostic)
+	emitPower(residualKindIdle, idleMW)   // conservative
+	emitPower(residualKindDynamic, dynMW) // conservative
 
-	// emitEnergyCounter := func(kind string, winAddMJ float64) {
-	// 	labels := copyLabels(labelsBase)
-	// 	labels["kind"] = kind
-	// 	if winAddMJ < 0 || math.IsNaN(winAddMJ) || math.IsInf(winAddMJ, 0) {
-	// 		winAddMJ = 0
-	// 	}
-
-	// 	key := analysis.Key(MetricResidualEnergyMJ, labels)
-	// 	var prev float64
-	// 	if v, ok := c.State.Get(key); ok {
-	// 		if f, ok2 := v.(float64); ok2 {
-	// 			prev = f
-	// 		}
-	// 	}
-	// 	next := prev + winAddMJ
-	// 	c.State.Set(key, next)
-
-	// 	c.Sink.Emit(c.Ctx, analysis.Point{
-	// 		Key:    analysis.Key(MetricResidualEnergyMJ, labels),
-	// 		Window: c.Window,
-	// 		Unit:   "mJ",
-	// 		Value:  next,
-	// 	})
-	// }
+	// ---------------------------
+	// Energy counters (unchanged policy): monotone via clamp, with warmup offset handling
+	// ---------------------------
 
 	emitEnergyCounter := func(kind string, winAddMJ float64) {
-
 		labels := copyLabels(labelsBase)
 		labels["kind"] = kind
 
@@ -154,7 +376,7 @@ func (m *Residual) Run(c *analysis.Cycle) error {
 			winAddMJ = 0
 		}
 
-		// Offset key is per (chassis, kind). It is independent of source, and seeded once when corrected starts.
+		// Offset key is per (chassis, kind). Seed once when corrected starts.
 		offKey := analysis.Key(MetricResidualEnergyOffsetMJ, analysis.Labels{
 			"chassis": chassis,
 			"kind":    kind,
@@ -181,7 +403,7 @@ func (m *Residual) Run(c *analysis.Cycle) error {
 		}
 
 		// Local corrected accumulator is stored separately (state-only).
-		localKey := analysis.Key(MetricResidualEnergyLocalMJ, labels) // includes corrected source
+		localKey := analysis.Key(MetricResidualEnergyLocalMJ, labels)
 		var prevLocal float64
 		if v, ok := c.State.Get(localKey); ok {
 			if f, ok2 := v.(float64); ok2 {
@@ -205,6 +427,8 @@ func (m *Residual) Run(c *analysis.Cycle) error {
 	emitEnergyCounter(residualKindIdle, idleWinMJ)
 	emitEnergyCounter(residualKindDynamic, dynWinMJ)
 
+	// Keep the existing "negative residual" diagnostic if you still want it:
+	// (This one is arguably valuable; if you want it hidden behind IdleDiagnostics, tell me.)
 	if resMW < 0 {
 		labels := copyLabels(labelsBase)
 		labels["kind"] = residualKindTotal
@@ -216,10 +440,17 @@ func (m *Residual) Run(c *analysis.Cycle) error {
 		})
 	}
 
-	// Optional: log if residual is persistently negative, helps debug conservation issues.
-	if resMW < -1e3 {
-		klog.V(4).Infof("[analysis] residual negative chassis=%q source=%q resMW=%.3f sysP=%.3f raplP=%.3f gpuP=%.3f",
-			chassis, source, resMW, sysP, raplPW, gpuPW)
+	// ---------------------------
+	// Extra troubleshooting logs/metrics only when enabled
+	// ---------------------------
+	if config.GetIdleDiagnosticsEnabled() {
+		klog.V(2).Infof(
+			"[analysis] residual chassis=%q source=%q win=%s sysP=%.3f raplP=%.3f gpuP=%.3f partsP=%.3f resMW=%.3f resClamp=%.3f clamp=%v slope=%.3f deficit=%.3f transient=%v usable=%v learn=%v baseline=%.3f idle=%.3f dyn=%.3f",
+			chassis, source, c.Window.String(),
+			sysP, raplPW, gpuPW, partsPW, resMW, resMWClamp, resClamped,
+			partsSlope, deficitMW, transient, windowUsable, allowLearn,
+			baselineMW, idleMW, dynMW,
+		)
 	}
 
 	return nil
@@ -296,8 +527,6 @@ func gpuTotalPowerMW(c *analysis.Cycle) float64 {
 	if c == nil || c.Store == nil {
 		return 0
 	}
-	// Try using the canonical GPU power metric ID if it exists in your package.
-	// If MetricGpuPowerMW is not defined, replace it with analysis.MetricID(MetricGpuPowerMW).
 	ps := c.Store.ListByID(analysis.MetricID(MetricGpuPowerMW))
 	sum := 0.0
 	for _, p := range ps {

@@ -49,9 +49,9 @@ def die(msg: str, hint: str | None = None) -> None:
 
 
 # ---- Python version check ----------------------------------------------------
-if sys.version_info < (3, 9):
+if sys.version_info < (3, 10):
     die(
-        "Python >= 3.9 is required",
+        "Python >= 3.10 is required",
         "Upgrade Python or run with a newer interpreter",
     )
 
@@ -98,6 +98,8 @@ class TrialResult:
     req_count: int
     err_count: int
     req_ms_p95: float
+    stress_ok: bool
+    stress_max_load1: float
 
 
 def parse_args() -> argparse.Namespace:
@@ -108,7 +110,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--path", default=DEFAULT_REDFISH_PATH, help=f"Redfish power resource path (default {DEFAULT_REDFISH_PATH})")
 
     p.add_argument("--trials", type=int, default=50, help="Number of trials (default: 50)")
-    p.add_argument("--cooldown-sec", type=float, default=60.0, help="Cooldown between trials (default: 30)")
+    p.add_argument("--cooldown-sec", type=float, default=60.0, help="Cooldown between trials (default: 60)")
     p.add_argument("--baseline-sec", type=float, default=5.0, help="Baseline window length in seconds (default: 5)")
     p.add_argument("--post-stress-grace-sec", type=float, default=10.0, help="Extra time after stress ends to keep polling (default: 10)")
 
@@ -118,15 +120,28 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--poll-ms", type=int, default=200, help="Initial poll interval in ms (default: 200)")
     p.add_argument("--poll-max-ms", type=int, default=1000, help="Max poll interval in ms (default: 1000)")
     p.add_argument("--jitter-ms", type=int, default=50, help="Uniform random jitter added to sleep in ms (default: 50)")
+    p.add_argument("--debug-first-n", type=int, default=5, help="Print debug info for the first N failed Redfish reads per trial (default: 5)")
+    p.add_argument("--min-baseline-w", type=float, default=50.0, help="Reject trials with baseline below this (default: 50W). 0W baselines are invalid.")
+    p.add_argument("--min-baseline-samples", type=int, default=3, help="Minimum valid baseline samples required (default: 3).")
+    p.add_argument("--min-loadavg", type=float, default=1.0, help="Require loadavg(1m) to reach at least this during stress (default: 1.0).")
+    p.add_argument("--recommend-quantile", type=float, default=95.0,
+                   help="Quantile (in percent) used for recommended delay (default: 95).")
+    p.add_argument("--recommend-policy", type=str, default="pXX_plus_halfpoll",
+                   choices=["pXX", "pXX_plus_halfpoll", "max"],
+                   help="How to compute the single recommended delay. "
+                        "pXX uses --recommend-quantile, pXX_plus_halfpoll adds 0.5*median(poll_ms_used), "
+                        "max uses max observed delay (most conservative).")
 
-    # stress-ng knobs
+    p.add_argument("--recommend-min-trials", type=int, default=30,
+                   help="If fewer valid trials than this, print a warning (default: 30).")
+
+     # stress-ng knobs
     p.add_argument("--stress-sec", type=float, default=10.0, help="stress-ng duration in seconds (default: 10)")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--cpu-cores", type=int, help="Number of stress-ng CPU workers, e.g. 64")
     g.add_argument("--cpu-pct", type=float, help="Percentage of logical CPUs to use, e.g. 50 for ~half cores")
 
-    p.add_argument("--insecure", action="store_true", default=True, help="Disable TLS verification (default: true)")
-    p.add_argument("--secure", dest="insecure", action="store_false", help="Enable TLS verification")
+    p.add_argument("--insecure", action="store_true", default=False, help="Disable TLS verification (default: false)")
 
     p.add_argument("--hist-out", default="delay_hist_redfish.png", help="Histogram output file (default: redfish_delay_hist.png)")
     p.add_argument("--seed", type=int, default=0, help="Random seed (0 = time-based)")
@@ -143,35 +158,59 @@ def compute_workers(cpu_cores: Optional[int], cpu_pct: Optional[float]) -> int:
     return max(1, min(n, workers))
 
 
-def redfish_power_w(session: requests.Session, url: str, auth: Tuple[str, str], verify_tls: bool) -> Tuple[Optional[float], float, bool]:
+def redfish_power_w(
+    session: requests.Session,
+    url: str,
+    auth: Tuple[str, str],
+    verify_tls: bool,
+) -> Tuple[Optional[float], float, float, bool, Optional[int], str]:
     """
-    Returns (watts, request_ms, ok)
-    ok=False for HTTP errors / parse errors / missing value.
+    Returns (watts, request_ms, t_end, ok, status_code, err_tag)
+
+    - status_code is None if request failed before getting a response.
+    - err_tag is a short diagnostic string. For request exceptions, it includes
+      exception class + message, so you can see what is actually failing.
     """
     t_start = time.monotonic()
     try:
         r = session.get(url, auth=auth, timeout=3.0, verify=verify_tls)
-        req_ms = (time.monotonic() - t_start) * 1000.0
-        if r.status_code != 200:
-            return None, req_ms, False
-        j = r.json()
-        # PowerControl[0].PowerConsumedWatts
+        t_end = time.monotonic()
+        req_ms = (t_end - t_start) * 1000.0
+
+        sc = r.status_code
+        if sc != 200:
+            return None, req_ms, t_end, False, sc, f"http_status:{sc}"
+
+        try:
+            j = r.json()
+        except Exception as e:
+            return None, req_ms, t_end, False, sc, f"json_parse:{type(e).__name__}:{e}"
+
         pc = j.get("PowerControl", None)
         if not isinstance(pc, list) or len(pc) == 0:
-            return None, req_ms, False
+            # include top-level keys to quickly spot schema differences
+            keys = ",".join(sorted(j.keys())) if isinstance(j, dict) else "non_dict_json"
+            return None, req_ms, t_end, False, sc, f"missing_PowerControl:keys={keys}"
+
         w = pc[0].get("PowerConsumedWatts", None)
         if w is None:
-            return None, req_ms, False
+            # include keys inside PowerControl[0] to see what vendor provides
+            pc0_keys = ",".join(sorted(pc[0].keys())) if isinstance(pc[0], dict) else "non_dict_pc0"
+            return None, req_ms, t_end, False, sc, f"missing_PowerConsumedWatts:pc0_keys={pc0_keys}"
+
         try:
             w = float(w)
-        except Exception:
-            return None, req_ms, False
+        except Exception as e:
+            return None, req_ms, t_end, False, sc, f"w_not_float:{type(e).__name__}:{e}"
+
         if math.isnan(w) or w < 0:
-            return None, req_ms, False
-        return w, req_ms, True
-    except Exception:
-        req_ms = (time.monotonic() - t_start) * 1000.0
-        return None, req_ms, False
+            return None, req_ms, t_end, False, sc, "w_nan_or_neg"
+
+        return w, req_ms, t_end, True, sc, ""
+    except Exception as e:
+        t_end = time.monotonic()
+        req_ms = (t_end - t_start) * 1000.0
+        return None, req_ms, t_end, False, None, f"request_exc:{type(e).__name__}:{e}"
 
 
 def sleep_with_jitter(base_sec: float, jitter_ms: int) -> None:
@@ -191,6 +230,7 @@ def wait_for_power_below(
     hold_sec: float,
     timeout_sec: float,
     poll_ms: int,
+    debug_first_n: int = 0,
 ) -> bool:
     """
     Wait until power stays <= target_w for hold_sec continuously.
@@ -200,7 +240,13 @@ def wait_for_power_below(
     t_ok_start: Optional[float] = None
 
     while time.monotonic() < t_deadline:
-        w, _, ok = redfish_power_w(session, url, auth, verify_tls)
+        w, _req_ms, _t_end, ok, _sc, _tag = redfish_power_w(session, url, auth, verify_tls)
+        if (not ok) and debug_first_n > 0:
+            print(
+                f"[debug cooldown] ok={ok} status={_sc} tag={_tag} req_ms={_req_ms:.0f}ms",
+                flush=True,
+            )
+            debug_first_n -= 1
         now = time.monotonic()
         if ok and w is not None and w <= target_w:
             if t_ok_start is None:
@@ -228,31 +274,54 @@ def run_one_trial(
     stress_sec: float,
     post_stress_grace_sec: float,
     workers: int,
+    debug_first_n: int = 0,
+    min_baseline_w: float = 50.0,
+    min_baseline_samples: int = 3,
+    min_loadavg: float = 1.0,
 ) -> TrialResult:
+    """
+    Measures Redfish "reaction delay" to a CPU step.
+    Adds:
+      - Baseline integrity gates (reject 0W glitches)
+      - Stress validation via local loadavg(1m) max during stress window
+    """
     poll_ms_used = poll_ms
 
-    # Optional: ensure we've cooled down from previous run.
-    # If previous baseline exists, main() can pass it in; simplest version uses a fixed target.
-    # For now, do nothing here; see Change 4 for wiring previous baseline.
-
-    # --- Baseline collection (mean over baseline_sec) ---
+    # --- Baseline collection ---
     baseline_vals: List[float] = []
     req_ms_list: List[float] = []
     req_count = 0
     err_count = 0
     recent_ok: List[bool] = []
     recent_req_ms: List[float] = []
+    debug_left = int(debug_first_n) if debug_first_n is not None else 0
 
     baseline_deadline = time.monotonic() + baseline_sec
     while time.monotonic() < baseline_deadline:
-        w, req_ms, ok = redfish_power_w(session, url, auth, verify_tls)
+        w, req_ms, _t_end, ok, sc, tag = redfish_power_w(session, url, auth, verify_tls)
+
+        if (not ok or w is None) and debug_left > 0:
+            print(f"[debug baseline] status={sc} tag={tag} req_ms={req_ms:.0f}ms", flush=True)
+            debug_left -= 1
+
         req_ms_list.append(req_ms)
         req_count += 1
-        if ok and w is not None:
+        if ok and w is not None and math.isfinite(w) and w >= min_baseline_w:
             baseline_vals.append(w)
         else:
+            # Treat too-small / bogus baseline values (notably 0W) as invalid samples
             err_count += 1
-        sleep_with_jitter(poll_ms_used / 1000.0, jitter_ms)
+            if debug_left > 0:
+                print(
+                    f"[debug baseline] status={sc} tag={tag} w={w} req_ms={req_ms:.0f}ms",
+                    flush=True,
+                )
+                debug_left -= 1
+
+
+        # Keep approx poll period stable (account for request time)
+        sleep_s = max(0.0, (poll_ms_used / 1000.0) - (req_ms / 1000.0))
+        sleep_with_jitter(sleep_s, jitter_ms)
 
         # quick backoff if we are clearly over-polling / failing
         if req_count >= 5:
@@ -260,9 +329,10 @@ def run_one_trial(
             if recent_err_rate >= 0.4 and poll_ms_used < poll_max_ms:
                 poll_ms_used = min(poll_max_ms, int(round(poll_ms_used * 1.5)))
 
-    if not baseline_vals:
-        # baseline failed; return a "no detection" trial with diagnostics
-        p95 = float(np.percentile(req_ms_list, 95)) if req_ms_list else float("nan")
+    # --- Baseline integrity gates ---
+    p95 = float(np.percentile(req_ms_list, 95)) if req_ms_list else float("nan")
+
+    if len(baseline_vals) < int(min_baseline_samples):
         return TrialResult(
             delay_sec=None,
             baseline_w=float("nan"),
@@ -271,13 +341,29 @@ def run_one_trial(
             req_count=req_count,
             err_count=err_count,
             req_ms_p95=p95,
+            stress_ok=False,
+            stress_max_load1=0.0,
         )
 
     baseline_w = float(np.median(np.array(baseline_vals, dtype=float)))
+
+    # Reject bogus baselines (notably 0W sensor glitches)
+    if (not math.isfinite(baseline_w)) or (baseline_w < float(min_baseline_w)):
+        return TrialResult(
+            delay_sec=None,
+            baseline_w=baseline_w,
+            threshold_w=float("nan"),
+            poll_ms_used=poll_ms_used,
+            req_count=req_count,
+            err_count=err_count,
+            req_ms_p95=p95,
+            stress_ok=False,
+            stress_max_load1=0.0,
+        )
+
     threshold_w = baseline_w * (1.0 + (threshold_pct / 100.0))
 
     # --- Start stress-ng (t0) ---
-    # Use a tight command with a fixed timeout (stress_sec).
     cmd = [
         "stress-ng",
         "--cpu", str(workers),
@@ -285,19 +371,37 @@ def run_one_trial(
         "--metrics-brief",
         "--quiet",
     ]
-    p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    t0 = time.monotonic()
 
-    # --- Poll until threshold crossed (for 'consecutive' samples) or until stress ends + grace ---
+    p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    t0 = time.monotonic()  # IMPORTANT: timestamp AFTER launch
+
+    # Quick sanity: confirm stress-ng is alive right after launch
+    time.sleep(0.2)
+    if p.poll() is not None:
+        print(f"[debug] stress-ng exited immediately with rc={p.returncode}", flush=True)
+    else:
+        print(f"[debug] stress-ng running (pid={p.pid}) (workers={str(workers)})", flush=True)
+
+    # --- Poll until threshold crossed (debounced) or until deadline ---
     above_count = 0
     delay_sec: Optional[float] = None
+    first_cross_t: Optional[float] = None
 
-    # Some systems show Redfish values on a coarse tick; give a small grace after stress end
-    deadline = t0 + stress_sec + post_stress_grace_sec  # requires passing arg, see note below
+    deadline = t0 + stress_sec + post_stress_grace_sec
 
-    # Reset per-phase request latency stats (baseline already collected, but keep all for diagnostics)
+    # Stress validation
+    stress_max_load1 = 0.0
+
     while time.monotonic() < deadline:
-        w, req_ms, ok = redfish_power_w(session, url, auth, verify_tls)
+        # Update stress validation signal (local machine running this script)
+        try:
+            l1 = os.getloadavg()[0]
+            if l1 > stress_max_load1:
+                stress_max_load1 = l1
+        except Exception:
+            pass
+
+        w, req_ms, t_end, ok, sc, tag = redfish_power_w(session, url, auth, verify_tls)
         req_ms_list.append(req_ms)
         req_count += 1
 
@@ -307,18 +411,16 @@ def run_one_trial(
             recent_ok.pop(0)
             recent_req_ms.pop(0)
 
-        first_cross_t: Optional[float] = None
-
-        # inside the loop:
         if ok and w is not None:
-            now = time.monotonic()  # timestamp for *this* observation point (post-request)
+            # Timestamp observation near the middle of the HTTP request
+            obs_t = t_end - (req_ms / 1000.0) / 2.0
+
             if w >= threshold_w:
                 if above_count == 0:
-                    first_cross_t = now
+                    first_cross_t = obs_t
                 above_count += 1
                 if above_count >= consecutive:
-                    # Report FIRST crossing time, not the Nth confirmation sample
-                    delay_sec = (first_cross_t - t0) if first_cross_t is not None else (now - t0)
+                    delay_sec = (first_cross_t - t0) if first_cross_t is not None else (obs_t - t0)
                     break
             else:
                 above_count = 0
@@ -328,16 +430,16 @@ def run_one_trial(
             above_count = 0
             first_cross_t = None
 
-
-        # backoff rule: if error rate or latency is too high, increase poll interval (cap poll_max_ms)
-        # - if we get 3 errors in the last ~10 reqs, back off
+        # backoff rule: if error rate or latency is too high, increase poll interval
         if len(recent_ok) >= 10:
             recent_err_rate = 1.0 - (sum(1 for x in recent_ok if x) / len(recent_ok))
             recent_p95 = float(np.percentile(recent_req_ms, 95))
             if (recent_err_rate > 0.10 or recent_p95 > (0.8 * poll_ms_used)) and poll_ms_used < poll_max_ms:
                 poll_ms_used = min(poll_max_ms, int(round(poll_ms_used * 1.5)))
 
-        sleep_with_jitter(poll_ms_used / 1000.0, jitter_ms)
+        # keep approx poll period stable
+        sleep_s = max(0.0, (poll_ms_used / 1000.0) - (req_ms / 1000.0))
+        sleep_with_jitter(sleep_s, jitter_ms)
 
     # Ensure stress-ng is gone (should be by timeout, but be safe)
     try:
@@ -349,7 +451,10 @@ def run_one_trial(
         except subprocess.TimeoutExpired:
             p.kill()
 
+    # Final diagnostics
     p95 = float(np.percentile(req_ms_list, 95)) if req_ms_list else float("nan")
+    stress_ok = (stress_max_load1 >= float(min_loadavg))
+
     return TrialResult(
         delay_sec=delay_sec,
         baseline_w=baseline_w,
@@ -358,7 +463,36 @@ def run_one_trial(
         req_count=req_count,
         err_count=err_count,
         req_ms_p95=p95,
+        stress_ok=stress_ok,
+        stress_max_load1=stress_max_load1,
     )
+
+def compute_recommended_delay_sec(
+    delays: np.ndarray,
+    poll_used_ms: List[int],
+    policy: str,
+    quantile_pct: float,
+) -> float:
+    if delays.size == 0:
+        return float("nan")
+
+    q = float(np.percentile(delays, quantile_pct))
+    maxd = float(np.max(delays))
+
+    # Sampling quantization margin: half the typical poll period
+    halfpoll = 0.5 * (float(statistics.median(poll_used_ms)) / 1000.0) if poll_used_ms else 0.0
+
+    if policy == "max":
+        return maxd
+
+    if policy == "pXX":
+        return q
+
+    if policy == "pXX_plus_halfpoll":
+        return q + halfpoll
+
+    # default fallback
+    return q + halfpoll
 
 
 def main() -> None:
@@ -397,10 +531,11 @@ def main() -> None:
                 url=url,
                 auth=auth,
                 verify_tls=verify_tls,
-                target_w=prev_baseline_w * 1.05,
+                target_w=max(args.min_baseline_w, prev_baseline_w) * 1.05,
                 hold_sec=10.0,
                 timeout_sec=120.0,
                 poll_ms=500,
+                debug_first_n=args.debug_first_n,
             )
 
         tr = run_one_trial(
@@ -415,20 +550,30 @@ def main() -> None:
             threshold_pct=args.threshold_pct,
             consecutive=args.consecutive,
             stress_sec=args.stress_sec,
+            debug_first_n=args.debug_first_n,
             post_stress_grace_sec=args.post_stress_grace_sec,
             workers=workers,
+            min_baseline_w=args.min_baseline_w,
+            min_baseline_samples=args.min_baseline_samples,
+            min_loadavg=args.min_loadavg,
         )
         results.append(tr)
-        if not math.isnan(tr.baseline_w):
+        # Only carry forward a baseline if it is clearly valid (avoid 0W poisoning)
+        if (
+            tr.baseline_w is not None
+            and math.isfinite(tr.baseline_w)
+            and tr.baseline_w >= args.min_baseline_w
+        ):
             prev_baseline_w = tr.baseline_w
+        else:
+            prev_baseline_w = None
 
         det = "OK" if tr.delay_sec is not None else "MISS"
         err_rate = tr.err_count / max(1, tr.req_count)
-        print(
-            f"Trial {i+1:03d}/{args.trials}: {det}"
-            f" | delay={tr.delay_sec:.3f}s" if tr.delay_sec is not None else
-            f"Trial {i+1:03d}/{args.trials}: {det}"
-        )
+        if tr.delay_sec is not None:
+            print(f"Trial {i+1:03d}/{args.trials}: OK  | delay={tr.delay_sec:.3f}s")
+        else:
+            print(f"Trial {i+1:03d}/{args.trials}: MISS")
         print(
             f"  baseline={tr.baseline_w:.1f}W  thr={tr.threshold_w:.1f}W"
             f"  poll={tr.poll_ms_used}ms  req_p95={tr.req_ms_p95:.0f}ms  err_rate={err_rate:.1%}"
@@ -438,23 +583,47 @@ def main() -> None:
             time.sleep(args.cooldown_sec)
 
     # --- Stats ---
-    delays = [r.delay_sec for r in results if r.delay_sec is not None and not math.isnan(r.delay_sec)]
-    misses = len(results) - len(delays)
+    # --- Stats (VALID trials only) ---
+    valid = [
+        r for r in results
+        if r.delay_sec is not None
+        and math.isfinite(r.delay_sec)
+        and r.stress_ok
+        and math.isfinite(r.baseline_w)
+        and r.baseline_w >= getattr(args, "min_baseline_w", 50.0)
+    ]
+
+    detected = len([r for r in results if r.delay_sec is not None])
+    misses = len(results) - detected
+    invalid_baseline = sum(
+        1 for r in results
+        if (not math.isfinite(r.baseline_w)) or r.baseline_w < getattr(args, "min_baseline_w", 50.0)
+    )
+    stress_failed = sum(1 for r in results if not r.stress_ok)
 
     print("\n=== Summary ===")
-    print(f"Detected: {len(delays)}/{len(results)} (misses: {misses})")
-    if not delays:
-        print("No detections. Consider lowering threshold-pct, increasing stress intensity, or relaxing consecutive.")
+    print(f"Detected (raw): {detected}/{len(results)} (misses: {misses})")
+    print(f"Valid trials:   {len(valid)}/{len(results)}")
+    print(f"Invalid baseline trials: {invalid_baseline}")
+    print(f"Stress validation failed: {stress_failed}")
+
+    if not valid:
+        print("No valid detections to summarize.")
+        print("Likely causes: baseline glitches, stress not applied, or threshold too high.")
         return
 
-    arr = np.array(delays, dtype=float)
-    mean = float(arr.mean())
-    std = float(arr.std(ddof=1)) if len(arr) > 1 else 0.0
-    med = float(np.median(arr))
-    p90 = float(np.percentile(arr, 90))
-    p95 = float(np.percentile(arr, 95))
-    p99 = float(np.percentile(arr, 99)) if len(arr) >= 10 else float("nan")
+    delays = np.array([r.delay_sec for r in valid], dtype=float)
+    poll_used = [r.poll_ms_used for r in valid]
 
+    mean = float(delays.mean())
+    std = float(delays.std(ddof=1)) if len(delays) > 1 else 0.0
+    med = float(np.median(delays))
+    p90 = float(np.percentile(delays, 90))
+    p95 = float(np.percentile(delays, 95))
+    p99 = float(np.percentile(delays, 99)) if len(delays) >= 10 else float("nan")
+    dmax = float(np.max(delays))
+
+    print(f"\nValid delay stats (seconds):")
     print(f"Mean:   {mean:.3f}s")
     print(f"Std:    {std:.3f}s")
     print(f"Median: {med:.3f}s")
@@ -462,30 +631,48 @@ def main() -> None:
     print(f"p95:    {p95:.3f}s")
     if not math.isnan(p99):
         print(f"p99:    {p99:.3f}s")
+    print(f"Max:    {dmax:.3f}s")
 
-    # Diagnostics on polling health
-    req_p95s = [r.req_ms_p95 for r in results if not math.isnan(r.req_ms_p95)]
-    poll_used = [r.poll_ms_used for r in results]
-    err_rates = [r.err_count / max(1, r.req_count) for r in results]
+    # --- Single conservative recommended delay ---
+    qpct = float(getattr(args, "recommend_quantile", 95.0))
+    policy = str(getattr(args, "recommend_policy", "pXX_plus_halfpoll"))
 
-    print("\n=== Diagnostics ===")
+    rec = compute_recommended_delay_sec(
+        delays=delays,
+        poll_used_ms=poll_used,
+        policy=policy,
+        quantile_pct=qpct,
+    )
+
+
+    # Also compute the two main candidates for transparency:
+    halfpoll = 0.5 * (float(statistics.median(poll_used)) / 1000.0) if poll_used else 0.0
+    qval = float(np.percentile(delays, qpct))
+
+    print("\n=== Recommended single delay (conservative) ===")
+    print(f"Policy: {policy}  (quantile={qpct:.1f}%)")
+    print(f"Quantile value: {qval:.3f}s")
+    print(f"Half-poll margin (median poll_ms_used): {halfpoll:.3f}s")
+    print(f"Recommended delay: {rec:.3f}s")
+
+    # Warn if too few trials
+    min_trials = int(getattr(args, "recommend_min_trials", 30))
+    if len(valid) < min_trials:
+        print(f"WARNING: only {len(valid)} valid trials (< {min_trials}). "
+              f"Recommended delay may be unstable; run more trials.")
+
+    # Diagnostics on polling health (valid trials)
+    req_p95s = [r.req_ms_p95 for r in valid if not math.isnan(r.req_ms_p95)]
+    err_rates = [r.err_count / max(1, r.req_count) for r in valid]
+
+    print("\n=== Diagnostics (valid trials) ===")
     print(f"poll_ms_used: min={min(poll_used)} max={max(poll_used)} median={statistics.median(poll_used)}")
-    print(f"req_ms_p95:   median={statistics.median(req_p95s):.0f}ms  max={max(req_p95s):.0f}ms")
+    if req_p95s:
+        print(f"req_ms_p95:   median={statistics.median(req_p95s):.0f}ms  max={max(req_p95s):.0f}ms")
     print(f"err_rate:     median={statistics.median(err_rates):.1%}  max={max(err_rates):.1%}")
 
-    # --- Histogram ---
-    plt.figure()
-
-    bin_width = 0.1  # seconds (100 ms). Try 0.05 for 50 ms.
-    dmin = float(arr.min())
-    dmax = float(arr.max())
-
-    # Create bin edges that align nicely
-    start = math.floor(dmin / bin_width) * bin_width
-    end = math.ceil(dmax / bin_width) * bin_width
-    bins = np.arange(start, end + bin_width, bin_width)
-
-    # --- Histogram ---
+    # --- Histogram (valid trials only) ---
+    arr = delays
     plt.figure()
 
     bin_width = 0.1  # seconds (100 ms). Try 0.05 for 50 ms.

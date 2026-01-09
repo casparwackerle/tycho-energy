@@ -10,12 +10,20 @@ exec "$PY" "$SCRIPT" \
   --user admin \
   --password password \
   --cpu-pct 80 \
-  --trials 50
+  --trials 20
+  --insecure
 
 # RUN with:
-# sudo systemd-run --unit=redfish-delay --description="Redfish delay calibration" /root/Documents/git/tycho-energy/scripts/run_redfish_delay.sh
+# sudo systemd-run --unit=redfish-delay --description="Redfish delay calibration" --collect --property=TimeoutStopUSec=30s /root/Documents/git/tycho-energy/scripts/run_redfish_delay.sh
 
 # control with
 # sudo systemctl stop redfish-delay
 # sudo systemctl reset-failed redfish-delay
+
+# live logs:
+# sudo journalctl -u redfish-delay -f
+
+# logs after completion:
+# sudo journalctl -u redfish-delay
+# sudo journalctl -u redfish-delay --no-pager -o short-precise
 

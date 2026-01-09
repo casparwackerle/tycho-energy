@@ -6,7 +6,7 @@ PY="$ROOT/.venv/bin/python3"
 SCRIPT="$ROOT/scripts/gpu_delay_measurement.py"
 
 exec "$PY" "$SCRIPT" \
-  --runs 500 \
+  --runs 10 \
   --idle-seconds 10 \
   --burn-seconds 10 \
   --sample-interval-ms 50 \
@@ -17,8 +17,10 @@ exec "$PY" "$SCRIPT" \
   --sigma-multiplier 3 \
   --rel-increase 0.05 \
   --cooldown-seconds 30 \
+  --confirm-samples 2 \
   --hist \
-  --hist-bins 50
+  --hist-bins 50 \
+  --hist-outdir "$OUTDIR"
 
 
 # RUN with:
@@ -27,3 +29,10 @@ exec "$PY" "$SCRIPT" \
 # control with
 # sudo systemctl stop gpu-delay
 # sudo systemctl reset-failed gpu-delay
+
+# live logs:
+# sudo journalctl -u gpu-delay -f
+
+# logs after completion:
+# sudo journalctl -u gpu-delay
+# sudo journalctl -u gpu-delay --no-pager -o short-precise
