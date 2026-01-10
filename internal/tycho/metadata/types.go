@@ -103,3 +103,11 @@ type LookupResult struct {
 	Container *ContainerMeta
 	Pod       *PodMeta
 }
+
+type CgroupIndexEntry struct {
+	CgroupID    uint64
+	ContainerID string
+
+	LastSeenMono uint64
+	LastSeenWall time.Time
+}

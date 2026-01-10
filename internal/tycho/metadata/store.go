@@ -24,6 +24,9 @@ type Store struct {
 
 	// How long entries are kept before GC considers them stale.
 	maxAge time.Duration
+
+	// cgroupID -> containerID index (best-effort), populated by analysis from BPF windows.
+	cgroups map[uint64]*CgroupIndexEntry
 }
 
 // NewStore creates a new Store with the given maximum age for entries.
@@ -36,11 +39,18 @@ func NewStore(maxAge time.Duration) *Store {
 		procs:      make(map[uint64]*ProcMeta),
 		containers: make(map[string]*ContainerMeta),
 		pods:       make(map[string]*PodMeta),
+		cgroups:    make(map[uint64]*CgroupIndexEntry),
 		maxAge:     maxAge,
 	}
 }
 
 // UpsertProc inserts or updates process metadata.
+//
+// Slice 13A contract:
+//   - StartJiffies is immutable for a given process incarnation.
+//   - Once StartJiffies is known for a PID, it must never regress to 0.
+//   - If StartJiffies changes to a different non-zero value, treat this as PID reuse
+//     and replace the stored record for that PID.
 func (s *Store) UpsertProc(meta *ProcMeta) {
 	if meta == nil {
 		return
@@ -48,7 +58,43 @@ func (s *Store) UpsertProc(meta *ProcMeta) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.procs[meta.PID] = meta
+	old := s.procs[meta.PID]
+	if old == nil {
+		// First observation of this PID.
+		s.procs[meta.PID] = meta
+		return
+	}
+
+	// PID reuse detection: both start times known and different -> new incarnation.
+	if old.StartJiffies != 0 && meta.StartJiffies != 0 && old.StartJiffies != meta.StartJiffies {
+		s.procs[meta.PID] = meta
+		return
+	}
+
+	// Do not allow StartJiffies to regress to 0 once known.
+	if old.StartJiffies != 0 && meta.StartJiffies == 0 {
+		meta.StartJiffies = old.StartJiffies
+	}
+
+	// Merge into existing record to avoid losing previously-known fields.
+	old.LastSeenMono = meta.LastSeenMono
+	old.LastSeenWall = meta.LastSeenWall
+
+	// Identity: write once (after regression guard above).
+	if old.StartJiffies == 0 && meta.StartJiffies != 0 {
+		old.StartJiffies = meta.StartJiffies
+	}
+
+	// Optional fields: update opportunistically.
+	if meta.CgroupID != 0 {
+		old.CgroupID = meta.CgroupID
+	}
+	if meta.ContainerID != "" {
+		old.ContainerID = meta.ContainerID
+	}
+	if meta.Command != "" {
+		old.Command = meta.Command
+	}
 }
 
 // UpsertContainer inserts or updates container metadata.
@@ -195,5 +241,55 @@ func (s *Store) GC(now time.Time) (droppedProcs, droppedContainers, droppedPods 
 		}
 	}
 
+	for cgid, meta := range s.cgroups {
+		if meta.LastSeenWall.Before(cutoff) {
+			delete(s.cgroups, cgid)
+			// optional counter if you want, but not needed for slice
+		}
+	}
+
 	return droppedProcs, droppedContainers, droppedPods
+}
+
+// UpsertCgroupMapping inserts or refreshes a cgroupID -> containerID mapping.
+// This is best-effort and may be overwritten; it is GC'd via LastSeenWall.
+func (s *Store) UpsertCgroupMapping(cgroupID uint64, containerID string, nowMono uint64, nowWall time.Time) {
+	if cgroupID == 0 || containerID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	old := s.cgroups[cgroupID]
+	if old == nil {
+		s.cgroups[cgroupID] = &CgroupIndexEntry{
+			CgroupID:     cgroupID,
+			ContainerID:  containerID,
+			LastSeenMono: nowMono,
+			LastSeenWall: nowWall,
+		}
+		return
+	}
+
+	// Update container ID opportunistically (best-effort).
+	if containerID != "" {
+		old.ContainerID = containerID
+	}
+	old.LastSeenMono = nowMono
+	old.LastSeenWall = nowWall
+}
+
+// LookupContainerIDByCgroupID returns the container ID associated with a cgroup ID, if present.
+func (s *Store) LookupContainerIDByCgroupID(cgroupID uint64) (string, bool) {
+	if cgroupID == 0 {
+		return "", false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	ent, ok := s.cgroups[cgroupID]
+	if !ok || ent == nil || ent.ContainerID == "" {
+		return "", false
+	}
+	return ent.ContainerID, true
 }

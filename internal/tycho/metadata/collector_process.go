@@ -75,13 +75,20 @@ func (pc *processCollector) Collect(ctx context.Context, ts time.Time, mono uint
 
 		pid, err := strconv.ParseUint(ent.Name(), 10, 64)
 		if err != nil {
-			continue // skip non-PID entries like "net", "self"
+			continue
 		}
 
 		command := readProcComm(procDir, ent.Name())
 
-		// NEW: read start_time (in kernel ticks) from /proc/<pid>/stat
+		// Read start_time (in kernel ticks) from /proc/<pid>/stat.
 		startTimeTicks := readProcStartTimeTicks(procDir, ent.Name())
+
+		// If this scan couldn't read start_time, do NOT regress if we have a cached value.
+		if startTimeTicks == 0 {
+			if old, ok := pc.store.LookupProc(pid); ok && old != nil && old.StartJiffies != 0 {
+				startTimeTicks = old.StartJiffies
+			}
+		}
 
 		containerID, err := cgroup.GetContainerIDFromPID(pid)
 		if err != nil {
@@ -93,8 +100,8 @@ func (pc *processCollector) Collect(ctx context.Context, ts time.Time, mono uint
 
 		meta := &ProcMeta{
 			PID:          pid,
-			StartJiffies: startTimeTicks, // start_time from /proc/<pid>/stat in kernel clock ticks (jiffies, per boot).
-			CgroupID:     0,              // correlated directly with eBPF PID to cgroupID matching
+			StartJiffies: startTimeTicks,
+			CgroupID:     0, // still not populated here; mapping chain comes later
 			ContainerID:  containerID,
 			Command:      command,
 			LastSeenMono: mono,

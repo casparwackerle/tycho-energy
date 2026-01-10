@@ -242,7 +242,7 @@ func main() {
 	bufMgr := ring.NewManager()
 
 	// Compute per-metric sizes (use your config getters)
-	winSec := config.BufferWindowSec() // e.g., 5.0
+	winSec := config.BufferWindowSec()
 	bpfSz := ring.SizeForWindow(winSec, config.BpfPollMs())
 	raplSz := ring.SizeForWindow(winSec, config.RaplPollMs())
 	rfSz := ring.SizeForWindow(winSec, config.RedfishPollMs())
@@ -405,13 +405,14 @@ func main() {
 		analysis.NewStateStore(),
 		analysisreg,
 		analysis.Config{
-			WindowDuration: 5 * time.Second,
+			WindowDuration: time.Duration(config.TriggerIntervalSec()) * time.Second,
 			SafetyOffset:   500 * time.Millisecond,
 		},
+		m.Store(),
 	)
 
 	// Run analysis periodically (Slice 0: 5s cadence).
-	_ = eng.Register("analysis", 5*time.Second, true, analysisEng.Collect)
+	_ = eng.Register("analysis", time.Duration(config.TriggerIntervalSec())*time.Second, true, analysisEng.Collect)
 	//--------------------------------------------------
 
 	tychoCtx, tychoCancel := context.WithCancel(context.Background())

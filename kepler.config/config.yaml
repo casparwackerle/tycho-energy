@@ -71,7 +71,7 @@ extraEnvVars:
   TYCHO_COLLECTOR_ENABLE_REDFISH: "true"
 
   # Measurement Periods (milliseconds)
-  TYCHO_BUFFER_WINDOW_SEC: 60
+  TYCHO_BUFFER_WINDOW_SEC: 90
 
   TYCHO_BPF_POLL_MS: "50"
   TYCHO_RAPL_POLL_MS: "50"
@@ -109,7 +109,7 @@ extraEnvVars:
 
   # Optional analysis knobs you already wired
   TYCHO_ANALYSIS_TRIGGER: "timer" # "redfish" | "timer"
-  TYCHO_ANALYSIS_EVERY_SEC: "5"
+  TYCHO_ANALYSIS_EVERY_SEC: "3"
   TYCHO_ANALYSIS_DETECT_LONGEST_DELAY: "false"
   TYCHO_ANALYSIS_GPU_QUANTUM_MS: 50
   TYCHO_ANALYSIS_GPU_HISTORY_WINDOW_SEC: 60
