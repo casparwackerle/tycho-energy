@@ -3,6 +3,8 @@ package analysismetrics
 
 import (
 	"fmt"
+	"math"
+	"sort"
 	"time"
 
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis"
@@ -14,6 +16,15 @@ import (
 const (
 	MetricFusionCache analysis.MetricID = "fusion_cache" // state key family
 	MetricFusionReady analysis.MetricID = "fusion_ready" // state key family
+
+	// diagnostics (Prometheus-visible, diag-only intent)
+	MetricFusionRedfishDelaySelectedMS analysis.MetricID = "fusion_redfish_delay_selected_ms"
+	MetricFusionRedfishDeficitSumMW    analysis.MetricID = "fusion_redfish_deficit_mw"
+	MetricFusionRedfishDeficitMaxMW    analysis.MetricID = "fusion_redfish_deficit_max_mw"
+
+	// state-only (selected delay persistence)
+	MetricFusionRedfishDelayState           analysis.MetricID = "fusion_redfish_delay_state_ms" // state-only
+	MetricFusionRedfishDelaySelectedMsState analysis.MetricID = "fusion_redfish_delay_selected_ms_state"
 )
 
 type FusionSubstrate struct {
@@ -167,7 +178,7 @@ func (m *FusionSubstrate) Run(c *analysis.Cycle) error {
 	cache.SetLastBin(kNow)
 
 	// Redfish observations (refresh every cycle; cheap and simplifies correctness).
-	m.refreshRedfishObs(c, cache, chassis, kernel, kernelMs)
+	selDelayMs, defSumMW, defMaxMW := m.refreshRedfishObs(c, cache, chassis, kernel, kernelMs)
 
 	// Readiness flag: corrected system/residual should take over when RedfishObs are available.
 	readyKey := analysis.Key(MetricFusionReady, analysis.Labels{"chassis": chassis})
@@ -188,6 +199,9 @@ func (m *FusionSubstrate) Run(c *analysis.Cycle) error {
 				Value:  val,
 			})
 		}
+		emit(MetricFusionRedfishDelaySelectedMS, "ms", float64(selDelayMs))
+		emit(MetricFusionRedfishDeficitSumMW, "mW", defSumMW)
+		emit(MetricFusionRedfishDeficitMaxMW, "mW", defMaxMW)
 		emit("fusion_rapl_pkg_energy_mj_window", "mJ", epkg)
 		emit("fusion_rapl_dram_energy_mj_window", "mJ", edram)
 		emit("fusion_gpu_energy_mj_window", "mJ", egpu)
@@ -208,38 +222,815 @@ func (m *FusionSubstrate) Run(c *analysis.Cycle) error {
 	return nil
 }
 
+// func (m *FusionSubstrate) refreshRedfishObs(
+// 	c *analysis.Cycle,
+// 	cache *fusion.Cache,
+// 	chassis string,
+// 	kernel fusion.RedfishKernel,
+// 	kernelMs int,
+// ) (selectedDelayMs int, deficitSumMW float64, deficitMaxMW float64) {
+// 	if c == nil || cache == nil || c.Mono == nil || cache.QuantumTicks == 0 {
+// 		return 0, 0, 0
+// 	}
+
+// 	// AUDIT (Slice 12C):
+// 	// - "redfish_corrected" is NOT a delay-shifted Redfish series. It is the canonical corrected system
+// 	//   series emitted by FusionModel as an estimate from parts (RAPL/GPU/BPF) after fitting theta to
+// 	//   Redfish observations.
+// 	// - Redfish is not binned into cache arrays. FusionSubstrate extracts RedfishObs into cache.RedfishObs
+// 	//   via fusion.ExtractRedfishObs over a raw-time window derived from the cache horizon and a delay.
+// 	// - FusionModel fuses parts -> pHat, integrates over the analysis window, and emits system_power_mw
+// 	//   and system_energy_mj with source=redfish_corrected.
+// 	// - Warmup policy: raw system is emitted by SystemRawFromRedfish until MetricFusionReady is true;
+// 	//   after takeover, raw system and raw residual series are deleted.
+
+// 	monoQuantumSec := c.Mono.Quantum().Seconds()
+// 	if monoQuantumSec <= 0 {
+// 		return 0, 0, 0
+// 	}
+// 	dtSec := float64(cache.QuantumTicks) * monoQuantumSec
+// 	if dtSec <= 0 {
+// 		return 0, 0, 0
+// 	}
+
+// 	// Cache horizon bounds (corrected ticks).
+// 	endBin := cache.StartBin + fusion.BinIndex(cache.HorizonBins) - 1
+// 	hStart := uint64(cache.StartBin) * cache.QuantumTicks
+// 	hEnd := uint64(endBin+1) * cache.QuantumTicks
+
+// 	// Baseline/fallback delay in ms (current behavior).
+// 	baseDelayMs := config.RedfishDelayMs()
+// 	if baseDelayMs < 0 {
+// 		baseDelayMs = 0
+// 	}
+
+// 	// Slice 12C search defaults (can be promoted to config getters later).
+// 	const (
+// 		dMinMs      = 0
+// 		dMaxMs      = 8000
+// 		dStepMs     = 250
+// 		rateLimitMs = 500 // per analysis trigger/cycle
+// 		minObs      = 5
+// 	)
+
+// 	// Load previous chosen delay from state (per chassis) to rate-limit flapping.
+// 	prevDelayMs := baseDelayMs
+// 	stateKey := analysis.Key(MetricFusionRedfishDelayState, analysis.Labels{"chassis": chassis})
+// 	if v, ok := c.State.Get(stateKey); ok {
+// 		if i, ok2 := v.(int); ok2 {
+// 			prevDelayMs = i
+// 		} else if f, ok2 := v.(float64); ok2 {
+// 			prevDelayMs = int(f)
+// 		}
+// 	}
+// 	if prevDelayMs < dMinMs {
+// 		prevDelayMs = dMinMs
+// 	}
+// 	if prevDelayMs > dMaxMs {
+// 		prevDelayMs = dMaxMs
+// 	}
+
+// 	// Epsilon margin (mW): max(2W, 2% of median parts power over horizon).
+// 	epsMW := 2000.0
+// 	{
+// 		parts := make([]float64, 0, cache.HorizonBins)
+// 		for i := 0; i < cache.HorizonBins; i++ {
+// 			pParts := (cache.EpkgMJ[i] + cache.EdramMJ[i] + cache.EgpuMJ[i]) / dtSec
+// 			if pParts >= 0 {
+// 				parts = append(parts, pParts)
+// 			}
+// 		}
+// 		if len(parts) > 0 {
+// 			sort.Float64s(parts)
+// 			med := parts[len(parts)/2]
+// 			e2 := 0.02 * med
+// 			if e2 > epsMW {
+// 				epsMW = e2
+// 			}
+// 			if epsMW < 2000.0 {
+// 				epsMW = 2000.0
+// 			}
+// 		}
+// 	}
+
+// 	// Score deficit over observation points.
+// 	scoreCandidate := func(obs []fusion.RedfishObs) (sumMW float64, maxMW float64, ok bool) {
+// 		if len(obs) < minObs {
+// 			return 0, 0, false
+// 		}
+
+// 		used := 0
+// 		for i := range obs {
+// 			o := obs[i]
+// 			pPartsMW, ok2 := partsPowerAtObs(cache, dtSec, monoQuantumSec, o)
+// 			if !ok2 {
+// 				continue
+// 			}
+// 			used++
+
+// 			def := pPartsMW - o.ValueMW - epsMW
+// 			if def > 0 {
+// 				sumMW += def
+// 				if def > maxMW {
+// 					maxMW = def
+// 				}
+// 			}
+// 		}
+
+// 		if used < minObs {
+// 			return 0, 0, false
+// 		}
+// 		return sumMW, maxMW, true
+// 	}
+
+// 	// --- Delay search (pre-rate-limit) ---
+// 	bestDelayMs := baseDelayMs
+// 	bestScore := math.Inf(1)
+// 	bestMaxSearch := 0.0
+// 	found := false
+
+// 	for d := dMinMs; d <= dMaxMs; d += dStepMs {
+// 		rawStart := hStart + uint64(c.Mono.TicksForMsCeil(d))
+// 		rawEnd := hEnd + uint64(c.Mono.TicksForMsCeil(d))
+
+// 		obs, n := fusion.ExtractRedfishObs(c, chassis, 0, rawStart, rawEnd, kernel, kernelMs)
+// 		if n <= 0 {
+// 			continue
+// 		}
+
+// 		sum, mx, ok := scoreCandidate(obs)
+// 		if !ok {
+// 			continue
+// 		}
+
+// 		if sum < bestScore || (sum == bestScore && d < bestDelayMs) {
+// 			bestScore = sum
+// 			bestDelayMs = d
+// 			bestMaxSearch = mx
+// 			found = true
+// 		}
+// 	}
+
+// 	if !found || math.IsInf(bestScore, 1) {
+// 		bestDelayMs = baseDelayMs
+// 		bestScore = 0
+// 		bestMaxSearch = 0
+// 	}
+
+// 	// Rate-limit vs previous chosen delay to avoid flapping.
+// 	outDelayMs := bestDelayMs
+// 	if outDelayMs > prevDelayMs+rateLimitMs {
+// 		outDelayMs = prevDelayMs + rateLimitMs
+// 	} else if outDelayMs < prevDelayMs-rateLimitMs {
+// 		outDelayMs = prevDelayMs - rateLimitMs
+// 	}
+// 	if outDelayMs < dMinMs {
+// 		outDelayMs = dMinMs
+// 	}
+// 	if outDelayMs > dMaxMs {
+// 		outDelayMs = dMaxMs
+// 	}
+
+// 	// Persist chosen delay in state.
+// 	c.State.Set(stateKey, outDelayMs)
+
+// 	// Extract final obs with outDelayMs (post-rate-limit) and compute diagnostics for THIS delay.
+// 	rawStart := hStart + uint64(c.Mono.TicksForMsCeil(outDelayMs))
+// 	rawEnd := hEnd + uint64(c.Mono.TicksForMsCeil(outDelayMs))
+
+// 	obsFinal, nFinal := fusion.ExtractRedfishObs(c, chassis, 0, rawStart, rawEnd, kernel, kernelMs)
+
+// 	cache.RedfishObs = cache.RedfishObs[:0]
+// 	if nFinal > 0 {
+// 		cache.RedfishObs = append(cache.RedfishObs, obsFinal...)
+// 	}
+
+// 	// Diagnostics: deficit computed using the FINAL chosen delay.
+// 	deficitSumMW = 0
+// 	deficitMaxMW = 0
+// 	if len(cache.RedfishObs) > 0 {
+// 		sum, mx, ok := scoreCandidate(cache.RedfishObs)
+// 		if ok {
+// 			deficitSumMW = sum
+// 			deficitMaxMW = mx
+// 		}
+// 	}
+
+// 	selectedDelayMs = outDelayMs
+
+// 	klog.V(6).Infof(
+// 		"[analysis] fusion redfish delay-search chassis=%q kernel=%q epsMW=%.1f best(preRL)=(delayMs=%d score=%.1f max=%.1f) final(postRL)=(delayMs=%d deficitSum=%.1f deficitMax=%.1f) obs=%d",
+// 		chassis, string(kernel), epsMW,
+// 		bestDelayMs, bestScore, bestMaxSearch,
+// 		selectedDelayMs, deficitSumMW, deficitMaxMW, len(cache.RedfishObs),
+// 	)
+
+// 	return selectedDelayMs, deficitSumMW, deficitMaxMW
+// }
+//-------------------
+
+// func (m *FusionSubstrate) refreshRedfishObs(
+// 	c *analysis.Cycle,
+// 	cache *fusion.Cache,
+// 	chassis string,
+// 	kernel fusion.RedfishKernel,
+// 	kernelMs int,
+// ) (selectedDelayMs int, deficitSumMW float64, deficitMaxMW float64) {
+// 	if c == nil || cache == nil || c.Mono == nil || cache.QuantumTicks == 0 {
+// 		return 0, 0, 0
+// 	}
+
+// 	monoQuantumSec := c.Mono.Quantum().Seconds()
+// 	if monoQuantumSec <= 0 {
+// 		return 0, 0, 0
+// 	}
+// 	dtSec := float64(cache.QuantumTicks) * monoQuantumSec
+// 	if dtSec <= 0 {
+// 		return 0, 0, 0
+// 	}
+
+// 	// Cache horizon bounds (corrected ticks).
+// 	endBin := cache.StartBin + fusion.BinIndex(cache.HorizonBins) - 1
+// 	hStart := uint64(cache.StartBin) * cache.QuantumTicks
+// 	hEnd := uint64(endBin+1) * cache.QuantumTicks
+
+// 	// Baseline/fallback delay in ms (current behavior).
+// 	baseDelayMs := config.RedfishDelayMs()
+// 	if baseDelayMs < 0 {
+// 		baseDelayMs = 0
+// 	}
+
+// 	// Slice 12C search defaults (can be promoted to config getters later).
+// 	const (
+// 		dMinMs      = 0
+// 		dMaxMs      = 8000
+// 		dStepMs     = 250
+// 		rateLimitMs = 500 // per analysis trigger/cycle
+
+// 		minObs = 5
+
+// 		// NEW: score only recent obs for delay selection (helps extreme steps).
+// 		recentScoreSec = 10.0
+// 	)
+
+// 	// Load previous chosen delay from state (per chassis) to rate-limit flapping.
+// 	prevDelayMs := baseDelayMs
+// 	stateKey := analysis.Key(MetricFusionRedfishDelayState, analysis.Labels{"chassis": chassis})
+// 	if v, ok := c.State.Get(stateKey); ok {
+// 		if i, ok2 := v.(int); ok2 {
+// 			prevDelayMs = i
+// 		} else if f, ok2 := v.(float64); ok2 {
+// 			prevDelayMs = int(f)
+// 		}
+// 	}
+// 	if prevDelayMs < dMinMs {
+// 		prevDelayMs = dMinMs
+// 	}
+// 	if prevDelayMs > dMaxMs {
+// 		prevDelayMs = dMaxMs
+// 	}
+
+// 	// Epsilon margin (mW): max(2W, 2% of median parts power over horizon).
+// 	epsMW := 2000.0
+// 	{
+// 		parts := make([]float64, 0, cache.HorizonBins)
+// 		for i := 0; i < cache.HorizonBins; i++ {
+// 			pParts := (cache.EpkgMJ[i] + cache.EdramMJ[i] + cache.EgpuMJ[i]) / dtSec
+// 			if pParts >= 0 {
+// 				parts = append(parts, pParts)
+// 			}
+// 		}
+// 		if len(parts) > 0 {
+// 			sort.Float64s(parts)
+// 			med := parts[len(parts)/2]
+// 			e2 := 0.02 * med
+// 			if e2 > epsMW {
+// 				epsMW = e2
+// 			}
+// 			if epsMW < 2000.0 {
+// 				epsMW = 2000.0
+// 			}
+// 		}
+// 	}
+
+// 	// Score deficit over observation points.
+// 	// Returns: (sum deficit mW, max deficit mW, ok).
+// 	scoreObs := func(obs []fusion.RedfishObs) (float64, float64, bool) {
+// 		if len(obs) < minObs {
+// 			return 0, 0, false
+// 		}
+// 		used := 0
+// 		var sum, mx float64
+// 		for i := range obs {
+// 			o := obs[i]
+// 			pPartsMW, ok := partsPowerAtObs(cache, dtSec, monoQuantumSec, o)
+// 			if !ok {
+// 				continue
+// 			}
+// 			used++
+// 			def := pPartsMW - o.ValueMW - epsMW
+// 			if def > 0 {
+// 				sum += def
+// 				if def > mx {
+// 					mx = def
+// 				}
+// 			}
+// 		}
+// 		if used < minObs {
+// 			return 0, 0, false
+// 		}
+// 		return sum, mx, true
+// 	}
+
+// 	// NEW: Filter obs to the most recent time window in corrected ticks.
+// 	recentSubset := func(obs []fusion.RedfishObs) []fusion.RedfishObs {
+// 		if len(obs) == 0 {
+// 			return obs
+// 		}
+// 		// recentScoreSec seconds in corrected ticks
+// 		recentTicks := uint64(math.Round(recentScoreSec / monoQuantumSec))
+// 		if recentTicks == 0 {
+// 			return obs
+// 		}
+// 		t1 := obs[len(obs)-1].MonoCorr
+// 		t0 := uint64(0)
+// 		if t1 > recentTicks {
+// 			t0 = t1 - recentTicks
+// 		}
+
+// 		// Keep only obs with MonoCorr >= t0
+// 		j := 0
+// 		for ; j < len(obs); j++ {
+// 			if obs[j].MonoCorr >= t0 {
+// 				break
+// 			}
+// 		}
+// 		if j >= len(obs) {
+// 			return obs[len(obs)-1:]
+// 		}
+// 		return obs[j:]
+// 	}
+
+// 	// NEW: Delay-search scoring uses recent obs if possible, else falls back to full set.
+// 	scoreForDelaySearch := func(obs []fusion.RedfishObs) (float64, float64, bool) {
+// 		r := recentSubset(obs)
+// 		if sum, mx, ok := scoreObs(r); ok {
+// 			return sum, mx, true
+// 		}
+// 		// Fallback: too sparse in recent window
+// 		return scoreObs(obs)
+// 	}
+
+// 	// --- Delay search (pre-rate-limit) ---
+// 	bestDelayMs := baseDelayMs
+// 	bestScore := math.Inf(1)
+// 	bestMaxSearch := 0.0
+// 	found := false
+
+// 	for d := dMinMs; d <= dMaxMs; d += dStepMs {
+// 		rawStart := hStart + uint64(c.Mono.TicksForMsCeil(d))
+// 		rawEnd := hEnd + uint64(c.Mono.TicksForMsCeil(d))
+
+// 		obs, n := fusion.ExtractRedfishObs(c, chassis, 0, rawStart, rawEnd, kernel, kernelMs)
+// 		if n <= 0 {
+// 			continue
+// 		}
+
+// 		sum, mx, ok := scoreForDelaySearch(obs)
+// 		if !ok {
+// 			continue
+// 		}
+
+// 		if sum < bestScore || (sum == bestScore && d < bestDelayMs) {
+// 			bestScore = sum
+// 			bestDelayMs = d
+// 			bestMaxSearch = mx
+// 			found = true
+// 		}
+// 	}
+
+// 	if !found || math.IsInf(bestScore, 1) {
+// 		bestDelayMs = baseDelayMs
+// 		bestScore = 0
+// 		bestMaxSearch = 0
+// 	}
+
+// 	// Rate-limit vs previous chosen delay to avoid flapping.
+// 	outDelayMs := bestDelayMs
+// 	if outDelayMs > prevDelayMs+rateLimitMs {
+// 		outDelayMs = prevDelayMs + rateLimitMs
+// 	} else if outDelayMs < prevDelayMs-rateLimitMs {
+// 		outDelayMs = prevDelayMs - rateLimitMs
+// 	}
+// 	if outDelayMs < dMinMs {
+// 		outDelayMs = dMinMs
+// 	}
+// 	if outDelayMs > dMaxMs {
+// 		outDelayMs = dMaxMs
+// 	}
+
+// 	// Persist chosen delay in state.
+// 	c.State.Set(stateKey, outDelayMs)
+
+// 	// Extract final obs with outDelayMs.
+// 	rawStart := hStart + uint64(c.Mono.TicksForMsCeil(outDelayMs))
+// 	rawEnd := hEnd + uint64(c.Mono.TicksForMsCeil(outDelayMs))
+
+// 	obsFinal, nFinal := fusion.ExtractRedfishObs(c, chassis, 0, rawStart, rawEnd, kernel, kernelMs)
+
+// 	cache.RedfishObs = cache.RedfishObs[:0]
+// 	if nFinal > 0 {
+// 		cache.RedfishObs = append(cache.RedfishObs, obsFinal...)
+// 	}
+
+// 	// Diagnostics remain as before: computed on FINAL delay, on the full obs set.
+// 	deficitSumMW = 0
+// 	deficitMaxMW = 0
+// 	if len(cache.RedfishObs) > 0 {
+// 		sum, mx, ok := scoreObs(cache.RedfishObs)
+// 		if ok {
+// 			deficitSumMW = sum
+// 			deficitMaxMW = mx
+// 		}
+// 	}
+
+// 	selectedDelayMs = outDelayMs
+
+// 	klog.V(6).Infof(
+// 		"[analysis] fusion redfish delay-search(recent=%.1fs) chassis=%q kernel=%q epsMW=%.1f best(preRL)=(delayMs=%d score=%.1f max=%.1f) final(postRL)=(delayMs=%d deficitSum=%.1f deficitMax=%.1f) obs=%d",
+// 		recentScoreSec, chassis, string(kernel), epsMW,
+// 		bestDelayMs, bestScore, bestMaxSearch,
+// 		selectedDelayMs, deficitSumMW, deficitMaxMW, len(cache.RedfishObs),
+// 	)
+
+// 	return selectedDelayMs, deficitSumMW, deficitMaxMW
+// }
+
 func (m *FusionSubstrate) refreshRedfishObs(
 	c *analysis.Cycle,
 	cache *fusion.Cache,
 	chassis string,
 	kernel fusion.RedfishKernel,
 	kernelMs int,
-) {
-	if c == nil || cache == nil || c.Mono == nil || cache.QuantumTicks == 0 {
+) (selDelayMs int, deficitSumMW float64, deficitMaxMW float64) {
+	// Defaults (safe fallbacks)
+	selDelayMs = config.RedfishDelayMs()
+	deficitSumMW = 0
+	deficitMaxMW = 0
+
+	if c == nil || cache == nil || c.Mono == nil || cache.QuantumTicks == 0 || c.State == nil {
 		return
 	}
 
-	// Build a raw window covering the cache horizon (in corrected ticks) and shift forward by Redfish delay.
-	endBin := cache.StartBin + fusion.BinIndex(cache.HorizonBins) - 1
-	hStart := uint64(cache.StartBin) * cache.QuantumTicks
-	hEnd := uint64(endBin+1) * cache.QuantumTicks
-
-	rfDelay := c.Mono.TicksForMsCeil(config.RedfishDelayMs())
-	rawStart := hStart + rfDelay
-	rawEnd := hEnd + rfDelay
-
-	// rawStart/rawEnd are already in raw time (corrected + delay).
-	// Pass delayTicks=0 so ExtractRedfishObs does not shift a second time.
-	obs, n := fusion.ExtractRedfishObs(c, chassis, 0, rawStart, rawEnd, kernel, kernelMs)
-
-	cache.RedfishObs = cache.RedfishObs[:0]
-	if n > 0 {
-		cache.RedfishObs = append(cache.RedfishObs, obs...)
+	monoQuantumSec := c.Mono.Quantum().Seconds()
+	if monoQuantumSec <= 0 {
+		return
+	}
+	dtSec := float64(cache.QuantumTicks) * monoQuantumSec
+	if dtSec <= 0 {
+		return
 	}
 
-	// second deep-debug (kept minimal)
-	klog.V(6).Infof("[analysis] fusion redfish obs chassis=%q n=%d delayTicks=%d kernel=%q",
-		chassis, len(cache.RedfishObs), rfDelay, string(kernel))
+	// Horizon in corrected domain.
+	endBin := cache.StartBin + fusion.BinIndex(cache.HorizonBins) - 1
+	hStart := uint64(cache.StartBin) * cache.QuantumTicks
+	hEnd := uint64(endBin+1) * cache.QuantumTicks // exclusive
+
+	// Fixed configured delay (fallback).
+	cfgDelayMs := config.RedfishDelayMs()
+	if cfgDelayMs < 0 {
+		cfgDelayMs = 0
+	}
+
+	// Candidate search defaults.
+	const (
+		dMinMs          = 0
+		dMaxMs          = 8000
+		dStepMs         = 250
+		maxStepPerCycle = 500 // ms change limit per analysis cycle
+
+		// Score only most recent part of horizon (better for sharp steps).
+		recentScoreSec = 20.0
+	)
+
+	// Candidate list.
+	cands := make([]int, 0, (dMaxMs-dMinMs)/dStepMs+1)
+	for d := dMinMs; d <= dMaxMs; d += dStepMs {
+		cands = append(cands, d)
+	}
+	if len(cands) == 0 {
+		cands = append(cands, cfgDelayMs)
+	}
+
+	// Hold-last-good delay in state.
+	prevDelayMs := -1
+	prevKey := analysis.Key(MetricFusionRedfishDelaySelectedMsState, analysis.Labels{"chassis": chassis})
+	if v, ok := c.State.Get(prevKey); ok {
+		if i, ok2 := v.(int); ok2 {
+			prevDelayMs = i
+		}
+	}
+
+	// Compute epsilon margin for scoring (noise guard):
+	// eps = max(2000, 0.02 * median(parts power over recent bins)).
+	epsMW := 2000.0
+	if cache.HorizonBins > 0 {
+		recentBins := int(math.Round(recentScoreSec / dtSec))
+		if recentBins < 1 {
+			recentBins = 1
+		}
+		if recentBins > cache.HorizonBins {
+			recentBins = cache.HorizonBins
+		}
+		startIdx := cache.HorizonBins - recentBins
+
+		parts := make([]float64, 0, recentBins)
+		for i := startIdx; i < cache.HorizonBins; i++ {
+			p := (cache.EpkgMJ[i] + cache.EdramMJ[i] + cache.EgpuMJ[i]) / dtSec
+			if !finiteLocal(p) || p < 0 {
+				p = 0
+			}
+			parts = append(parts, p)
+		}
+		med := medianLocal(parts)
+		if finiteLocal(med) && med > 0 {
+			epsMW = math.Max(epsMW, 0.02*med)
+		}
+	}
+
+	// Define "recent" cutoff in corrected-domain ticks.
+	scoreCut := hStart
+	if recentScoreSec > 0 {
+		recentTicks := uint64(math.Round(recentScoreSec / monoQuantumSec))
+		if hEnd > recentTicks {
+			scoreCut = hEnd - recentTicks
+		}
+	}
+
+	// Score candidate by extracting obs, then summing deficit over recent obs only.
+	// Search objective uses eps (noise margin).
+	scoreCandidate := func(delayMs int) (score float64, obsOut []fusion.RedfishObs, ok bool) {
+		if delayMs < 0 {
+			delayMs = 0
+		}
+
+		dTicks := c.Mono.TicksForMsCeil(delayMs)
+		rawStart := hStart + dTicks
+		rawEnd := hEnd + dTicks
+
+		obs, n := fusion.ExtractRedfishObs(c, chassis, 0, rawStart, rawEnd, kernel, kernelMs)
+		if n <= 0 || len(obs) == 0 {
+			// Trigger: insufficient Redfish samples.
+			return 0, nil, false
+		}
+
+		var s float64
+		used := 0
+
+		for i := range obs {
+			o := obs[i]
+
+			// Only score the most recent part.
+			if o.MonoCorr+1 <= scoreCut {
+				continue
+			}
+
+			k := fusion.BinIndex(int64(o.MonoCorr / cache.QuantumTicks))
+			idx, okIdx := cacheIdx(cache, k) // from fusion_model.go, same package
+			if !okIdx {
+				continue
+			}
+
+			partsP := (cache.EpkgMJ[idx] + cache.EdramMJ[idx] + cache.EgpuMJ[idx]) / dtSec
+			if !finiteLocal(partsP) || partsP < 0 {
+				partsP = 0
+			}
+
+			// Search objective: max(0, parts - sys - eps)
+			d := partsP - o.ValueMW - epsMW
+			if d > 0 && finiteLocal(d) {
+				s += d
+			}
+			used++
+		}
+
+		// Trigger: too few usable obs in scoring region.
+		if used < 3 {
+			return 0, nil, false
+		}
+
+		return s, obs, true
+	}
+
+	// Run search.
+	bestDelayMs := -1
+	bestScore := math.Inf(1)
+	var bestObs []fusion.RedfishObs
+
+	for _, d := range cands {
+		s, obs, ok := scoreCandidate(d)
+		if !ok {
+			continue
+		}
+		// Tie-breaker: prefer smaller delay.
+		if s < bestScore || (s == bestScore && (bestDelayMs < 0 || d < bestDelayMs)) {
+			bestScore = s
+			bestDelayMs = d
+			bestObs = obs
+		}
+	}
+
+	searchOK := (bestDelayMs >= 0) && len(bestObs) > 0 && finiteLocal(bestScore)
+
+	// Choose delay:
+	// - if search succeeded: bestDelayMs
+	// - else: hold last known-good
+	// - else: configured fixed delay
+	chosenMs := cfgDelayMs
+	if searchOK {
+		chosenMs = bestDelayMs
+	} else if prevDelayMs >= 0 {
+		chosenMs = prevDelayMs
+	}
+
+	// Rate-limit delay changes.
+	if prevDelayMs >= 0 && maxStepPerCycle > 0 {
+		lo := prevDelayMs - maxStepPerCycle
+		hi := prevDelayMs + maxStepPerCycle
+		if chosenMs < lo {
+			chosenMs = lo
+		}
+		if chosenMs > hi {
+			chosenMs = hi
+		}
+		if chosenMs < 0 {
+			chosenMs = 0
+		}
+	}
+
+	// Persist last known-good.
+	c.State.Set(prevKey, chosenMs)
+	selDelayMs = chosenMs
+
+	// Populate cache.RedfishObs for chosen delay (reuse bestObs if matches).
+	cache.RedfishObs = cache.RedfishObs[:0]
+	var chosenObs []fusion.RedfishObs
+
+	if searchOK && chosenMs == bestDelayMs {
+		chosenObs = bestObs
+	} else {
+		dTicks := c.Mono.TicksForMsCeil(chosenMs)
+		rawStart := hStart + dTicks
+		rawEnd := hEnd + dTicks
+		obs, n := fusion.ExtractRedfishObs(c, chassis, 0, rawStart, rawEnd, kernel, kernelMs)
+		if n > 0 && len(obs) > 0 {
+			chosenObs = obs
+		}
+	}
+
+	if len(chosenObs) > 0 {
+		cache.RedfishObs = append(cache.RedfishObs, chosenObs...)
+	}
+
+	// Diagnostics return values: deficit (no eps) over the same recent region.
+	// deficit = max(0, parts - sys)
+	if len(chosenObs) > 0 {
+		var sum float64
+		var mx float64
+
+		used := 0
+		for i := range chosenObs {
+			o := chosenObs[i]
+			if o.MonoCorr+1 <= scoreCut {
+				continue
+			}
+
+			k := fusion.BinIndex(int64(o.MonoCorr / cache.QuantumTicks))
+			idx, okIdx := cacheIdx(cache, k)
+			if !okIdx {
+				continue
+			}
+
+			partsP := (cache.EpkgMJ[idx] + cache.EdramMJ[idx] + cache.EgpuMJ[idx]) / dtSec
+			if !finiteLocal(partsP) || partsP < 0 {
+				partsP = 0
+			}
+
+			d := partsP - o.ValueMW
+			if d > 0 && finiteLocal(d) {
+				sum += d
+				if d > mx {
+					mx = d
+				}
+			}
+			used++
+		}
+
+		if used >= 1 {
+			deficitSumMW = sum
+			deficitMaxMW = mx
+		}
+	}
+
+	klog.V(6).Infof("[analysis] fusion redfish obs chassis=%q n=%d delayMs=%d kernel=%q searchOK=%v",
+		chassis, len(cache.RedfishObs), selDelayMs, string(kernel), searchOK)
+
+	return
+}
+
+func partsPowerAtObs(cache *fusion.Cache, dtSec, monoQuantumSec float64, obs fusion.RedfishObs) (float64, bool) {
+	if cache == nil || cache.QuantumTicks == 0 || cache.HorizonBins <= 0 {
+		return 0, false
+	}
+	if dtSec <= 0 || monoQuantumSec <= 0 {
+		return 0, false
+	}
+
+	switch obs.Kernel {
+	case fusion.KernelInstant:
+		k := fusion.BinIndex(int64(obs.MonoCorr / cache.QuantumTicks))
+		i, ok := cacheIdx(cache, k)
+		if !ok {
+			return 0, false
+		}
+		pParts := (cache.EpkgMJ[i] + cache.EdramMJ[i] + cache.EgpuMJ[i]) / dtSec
+		if pParts < 0 {
+			pParts = 0
+		}
+		return pParts, true
+
+	case fusion.KernelAvg1sTrailing:
+		Tms := obs.KernelMs
+		if Tms <= 0 {
+			Tms = 1000
+		}
+		Tsec := float64(Tms) / 1000.0
+		if Tsec <= 0 {
+			return 0, false
+		}
+
+		// Trailing window in ticks, in corrected domain.
+		Tticks := uint64(math.Round(Tsec / monoQuantumSec))
+		if Tticks == 0 {
+			// fall back to instant
+			k := fusion.BinIndex(int64(obs.MonoCorr / cache.QuantumTicks))
+			i, ok := cacheIdx(cache, k)
+			if !ok {
+				return 0, false
+			}
+			pParts := (cache.EpkgMJ[i] + cache.EdramMJ[i] + cache.EgpuMJ[i]) / dtSec
+			if pParts < 0 {
+				pParts = 0
+			}
+			return pParts, true
+		}
+
+		t1 := obs.MonoCorr
+		t0 := uint64(0)
+		if t1 > Tticks {
+			t0 = t1 - Tticks
+		}
+
+		kStart := fusion.BinIndex(int64(t0 / cache.QuantumTicks))
+		kEnd := fusion.BinIndex(int64((t1 - 1) / cache.QuantumTicks))
+
+		var sumParts float64
+		var sumSec float64
+
+		for k := kStart; k <= kEnd; k++ {
+			i, ok := cacheIdx(cache, k)
+			if !ok {
+				continue
+			}
+			b0 := uint64(k) * cache.QuantumTicks
+			b1 := b0 + cache.QuantumTicks
+
+			lo := maxU64(t0, b0)
+			hi := minU64(t1, b1)
+			if hi <= lo {
+				continue
+			}
+			segSec := float64(hi-lo) * monoQuantumSec
+			if segSec <= 0 {
+				continue
+			}
+			sumSec += segSec
+
+			pParts := (cache.EpkgMJ[i] + cache.EdramMJ[i] + cache.EgpuMJ[i]) / dtSec
+			if pParts < 0 {
+				pParts = 0
+			}
+			sumParts += pParts * segSec
+		}
+
+		if sumSec <= 0 {
+			return 0, false
+		}
+		return sumParts / sumSec, true
+
+	default:
+		return 0, false
+	}
 }
 
 func putCache(s *analysis.StateStore, key analysis.MetricKey, cache *fusion.Cache) {
@@ -252,4 +1043,29 @@ func putCache(s *analysis.StateStore, key analysis.MetricKey, cache *fusion.Cach
 // Safety helper for debugging.
 func (m *FusionSubstrate) String() string {
 	return fmt.Sprintf("%s", m.ID())
+}
+
+// -------------------- Slice 12C local helpers (keep file self-contained) --------------------
+
+func finiteLocal(x float64) bool { return !math.IsNaN(x) && !math.IsInf(x, 0) }
+
+func medianLocal(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	tmp := make([]float64, 0, len(xs))
+	for _, v := range xs {
+		if finiteLocal(v) && v >= 0 {
+			tmp = append(tmp, v)
+		}
+	}
+	if len(tmp) == 0 {
+		return 0
+	}
+	sort.Float64s(tmp)
+	n := len(tmp)
+	if n%2 == 1 {
+		return tmp[n/2]
+	}
+	return 0.5 * (tmp[n/2-1] + tmp[n/2])
 }

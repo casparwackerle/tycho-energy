@@ -3,10 +3,8 @@ package analysismetrics
 
 import (
 	"math"
-	"time"
 
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis"
-	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis/idle"
 	"github.com/casparwackerle/tycho-energy/pkg/config"
 	"k8s.io/klog/v2"
 )
@@ -32,6 +30,8 @@ const (
 	MetricResidualtransientNow        analysis.MetricID = "residual_transient_now"
 	MetricResidualtransientHold       analysis.MetricID = "residual_transient_hold"
 	MetricResidualIdleBaselineMWState analysis.MetricID = "residual_idle_baseline_mw_state"
+	MetricResidualIdleCandMWState     analysis.MetricID = "residual_idle_cand_mw_state"
+	MetricResidualIdleLowRunState     analysis.MetricID = "residual_idle_low_run_state"
 
 	residualKindTotal   = "total"
 	residualKindIdle    = "idle"
@@ -253,62 +253,208 @@ func (m *Residual) Run(c *analysis.Cycle) error {
 		})
 	}
 
-	// ---------------------------
-	// Slice 11B: gated residual idle learning + separate baseline export
-	// ---------------------------
+	// // ---------------------------
+	// // Slice 11B: gated residual idle learning + separate baseline export
+	// // ---------------------------
 
-	cfg := idle.DefaultConfig()
-	model := idle.GetOrInitScalar(c.State, "residual", cfg)
-	if model == nil {
-		return nil
-	}
+	// cfg := idle.DefaultConfig()
+	// model := idle.GetOrInitScalar(c.State, "residual", cfg)
+	// if model == nil {
+	// 	return nil
+	// }
 
-	now := time.Now()
+	// now := time.Now()
+
+	// // Learn only when window is usable AND residual is meaningful.
+	// // Also: only learn on corrected source (recommended), so warmup never pollutes the baseline.
+	// allowLearn := (source == redfishSourceCorrected) && windowUsable && (resMWClamp >= minLearnMW)
+
+	// // Persisted baseline (state) used for unusable windows.
+	// lastIdleKey := analysis.Key(analysis.MetricID(MetricResidualIdleBaselineMWState), analysis.Labels{"chassis": chassis})
+
+	// getLast := func() (float64, bool) {
+	// 	if v, ok := c.State.Get(lastIdleKey); ok {
+	// 		if f, ok2 := v.(float64); ok2 && f >= 0 && !math.IsNaN(f) && !math.IsInf(f, 0) {
+	// 			return f, true
+	// 		}
+	// 	}
+	// 	return 0, false
+	// }
+	// setLast := func(v float64) {
+	// 	if v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+	// 		return
+	// 	}
+	// 	c.State.Set(lastIdleKey, v)
+	// }
+
+	// // baselineMW is the *model state* (export separately), independent of clamp.
+	// var baselineMW float64
+
+	// if allowLearn {
+	// 	model.Observe(0.0, resMWClamp, now)
+
+	// 	est, _ := model.Estimate()
+	// 	if est < 0 || math.IsNaN(est) || math.IsInf(est, 0) {
+	// 		est = 0
+	// 	}
+
+	// 	baselineMW = est
+	// 	setLast(baselineMW)
+	// } else {
+	// 	if prev, ok := getLast(); ok {
+	// 		baselineMW = prev
+	// 	} else {
+	// 		baselineMW = 0
+	// 	}
+	// }
+
+	// // Export baseline as a separate diagnostic/model-state metric (accuracy-first, no conservation claim).
+	// baseLabels := analysis.Labels{"chassis": chassis}
+
+	// c.Sink.Emit(c.Ctx, analysis.Point{
+	// 	Key:    analysis.Key(analysis.MetricID(MetricResidualIdleBaselineMW), baseLabels),
+	// 	Window: c.Window,
+	// 	Unit:   "mW",
+	// 	Value:  baselineMW,
+	// })
+
+	// ---------------------------
+	// Slice 11B + Slice 12C: gated residual idle learning (robust against transient dips)
+	// ---------------------------
 
 	// Learn only when window is usable AND residual is meaningful.
-	// Also: only learn on corrected source (recommended), so warmup never pollutes the baseline.
+	// Also: only learn on corrected source, so warmup never pollutes the baseline.
 	allowLearn := (source == redfishSourceCorrected) && windowUsable && (resMWClamp >= minLearnMW)
 
-	// Persisted baseline (state) used for unusable windows.
-	lastIdleKey := analysis.Key(analysis.MetricID(MetricResidualIdleBaselineMWState), analysis.Labels{"chassis": chassis})
+	// Conservative "candidate then commit" parameters.
+	// - dropMarginMW: ignore tiny dips (noise)
+	// - lowPersistN: require N consecutive learnable windows before committing a lower baseline
+	// - commitEta: once confirmed, move baseline down slowly (EMA step)
+	const (
+		dropMarginMW    = 3000.0 // 3 W
+		lowPersistN     = 4      // number of consecutive windows required
+		commitEta       = 0.10   // 10% move toward candidate when committing
+		maxPermDropFrac = 0.05   // allow at most 5% permanent drop per commit
+	)
 
-	getLast := func() (float64, bool) {
-		if v, ok := c.State.Get(lastIdleKey); ok {
+	// State keys (per chassis)
+	lastIdleKey := analysis.Key(analysis.MetricID(MetricResidualIdleBaselineMWState), analysis.Labels{"chassis": chassis})
+	candKey := analysis.Key(analysis.MetricID(MetricResidualIdleCandMWState), analysis.Labels{"chassis": chassis})
+	runKey := analysis.Key(analysis.MetricID(MetricResidualIdleLowRunState), analysis.Labels{"chassis": chassis})
+
+	getFloat := func(k analysis.MetricKey) (float64, bool) {
+		if v, ok := c.State.Get(k); ok {
 			if f, ok2 := v.(float64); ok2 && f >= 0 && !math.IsNaN(f) && !math.IsInf(f, 0) {
 				return f, true
 			}
 		}
 		return 0, false
 	}
-	setLast := func(v float64) {
+	setFloat := func(k analysis.MetricKey, v float64) {
 		if v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
 			return
 		}
-		c.State.Set(lastIdleKey, v)
+		c.State.Set(k, v)
+	}
+	getInt := func(k analysis.MetricKey) int {
+		if v, ok := c.State.Get(k); ok {
+			if i, ok2 := v.(int); ok2 {
+				return i
+			}
+			if f, ok2 := v.(float64); ok2 {
+				return int(f)
+			}
+		}
+		return 0
+	}
+	setInt := func(k analysis.MetricKey, v int) {
+		c.State.Set(k, v)
 	}
 
-	// baselineMW is the *model state* (export separately), independent of clamp.
-	var baselineMW float64
+	// Load committed baseline (what we use for idle/dynamic split).
+	baselineMW, hasBase := getFloat(lastIdleKey)
 
-	if allowLearn {
-		model.Observe(0.0, resMWClamp, now)
+	// Load candidate + run length.
+	candMW := baselineMW
+	if v, ok := getFloat(candKey); ok {
+		candMW = v
+	}
+	lowRun := getInt(runKey)
 
-		est, _ := model.Estimate()
-		if est < 0 || math.IsNaN(est) || math.IsInf(est, 0) {
-			est = 0
-		}
-
-		baselineMW = est
-		setLast(baselineMW)
-	} else {
-		if prev, ok := getLast(); ok {
-			baselineMW = prev
-		} else {
+	// If we have no baseline yet, seed it on the first learnable window.
+	// This avoids exporting a long 0 baseline at startup.
+	if !hasBase && allowLearn {
+		baselineMW = resMWClamp
+		if baselineMW < 0 || math.IsNaN(baselineMW) || math.IsInf(baselineMW, 0) {
 			baselineMW = 0
 		}
+		setFloat(lastIdleKey, baselineMW)
+		// Reset candidate/run
+		setFloat(candKey, baselineMW)
+		setInt(runKey, 0)
+		candMW = baselineMW
+		lowRun = 0
 	}
 
-	// Export baseline as a separate diagnostic/model-state metric (accuracy-first, no conservation claim).
+	// Candidate-then-commit: only allow downward baseline movement if low persists.
+	if allowLearn && hasBase {
+		x := resMWClamp // the current residual (clamped) observation in mW
+
+		// If x is a meaningful new low (beyond margin), track it as a candidate.
+		if x < baselineMW-dropMarginMW {
+			if candMW > x {
+				candMW = x
+			}
+			lowRun++
+		} else {
+			// Not a sustained low: reset candidate tracking.
+			candMW = baselineMW
+			lowRun = 0
+		}
+
+		// Commit only if we saw a sustained low for N consecutive learnable windows.
+		if lowRun >= lowPersistN {
+			// Allow small, legitimate idle drops to be committed quickly,
+			// but cap any permanent drop to at most maxPermDropFrac per commit.
+			floor := baselineMW * (1.0 - maxPermDropFrac)
+
+			var newBase float64
+			if candMW >= floor {
+				// Small drop (<= 5%): accept fully (stops "hugging" quickly).
+				newBase = candMW
+			} else {
+				// Large drop (> 5%): cap the permanent change (accuracy-first).
+				// Optionally blend slightly toward cand for stability, but never below the 5% floor.
+				blend := (1.0-commitEta)*baselineMW + commitEta*candMW
+				if blend < floor {
+					newBase = floor
+				} else {
+					newBase = blend
+				}
+			}
+
+			if newBase < 0 || math.IsNaN(newBase) || math.IsInf(newBase, 0) {
+				newBase = 0
+			}
+			baselineMW = newBase
+			setFloat(lastIdleKey, baselineMW)
+
+			// Reset candidate/run so we require a new sustained low for further drops.
+			candMW = baselineMW
+			lowRun = 0
+		}
+
+		// Persist candidate/run even if we did not commit.
+		setFloat(candKey, candMW)
+		setInt(runKey, lowRun)
+	}
+
+	// If we are not learning, keep the last committed baseline (or 0 if none exists).
+	if !hasBase && !allowLearn {
+		baselineMW = 0
+	}
+
+	// Export baseline as a separate model-state metric (no conservation claim).
 	baseLabels := analysis.Labels{"chassis": chassis}
 
 	c.Sink.Emit(c.Ctx, analysis.Point{
