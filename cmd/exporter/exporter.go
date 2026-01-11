@@ -316,35 +316,35 @@ func main() {
 	// This makes disabling immediate (no stale window emissions).
 	analysisreg := analysisregistry.New()
 
+	//IMPORTANT: THE ORDER OF THESE IS IMPORTANT SINCE IT HAS AN IMPACT ON ANALYSIS LOGIC
+	// Sources
 	if enableRapl {
 		analysisreg.Register(analysismetrics.NewRaplTotals(mono))
 	}
 	if enableBpf {
 		analysisreg.Register(analysismetrics.NewBpfSystemMetrics())
 	}
-	if enableRedfish {
-		//analysisreg.Register(analysismetrics.NewRedfishWindowEnergy()) //only do this if fusion is not available
-	}
-	if enableRapl && enableBpf {
-		analysisreg.Register(analysismetrics.NewRaplIdleDynamic())
-	}
 	if enableGpu {
 		analysisreg.Register(analysismetrics.NewGpuWindowEnergy(mono))
 		analysisreg.Register(analysismetrics.NewGpuIdleDynamic())
 	}
 
-	// metric fusion only when all metrics are available.
+	// RAPL split (produces rapl_energy_mj kind=dynamic that attribution consumes)
+	if enableRapl && enableBpf {
+		analysisreg.Register(analysismetrics.NewRaplIdleDynamic())
+	}
+
+	// Attribution (consumes: BPF ticks + Meta store + rapl dynamic cum energy)
+	if enableRapl && enableBpf {
+		analysisreg.Register(analysismetrics.NewCpuDynamicAttributionPerTick())
+	}
+
+	// Fusion / residual (independent of workload attribution for now)
 	if enableRedfish && enableRapl && enableBpf {
 		analysisreg.Register(analysismetrics.NewFusionSubstrate())
 		analysisreg.Register(analysismetrics.NewFusionModel())
 		analysisreg.Register(analysismetrics.NewSystemRawFromRedfish())
 		analysisreg.Register(analysismetrics.NewResidual())
-		//analysisreg.Register(analysismetrics.NewSystemResidualIdleDynamic())
-	}
-
-	// Residual only makes sense with Redfish system energy and RAPL.
-	if enableRedfish && enableRapl && config.GetFusionDiagnosticsEnabled() {
-		//analysisreg.Register(analysismetrics.NewSystemResidualEnergy())
 	}
 
 	// --- Analysis sinks ---
