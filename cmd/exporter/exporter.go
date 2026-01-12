@@ -316,7 +316,6 @@ func main() {
 	// This makes disabling immediate (no stale window emissions).
 	analysisreg := analysisregistry.New()
 
-	//IMPORTANT: THE ORDER OF THESE IS IMPORTANT SINCE IT HAS AN IMPACT ON ANALYSIS LOGIC
 	// Sources
 	if enableRapl {
 		analysisreg.Register(analysismetrics.NewRaplTotals(mono))

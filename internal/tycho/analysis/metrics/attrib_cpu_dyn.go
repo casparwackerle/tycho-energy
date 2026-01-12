@@ -2,6 +2,8 @@
 package analysismetrics
 
 import (
+	"fmt"
+	"sort"
 	"time"
 
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis"
@@ -9,6 +11,7 @@ import (
 	analysisctx "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/context"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/ring"
 	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"k8s.io/klog/v2"
 )
 
 // Output metric family (Prometheus sink prefix "tycho" yields tycho_workload_energy_mj).
@@ -40,6 +43,14 @@ type attribBin struct {
 }
 
 type attribBins []attribBin
+
+type attribSeriesRef struct {
+	Component string
+	Kind      string
+	Namespace string
+	Pod       string
+	Container string
+}
 
 type CpuDynamicAttributionPerTick struct {
 	// No config yet; keep slice minimal.
@@ -114,6 +125,18 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 	// Optional diag counters (kept per-run then accumulated as monotonic in state).
 	var nProcID, nCgroup, nSystem uint64
 
+	// Diagnostics-only: window-level weight aggregation + small PID samples for audit logs.
+	diagEnabled := config.GetAttributionDiagnosticsEnabled()
+	var wSumPkg float64
+	var wSumDram float64
+	var wSysPkg float64
+	var wSysDram float64
+
+	// Top-K audit helpers (kept low, logs only).
+	wByWkPkg := map[wk]float64{}
+	wByWkDram := map[wk]float64{}
+	examplePIDs := map[wk][]uint32{} // cap to 3 PIDs per workload
+
 	// Helper: overlap factor for bin (prevMono, currMono] intersected with [start,end].
 	overlapFactor := func(prev, curr, start, end uint64) float64 {
 		if curr <= prev {
@@ -181,6 +204,13 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 			// Resolve workload via Decision B (ProcID preferred, else cgroup fallback).
 			wkKey, okWk := attribution.ResolveWorkload(c.Meta, procPtr, d.CgroupID)
 
+			if diagEnabled {
+				// store a few example PIDs per workload (cap 3)
+				if len(examplePIDs[wkKey]) < 3 {
+					examplePIDs[wkKey] = append(examplePIDs[wkKey], uint32(d.PID))
+				}
+			}
+
 			if !okWk {
 				// System fallback.
 				wkKey = sys
@@ -201,6 +231,14 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 				mp.w[wkKey] += instr
 			}
 
+			if diagEnabled && instr > 0 {
+				wSumPkg += instr
+				wByWkPkg[wkKey] += instr
+				if wkKey.IsSystem() {
+					wSysPkg += instr
+				}
+			}
+
 			// dram base weights: CacheMiss (fallback later decided window-level)
 			miss := float64(d.CacheMiss) * f
 			cyc := float64(d.CPUCycles) * f
@@ -209,6 +247,14 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 				md.total += miss
 				md.w[wkKey] += miss
 			}
+			if diagEnabled && miss > 0 {
+				wSumDram += miss
+				wByWkDram[wkKey] += miss
+				if wkKey.IsSystem() {
+					wSysDram += miss
+				}
+			}
+
 			if cyc > 0 {
 				sumCycles += cyc
 			}
@@ -223,6 +269,14 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 	if useCyclesForDram {
 		// Rebuild DRAM bin maps using CPUCycles as weight (same mapping).
 		binDram = binDram[:0]
+
+		if diagEnabled {
+			// Replace DRAM diag aggregates with cycle-based values.
+			wSumDram = 0
+			wSysDram = 0
+			wByWkDram = map[wk]float64{}
+			// examplePIDs map remains valid; mapping decisions are the same.
+		}
 
 		for k := 0; k < len(inWindow); k++ {
 			curr := inWindow[k]
@@ -249,6 +303,14 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 					md.total += cyc
 					md.w[wkKey] += cyc
 				}
+
+				if diagEnabled && cyc > 0 {
+					wSumDram += cyc
+					wByWkDram[wkKey] += cyc
+					if wkKey.IsSystem() {
+						wSysDram += cyc
+					}
+				}
 			}
 
 			binDram = append(binDram, md)
@@ -260,7 +322,7 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 	// Remainders always routed to system.
 	// -------------------------------------------------------------------------
 	// Emit diag: bins count (from inWindow length; bins correspond to intervals).
-	if config.GetAttributionDiagnosticsEnabled() {
+	if diagEnabled {
 		c.Sink.Emit(c.Ctx, analysis.Point{
 			Key:    analysis.Key(MetricAttribBinsTotal, nil),
 			Window: c.Window,
@@ -290,7 +352,7 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 	// Ensure system bucket always emitted (allocateComponent guarantees).
 	// -------------------------------------------------------------------------
 
-	if config.GetAttributionDiagnosticsEnabled() {
+	if diagEnabled {
 		// Diagnostics: weight sums + system fraction.
 		emitWeightDiag(c, componentRaplPkg, binPkg, pkgBudgetMJ, pkgSystemMJ)
 		emitWeightDiag(c, componentRaplDram, binDram, dramBudgetMJ, dramSystemMJ)
@@ -300,6 +362,19 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 		emitDiagCounter(c, MetricAttribResolvedCgroup, "count", nCgroup)
 		emitDiagCounter(c, MetricAttribFallbackSystem, "count", nSystem)
 	}
+	if diagEnabled {
+		logAttributionAudit(
+			c,
+			componentRaplPkg, componentRaplDram,
+			pkgBudgetMJ, dramBudgetMJ,
+			wSumPkg, wSumDram,
+			wSysPkg, wSysDram,
+			wByWkPkg, wByWkDram,
+			examplePIDs,
+			nProcID, nCgroup, nSystem,
+		)
+	}
+
 	return nil
 }
 
@@ -441,7 +516,7 @@ func applyWorkloadAllocs(
 	component string,
 	alloc map[attribution.WorkloadKey]uint64,
 ) {
-	if c == nil || c.Sink == nil || c.State == nil {
+	if c == nil || c.Sink == nil || c.State == nil || c.Mono == nil {
 		return
 	}
 
@@ -452,9 +527,56 @@ func applyWorkloadAllocs(
 		alloc[sys] = 0
 	}
 
+	now := c.NowMono
+	if now == 0 {
+		now = c.Window.EndMono
+	}
+
+	// TTL: start conservative, tune later.
+	ttlTicks := c.Mono.TicksForDurationCeil(2 * time.Minute)
+
+	// Load / init index.
+	idxKey := analysis.Key("__attrib_series_index", analysis.Labels{
+		"component": component,
+		"kind":      attribKindDynamic,
+	})
+	var index []attribSeriesRef
+	if v, ok := c.State.Get(idxKey); ok {
+		if vv, ok2 := v.([]attribSeriesRef); ok2 {
+			index = vv
+		}
+	}
+	if index == nil {
+		index = []attribSeriesRef{}
+	}
+
+	// Track active series this cycle + ensure index contains them.
+	active := make(map[attribSeriesRef]struct{}, len(alloc))
+
 	for wk, deltaMJ := range alloc {
 		if wk.IsZero() {
 			wk = sys
+		}
+
+		ref := attribSeriesRef{
+			Component: component,
+			Kind:      attribKindDynamic,
+			Namespace: wk.Namespace,
+			Pod:       wk.Pod,
+			Container: wk.Container,
+		}
+		active[ref] = struct{}{}
+
+		// Add to index if missing (linear scan is OK at your scale; can optimize later).
+		found := false
+		for i := range index {
+			if index[i] == ref {
+				found = true
+				break
+			}
+		}
+		if !found {
+			index = append(index, ref)
 		}
 
 		// Monotonic accumulator in state (per workload + component).
@@ -475,6 +597,16 @@ func applyWorkloadAllocs(
 		next := prev + deltaMJ
 		c.State.Set(stateKey, next)
 
+		// Update last-seen for this series.
+		lastSeenKey := analysis.Key("__attrib_last_seen_u64", analysis.Labels{
+			"component": component,
+			"kind":      attribKindDynamic,
+			"ns":        wk.Namespace,
+			"pod":       wk.Pod,
+			"ctr":       wk.Container,
+		})
+		c.State.Set(lastSeenKey, now)
+
 		// Emit user-facing series.
 		labels := analysis.Labels{
 			"component": component,
@@ -490,6 +622,68 @@ func applyWorkloadAllocs(
 			Value:  float64(next),
 		})
 	}
+
+	// GC pass: remove stale series (not active, lastSeen too old).
+	if ttlTicks > 0 {
+		nextIndex := make([]attribSeriesRef, 0, len(index))
+		for _, ref := range index {
+			if _, ok := active[ref]; ok {
+				nextIndex = append(nextIndex, ref)
+				continue
+			}
+
+			lastSeenKey := analysis.Key("__attrib_last_seen_u64", analysis.Labels{
+				"component": ref.Component,
+				"kind":      ref.Kind,
+				"ns":        ref.Namespace,
+				"pod":       ref.Pod,
+				"ctr":       ref.Container,
+			})
+			v, ok := c.State.Get(lastSeenKey)
+			if !ok {
+				// No timestamp: keep for now (conservative).
+				nextIndex = append(nextIndex, ref)
+				continue
+			}
+			last, ok := v.(uint64)
+			if !ok {
+				nextIndex = append(nextIndex, ref)
+				continue
+			}
+			if now > last && (now-last) > ttlTicks {
+				// Delete user-facing series.
+				lbl := analysis.Labels{
+					"component": ref.Component,
+					"kind":      ref.Kind,
+					"namespace": ref.Namespace,
+					"pod":       ref.Pod,
+					"container": ref.Container,
+				}
+				c.Sink.Delete(c.Ctx, analysis.Key(MetricWorkloadEnergyMJ, lbl))
+
+				// Delete internal state.
+				energyKey := analysis.Key("__attrib_workload_energy_u64", analysis.Labels{
+					"component": ref.Component,
+					"kind":      ref.Kind,
+					"ns":        ref.Namespace,
+					"pod":       ref.Pod,
+					"ctr":       ref.Container,
+				})
+				c.State.Delete(energyKey)
+				c.State.Delete(lastSeenKey)
+
+				// Do not keep in index.
+				continue
+			}
+
+			// Not stale yet.
+			nextIndex = append(nextIndex, ref)
+		}
+		index = nextIndex
+	}
+
+	// Persist updated index.
+	c.State.Set(idxKey, index)
 }
 
 func emitWeightDiag(
@@ -502,36 +696,43 @@ func emitWeightDiag(
 	if c == nil || c.Sink == nil {
 		return
 	}
+	if !config.GetAttributionDiagnosticsEnabled() {
+		return
+	}
+
 	sumW := 0.0
 	for i := range bins {
 		sumW += bins[i].total
 	}
-	if config.GetAttributionDiagnosticsEnabled() {
-		c.Sink.Emit(c.Ctx, analysis.Point{
-			Key:    analysis.Key(MetricAttribWeightSum, analysis.Labels{"component": component}),
-			Window: c.Window,
-			Unit:   "count",
-			Value:  sumW,
-		})
-	}
+
+	c.Sink.Emit(c.Ctx, analysis.Point{
+		Key:    analysis.Key(MetricAttribWeightSum, analysis.Labels{"component": component}),
+		Window: c.Window,
+		Unit:   "count",
+		Value:  sumW,
+	})
+
 	frac := 0.0
 	if budgetMJ > 0 {
 		frac = float64(systemAllocMJ) / float64(budgetMJ)
 	}
-	if config.GetAttributionDiagnosticsEnabled() {
-		c.Sink.Emit(c.Ctx, analysis.Point{
-			Key:    analysis.Key(MetricAttribSystemFraction, analysis.Labels{"component": component}),
-			Window: c.Window,
-			Unit:   "ratio",
-			Value:  clamp01(frac),
-		})
-	}
+
+	c.Sink.Emit(c.Ctx, analysis.Point{
+		Key:    analysis.Key(MetricAttribSystemFraction, analysis.Labels{"component": component}),
+		Window: c.Window,
+		Unit:   "ratio",
+		Value:  clamp01(frac),
+	})
 }
 
 func emitDiagCounter(c *analysis.Cycle, id analysis.MetricID, unit string, delta uint64) {
 	if c == nil || c.Sink == nil || c.State == nil {
 		return
 	}
+	if !config.GetAttributionDiagnosticsEnabled() {
+		return
+	}
+
 	key := analysis.Key("__attrib_diag_u64", analysis.Labels{"id": string(id)})
 	prevAny, ok := c.State.Get(key)
 	var prev uint64
@@ -549,4 +750,190 @@ func emitDiagCounter(c *analysis.Cycle, id analysis.MetricID, unit string, delta
 		Unit:   unit,
 		Value:  float64(next),
 	})
+}
+
+// --- churn control ------------------------------------------------------------
+
+// We maintain a small index of known workload series keys in StateStore so we can GC
+// without requiring StateStore iteration.
+func indexKey(component string) analysis.MetricKey {
+	return analysis.Key("__attrib_workload_index", analysis.Labels{
+		"component": component,
+		"kind":      attribKindDynamic,
+	})
+}
+
+func gcAttributionWorkloads(
+	c *analysis.Cycle,
+	component string,
+	ttlTicks uint64,
+	now uint64,
+	activeKeys map[string]struct{},
+) {
+	if c == nil || c.State == nil || c.Sink == nil {
+		return
+	}
+	if ttlTicks == 0 {
+		return
+	}
+
+	// Load index: []string of canonical state keys for "__attrib_workload_energy_u64"
+	idxK := indexKey(component)
+	var idx []string
+	if v, ok := c.State.Get(idxK); ok {
+		if vv, ok2 := v.([]string); ok2 {
+			// shallow copy to avoid accidental mutation
+			idx = append([]string(nil), vv...)
+		}
+	}
+	if idx == nil {
+		idx = []string{}
+	}
+
+	// Rebuild index in-place to drop stale entries.
+	nextIdx := make([]string, 0, len(idx))
+
+	for _, canon := range idx {
+		// Keep if it is active this cycle (avoid flapping deletes)
+		if _, ok := activeKeys[canon]; ok {
+			nextIdx = append(nextIdx, canon)
+			continue
+		}
+
+		// Parse back labels: we can’t reliably parse CanonicalString, so we also store lastSeen
+		// under the same dimensions and keep a parallel key in the index.
+		//
+		// Simpler approach: index stores the LAST-SEEN key canonical string, not energy key.
+		// To avoid breaking your current deployment, we implement a dual-mode:
+		// - If canon starts with "__attrib_workload_last_seen_u64", treat as lastSeen key.
+		// - Else, treat as energy key and derive lastSeen key by swapping MetricID.
+		isLastSeen := false
+		if len(canon) >= len("__attrib_workload_last_seen_u64") && canon[:len("__attrib_workload_last_seen_u64")] == "__attrib_workload_last_seen_u64" {
+			isLastSeen = true
+		}
+
+		var lastSeenKey analysis.MetricKey
+		var energyKey analysis.MetricKey
+
+		if isLastSeen {
+			// This case requires us to reconstitute MetricKey, which we can’t from canon.
+			// Therefore: we do not support this mode without changing index format.
+			// Keep entry to avoid accidental deletions.
+			nextIdx = append(nextIdx, canon)
+			continue
+		}
+
+		// We can’t reconstruct labels from canon either, so we must store labels explicitly.
+		// => To keep this drop-in minimal and safe, we implement the index in a reliable way:
+		// store structured entries instead of strings.
+
+		nextIdx = append(nextIdx, canon)
+		_ = lastSeenKey
+		_ = energyKey
+	}
+
+	// Write back unchanged for now.
+	// (See below: the robust index implementation replacement.)
+	c.State.Set(idxK, nextIdx)
+}
+
+// --- diagnostics-only audit logging (no Prometheus series) --------------------
+
+type wkWeight struct {
+	wk wk
+	v  float64
+}
+
+func topKWeights(m map[wk]float64, k int) []wkWeight {
+	if k <= 0 {
+		return nil
+	}
+	out := make([]wkWeight, 0, len(m))
+	for kk, vv := range m {
+		if vv <= 0 {
+			continue
+		}
+		out = append(out, wkWeight{wk: kk, v: vv})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].v > out[j].v })
+	if len(out) > k {
+		out = out[:k]
+	}
+	return out
+}
+
+func wkString(wk wk) string {
+	if wk.IsSystem() || (wk.Namespace == "" && wk.Pod == "" && wk.Container == "") {
+		return "__system__"
+	}
+	return wk.Namespace + "/" + wk.Pod + "/" + wk.Container
+}
+
+func logAttributionAudit(
+	c *analysis.Cycle,
+	compPkg string,
+	compDram string,
+	budgetPkgMJ uint64,
+	budgetDramMJ uint64,
+	sumWPkg float64,
+	sumWDram float64,
+	sysWPkg float64,
+	sysWDram float64,
+	wByWkPkg map[wk]float64,
+	wByWkDram map[wk]float64,
+	examplePIDs map[wk][]uint32,
+	nProcID, nCgroup, nSystem uint64,
+) {
+	if c == nil {
+		return
+	}
+
+	sysFracPkg := 0.0
+	if sumWPkg > 0 {
+		sysFracPkg = sysWPkg / sumWPkg
+	}
+	sysFracDram := 0.0
+	if sumWDram > 0 {
+		sysFracDram = sysWDram / sumWDram
+	}
+
+	topPkg := topKWeights(wByWkPkg, 5)
+	topDram := topKWeights(wByWkDram, 5)
+
+	formatTop := func(xs []wkWeight) string {
+		if len(xs) == 0 {
+			return "[]"
+		}
+		s := "["
+		for i := range xs {
+			if i > 0 {
+				s += " "
+			}
+			wk := xs[i].wk
+			pids := examplePIDs[wk]
+			s += fmt.Sprintf("%s:%.1f", wkString(wk), xs[i].v)
+			if len(pids) > 0 {
+				s += ":pids="
+				for j := range pids {
+					if j > 0 {
+						s += ","
+					}
+					s += fmt.Sprintf("%d", pids[j])
+				}
+			}
+		}
+		s += "]"
+		return s
+	}
+
+	klog.Infof(
+		"[attrib/audit] win=%s budgets_mj{pkg=%d dram=%d} weights{sum_pkg=%.1f sys_frac_pkg=%.3f sum_dram=%.1f sys_frac_dram=%.3f} resolved{procid=%d cgroup=%d system=%d} top_pkg=%s top_dram=%s",
+		c.Window.String(),
+		budgetPkgMJ, budgetDramMJ,
+		sumWPkg, sysFracPkg,
+		sumWDram, sysFracDram,
+		nProcID, nCgroup, nSystem,
+		formatTop(topPkg),
+		formatTop(topDram),
+	)
 }
