@@ -66,14 +66,20 @@ func (m *CpuDynamicAttributionPerTick) IsEnabled(c *analysis.Cycle) bool {
 	return c != nil && c.Sink != nil && c.Store != nil && c.State != nil && c.Meta != nil && c.Bpf() != nil && c.Mono != nil
 }
 
+// Drop-in replacement for (*CpuDynamicAttributionPerTick).Run
+// Assumptions:
+// - tick.Procs[*].CPUInstr/CPUCycles/CacheMiss are MONOTONIC COUNTERS (Tycho lifetime)
+// - We reconstruct per-tick deltas by differencing against the predecessor tick (PID-keyed).
+// - No overlap/partial-bin scaling. Bins are simply consecutive tick intervals.
+// - Budgets are already emitted as cumulative dynamic energy; we difference them here.
+// NOTE: Requires allocateComponent to be the "single rounding" version (largest remainder) provided earlier.
 func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 	if c == nil || c.Sink == nil || c.Store == nil || c.State == nil || c.Meta == nil || c.Bpf() == nil || c.Mono == nil {
 		return nil
 	}
 
 	// -------------------------------------------------------------------------
-	// Task 1: Define bins from BPF ticks (ticks are bin ends; bins are (prev, curr])
-	// Use same delay + window-with-prev selection logic as bpf.go.
+	// Define bins from BPF ticks (ticks are bin ends; bins are (prev, curr])
 	// -------------------------------------------------------------------------
 	delayTicks := c.Mono.TicksForMsCeil(config.BpfDelayMs())
 	wEff := c.EffectiveWindowTicks(delayTicks)
@@ -89,30 +95,30 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 		return nil
 	}
 
+	// Exclude predecessor tick for "in-window ticks".
+	inWindow := ticks[1:]
+
 	// -------------------------------------------------------------------------
-	// Task 0: Refresh cgroup index once per window (explicit dependency).
+	// Refresh cgroup index once per cycle (explicit dependency).
 	// Use only in-window ticks for the join (exclude the predecessor tick).
 	// -------------------------------------------------------------------------
 	nowWall := time.Now()
-	inWindow := ticks[1:] // ticks[0] is predecessor; bins start at ticks[1]
 	attribution.BuildCgroupIndexFromBpfWindow(c.Meta, nowWall, c.NowMono, inWindow)
 
 	// -------------------------------------------------------------------------
-	// Task 3: Obtain per-window dynamic energy budgets (authoritative).
-	// We read the already-emitted cumulative dynamic energy and difference it here.
-	// Domains: pkg and dram. Source label: raplSource. Kind: dynamic.
+	// Obtain per-window dynamic energy budgets (authoritative).
 	// -------------------------------------------------------------------------
 	pkgBudgetMJ, pkgBudgetOK := raplDynamicDeltaBudgetMJ(c, "pkg")
 	dramBudgetMJ, dramBudgetOK := raplDynamicDeltaBudgetMJ(c, "dram")
 	if !pkgBudgetOK && !dramBudgetOK {
-		// Nothing to do if budgets missing this cycle.
 		return nil
 	}
 
 	// -------------------------------------------------------------------------
-	// Task 2: Build per-bin workload weight maps (pkg=instr, dram=miss or cycles).
-	// Also gather window-level sums for DRAM fallback decision.
-	// Apply conservative overlap scaling for first/last bin if window edges cut bins.
+	// Build per-bin workload weight maps using per-tick deltas reconstructed
+	// from monotonic counters at the predecessor tick.
+	// pkg weight: CPUInstr delta
+	// dram weight: CacheMiss delta, with fallback to CPUCycles delta if miss mass is zero.
 	// -------------------------------------------------------------------------
 	sys := attribution.SystemWorkloadKey()
 
@@ -122,101 +128,81 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 	var sumMiss float64
 	var sumCycles float64
 
-	// Optional diag counters (kept per-run then accumulated as monotonic in state).
+	// Optional diag counters (per-run, later accumulated as monotonic in state).
 	var nProcID, nCgroup, nSystem uint64
 
-	// Diagnostics-only: window-level weight aggregation + small PID samples for audit logs.
 	diagEnabled := config.GetAttributionDiagnosticsEnabled()
 	var wSumPkg float64
 	var wSumDram float64
 	var wSysPkg float64
 	var wSysDram float64
 
-	// Top-K audit helpers (kept low, logs only).
 	wByWkPkg := map[wk]float64{}
 	wByWkDram := map[wk]float64{}
 	examplePIDs := map[wk][]uint32{} // cap to 3 PIDs per workload
 
-	// Helper: overlap factor for bin (prevMono, currMono] intersected with [start,end].
-	overlapFactor := func(prev, curr, start, end uint64) float64 {
-		if curr <= prev {
-			return 0
-		}
-		// bin interval (prev, curr]
-		b0 := prev
-		b1 := curr
-		// window interval [start, end]
-		w0 := start
-		w1 := end
-		// intersection length in ticks
-		lo := b0
-		if w0 > lo {
-			lo = w0
-		}
-		hi := b1
-		if w1 < hi {
-			hi = w1
-		}
-		if hi <= lo {
-			return 0
-		}
-		num := float64(hi - lo)
-		den := float64(b1 - b0)
-		if den <= 0 {
-			return 0
-		}
-		f := num / den
-		if f < 0 {
-			return 0
-		}
-		if f > 1 {
-			return 1
-		}
-		return f
-	}
-
-	// Iterate bins: for tick i (inWindow index k), predecessor is ticks[k] in the original slice.
+	// Iterate bins: for inWindow[k] at ticks[1+k], predecessor is ticks[k]
 	for k := 0; k < len(inWindow); k++ {
 		curr := inWindow[k]
-		prev := ticks[k] // aligns because inWindow = ticks[1:], so prev for inWindow[0] is ticks[0]
-		f := overlapFactor(prev.Mono, curr.Mono, wEff.StartMono, wEff.EndMono)
-		if f <= 0 {
-			// Bin has no overlap with effective window.
-			binPkg = append(binPkg, attribBin{total: 0, w: map[wk]float64{sys: 0}})
-			binDram = append(binDram, attribBin{total: 0, w: map[wk]float64{sys: 0}})
-			continue
+		prev := ticks[k]
+
+		// predecessor counter map
+		type prevCounters struct {
+			instr uint64
+			cyc   uint64
+			miss  uint64
+		}
+		prevByPID := make(map[uint64]prevCounters, len(prev.Procs))
+		for i := range prev.Procs {
+			p := &prev.Procs[i]
+			prevByPID[p.PID] = prevCounters{
+				instr: p.CPUInstr,
+				cyc:   p.CPUCycles,
+				miss:  p.CacheMiss,
+			}
 		}
 
 		mp := attribBin{w: make(map[wk]float64, 64)}
 		md := attribBin{w: make(map[wk]float64, 64)}
-
-		// Ensure system bucket exists if needed later.
 		mp.w[sys] = 0
 		md.w[sys] = 0
 
 		for i := range curr.Procs {
 			d := &curr.Procs[i]
 
+			pc, okPrev := prevByPID[d.PID]
+			if !okPrev {
+				// Conservative: do not "credit" first-seen PIDs with unknown prior baseline.
+				continue
+			}
+
+			// Reconstruct per-tick deltas (guard underflow).
+			var dInstr, dCyc, dMiss uint64
+			if d.CPUInstr >= pc.instr {
+				dInstr = d.CPUInstr - pc.instr
+			}
+			if d.CPUCycles >= pc.cyc {
+				dCyc = d.CPUCycles - pc.cyc
+			}
+			if d.CacheMiss >= pc.miss {
+				dMiss = d.CacheMiss - pc.miss
+			}
+
+			// If no activity, skip.
+			if dInstr == 0 && dCyc == 0 && dMiss == 0 {
+				continue
+			}
+
 			// Resolve ProcID readiness via Cycle metadata (StartJiffies required).
 			procID, _, okProc := attribution.ResolveProcFromCycle(c, d.PID)
 			procPtr := attribution.ProcIDPtr(procID, okProc)
 
-			// Resolve workload via Decision B (ProcID preferred, else cgroup fallback).
+			// Resolve workload (ProcID preferred, else cgroup fallback).
 			wkKey, okWk := attribution.ResolveWorkload(c.Meta, procPtr, d.CgroupID)
-
-			if diagEnabled {
-				// store a few example PIDs per workload (cap 3)
-				if len(examplePIDs[wkKey]) < 3 {
-					examplePIDs[wkKey] = append(examplePIDs[wkKey], uint32(d.PID))
-				}
-			}
-
 			if !okWk {
-				// System fallback.
 				wkKey = sys
 				nSystem++
 			} else {
-				// Count which path likely resolved it (diag-only).
 				if procPtr != nil {
 					nProcID++
 				} else if d.CgroupID != 0 {
@@ -224,39 +210,46 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 				}
 			}
 
-			// pkg weight: CPUInstr
-			instr := float64(d.CPUInstr) * f
-			if instr > 0 {
-				mp.total += instr
-				mp.w[wkKey] += instr
-			}
-
-			if diagEnabled && instr > 0 {
-				wSumPkg += instr
-				wByWkPkg[wkKey] += instr
-				if wkKey.IsSystem() {
-					wSysPkg += instr
+			if diagEnabled {
+				if len(examplePIDs[wkKey]) < 3 {
+					examplePIDs[wkKey] = append(examplePIDs[wkKey], uint32(d.PID))
 				}
 			}
 
-			// dram base weights: CacheMiss (fallback later decided window-level)
-			miss := float64(d.CacheMiss) * f
-			cyc := float64(d.CPUCycles) * f
-			if miss > 0 {
+			// pkg weight: CPUInstr delta
+			if dInstr > 0 {
+				instr := float64(dInstr)
+				mp.total += instr
+				mp.w[wkKey] += instr
+
+				if diagEnabled {
+					wSumPkg += instr
+					wByWkPkg[wkKey] += instr
+					if wkKey.IsSystem() {
+						wSysPkg += instr
+					}
+				}
+			}
+
+			// dram base weight: CacheMiss delta
+			if dMiss > 0 {
+				miss := float64(dMiss)
 				sumMiss += miss
 				md.total += miss
 				md.w[wkKey] += miss
-			}
-			if diagEnabled && miss > 0 {
-				wSumDram += miss
-				wByWkDram[wkKey] += miss
-				if wkKey.IsSystem() {
-					wSysDram += miss
+
+				if diagEnabled {
+					wSumDram += miss
+					wByWkDram[wkKey] += miss
+					if wkKey.IsSystem() {
+						wSysDram += miss
+					}
 				}
 			}
 
-			if cyc > 0 {
-				sumCycles += cyc
+			// cycles tracked for fallback decision
+			if dCyc > 0 {
+				sumCycles += float64(dCyc)
 			}
 		}
 
@@ -264,27 +257,28 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 		binDram = append(binDram, md)
 	}
 
-	// DRAM fallback rule (window-level): if miss sum is 0 but cycles > 0, use cycles per bin.
+	// DRAM fallback (window-level): if miss mass is zero but cycles > 0, rebuild DRAM bins using cycles deltas.
 	useCyclesForDram := (sumMiss == 0 && sumCycles > 0)
 	if useCyclesForDram {
-		// Rebuild DRAM bin maps using CPUCycles as weight (same mapping).
 		binDram = binDram[:0]
 
 		if diagEnabled {
-			// Replace DRAM diag aggregates with cycle-based values.
 			wSumDram = 0
 			wSysDram = 0
 			wByWkDram = map[wk]float64{}
-			// examplePIDs map remains valid; mapping decisions are the same.
 		}
 
 		for k := 0; k < len(inWindow); k++ {
 			curr := inWindow[k]
 			prev := ticks[k]
-			f := overlapFactor(prev.Mono, curr.Mono, wEff.StartMono, wEff.EndMono)
-			if f <= 0 {
-				binDram = append(binDram, attribBin{total: 0, w: map[wk]float64{sys: 0}})
-				continue
+
+			type prevCounters struct {
+				cyc uint64
+			}
+			prevByPID := make(map[uint64]prevCounters, len(prev.Procs))
+			for i := range prev.Procs {
+				p := &prev.Procs[i]
+				prevByPID[p.PID] = prevCounters{cyc: p.CPUCycles}
 			}
 
 			md := attribBin{w: make(map[wk]float64, 64)}
@@ -292,19 +286,31 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 
 			for i := range curr.Procs {
 				d := &curr.Procs[i]
+				pc, okPrev := prevByPID[d.PID]
+				if !okPrev {
+					continue
+				}
+
+				var dCyc uint64
+				if d.CPUCycles >= pc.cyc {
+					dCyc = d.CPUCycles - pc.cyc
+				}
+				if dCyc == 0 {
+					continue
+				}
+
 				procID, _, okProc := attribution.ResolveProcFromCycle(c, d.PID)
 				procPtr := attribution.ProcIDPtr(procID, okProc)
 				wkKey, okWk := attribution.ResolveWorkload(c.Meta, procPtr, d.CgroupID)
 				if !okWk {
 					wkKey = sys
 				}
-				cyc := float64(d.CPUCycles) * f
-				if cyc > 0 {
-					md.total += cyc
-					md.w[wkKey] += cyc
-				}
 
-				if diagEnabled && cyc > 0 {
+				cyc := float64(dCyc)
+				md.total += cyc
+				md.w[wkKey] += cyc
+
+				if diagEnabled {
 					wSumDram += cyc
 					wByWkDram[wkKey] += cyc
 					if wkKey.IsSystem() {
@@ -318,10 +324,8 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 	}
 
 	// -------------------------------------------------------------------------
-	// Task 4: Allocate budgets across bins, then workloads (two-stage).
-	// Remainders always routed to system.
+	// Diagnostics: bins count (low-cardinality).
 	// -------------------------------------------------------------------------
-	// Emit diag: bins count (from inWindow length; bins correspond to intervals).
 	if diagEnabled {
 		c.Sink.Emit(c.Ctx, analysis.Point{
 			Key:    analysis.Key(MetricAttribBinsTotal, nil),
@@ -331,38 +335,24 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 		})
 	}
 
-	// Allocate pkg.
-	pkgSystemMJ := allocateComponent(
-		c,
-		componentRaplPkg,
-		pkgBudgetMJ,
-		binPkg,
-	)
-	// Allocate dram.
-	dramSystemMJ := allocateComponent(
-		c,
-		componentRaplDram,
-		dramBudgetMJ,
-		binDram,
-	)
+	// -------------------------------------------------------------------------
+	// Allocate budgets and emit workload monotonic energy counters.
+	// (allocateComponent must be the corrected, single-rounding implementation.)
+	// -------------------------------------------------------------------------
+	pkgSystemMJ := allocateComponent(c, componentRaplPkg, pkgBudgetMJ, binPkg)
+	dramSystemMJ := allocateComponent(c, componentRaplDram, dramBudgetMJ, binDram)
 
 	// -------------------------------------------------------------------------
-	// Task 5: Export workload dynamic energy counters.
-	// Done inside allocateComponent via StateStore-backed counters + Sink.Emit.
-	// Ensure system bucket always emitted (allocateComponent guarantees).
+	// Diagnostics.
 	// -------------------------------------------------------------------------
-
 	if diagEnabled {
-		// Diagnostics: weight sums + system fraction.
 		emitWeightDiag(c, componentRaplPkg, binPkg, pkgBudgetMJ, pkgSystemMJ)
 		emitWeightDiag(c, componentRaplDram, binDram, dramBudgetMJ, dramSystemMJ)
 
-		// Optional diag counters: accumulate as monotonic counters in state and emit without workload labels.
 		emitDiagCounter(c, MetricAttribResolvedProcID, "count", nProcID)
 		emitDiagCounter(c, MetricAttribResolvedCgroup, "count", nCgroup)
 		emitDiagCounter(c, MetricAttribFallbackSystem, "count", nSystem)
-	}
-	if diagEnabled {
+
 		logAttributionAudit(
 			c,
 			componentRaplPkg, componentRaplDram,
@@ -436,7 +426,7 @@ func allocateComponent(
 		return 0
 	}
 
-	// Window total weight.
+	// Window total weight (sum of bin totals).
 	sumW := 0.0
 	for i := range bins {
 		sumW += bins[i].total
@@ -448,64 +438,79 @@ func allocateComponent(
 		return budgetMJ
 	}
 
-	// Window accumulator: per-workload allocations across all bins.
-	windowAlloc := make(map[attribution.WorkloadKey]uint64, 128)
-
-	// Stage 1: allocate window budget to bins (integer floors), remainder to system at end.
-	var binsAllocated uint64
-
+	// Accumulate window-level weights per workload across bins.
+	wByWk := make(map[attribution.WorkloadKey]float64, 128)
 	for i := range bins {
-		bt := bins[i].total
-		if bt <= 0 {
-			continue
-		}
-
-		// Floor share, do NOT round. Remainder will go to system.
-		binMJ := uint64(float64(budgetMJ) * (bt / sumW))
-		if binMJ == 0 {
-			continue
-		}
-
-		binsAllocated += binMJ
-
-		// Stage 2: allocate this binMJ to workloads (integer floors), remainder to system.
-		var binAllocated uint64
-
-		// Ensure system exists as sink.
-		if _, ok := bins[i].w[sys]; !ok {
-			bins[i].w[sys] = 0
-		}
-
-		// Allocate per workload.
 		for wk, ww := range bins[i].w {
 			if ww <= 0 {
-				continue
-			}
-			shareMJ := uint64(float64(binMJ) * (ww / bt)) // floor
-			if shareMJ == 0 {
 				continue
 			}
 			if wk.IsZero() {
 				wk = sys
 			}
-			windowAlloc[wk] += shareMJ
-			binAllocated += shareMJ
-		}
-
-		// Bin remainder -> system
-		if binAllocated < binMJ {
-			windowAlloc[sys] += (binMJ - binAllocated)
+			wByWk[wk] += ww
 		}
 	}
 
-	// Window remainder -> system
-	if binsAllocated < budgetMJ {
-		windowAlloc[sys] += (budgetMJ - binsAllocated)
+	// Ensure system exists as sink.
+	if _, ok := wByWk[sys]; !ok {
+		wByWk[sys] = 0
 	}
 
-	// Apply + emit once per workload
-	systemAdded := windowAlloc[sys]
-	applyWorkloadAllocs(c, component, windowAlloc)
+	// First pass: floor allocations, track fractional remainders.
+	type fracEntry struct {
+		wk   attribution.WorkloadKey
+		frac float64
+	}
+	fracs := make([]fracEntry, 0, len(wByWk))
+
+	alloc := make(map[attribution.WorkloadKey]uint64, len(wByWk))
+	var sumFloor uint64
+
+	for wk, ww := range wByWk {
+		if ww <= 0 {
+			continue
+		}
+		exact := float64(budgetMJ) * (ww / sumW) // exact in mJ
+		floor := uint64(exact)                   // floor
+		alloc[wk] = floor
+		sumFloor += floor
+
+		frac := exact - float64(floor)
+		if frac > 0 {
+			fracs = append(fracs, fracEntry{wk: wk, frac: frac})
+		}
+	}
+
+	// Distribute remaining mJ using largest remainder method (minimizes bias).
+	if sumFloor < budgetMJ && len(fracs) > 0 {
+		rem := budgetMJ - sumFloor
+		sort.Slice(fracs, func(i, j int) bool { return fracs[i].frac > fracs[j].frac })
+
+		// Give +1 mJ to top fractional parts.
+		// If rem > len(fracs), we cycle through (rare; implies huge rem due to empty weights).
+		for rem > 0 && len(fracs) > 0 {
+			for i := 0; i < len(fracs) && rem > 0; i++ {
+				wk := fracs[i].wk
+				alloc[wk] += 1
+				rem--
+			}
+		}
+		sumFloor = budgetMJ // all remainder distributed
+	}
+
+	// If still any gap (e.g., all weights were 0), route to system.
+	// Also ensure exact conservation.
+	var sumAlloc uint64
+	for _, v := range alloc {
+		sumAlloc += v
+	}
+	if sumAlloc < budgetMJ {
+		alloc[sys] += (budgetMJ - sumAlloc)
+	}
+
+	systemAdded := alloc[sys]
+	applyWorkloadAllocs(c, component, alloc)
 	return systemAdded
 }
 
