@@ -21,11 +21,20 @@ type Collector struct {
 	buf  *ring.Sync[ring.BpfTick]
 	mono *clock.Mono
 	exp  bpf.Exporter
+
+	// lastPmuErrLog time.Time
 }
+
+// type pmuErrLogger interface {
+// 	DebugPerfReadErrors()
+// 	DebugDumpPMURaw()
+// }
 
 func New(cfg Config) *Collector {
 	return &Collector{buf: cfg.Buf, mono: cfg.Mono, exp: cfg.Exp}
 }
+
+// type lastErrLog time.Time
 
 // Collect drains per-process deltas from the eBPF map and pushes exactly ONE
 // tick into the ring, containing:
@@ -66,6 +75,14 @@ func (c *Collector) Collect(ctx context.Context, ts time.Time) {
 	// --- (2) Per-process deltas for this tick ---------------------------------------
 	start := time.Now()
 	rows, err := c.exp.CollectProcesses()
+
+	// if time.Since(c.lastPmuErrLog) >= time.Second {
+	// 	if dbg, ok := c.exp.(pmuErrLogger); ok {
+	// 		dbg.DebugPerfReadErrors()
+	// 		dbg.DebugDumpPMURaw()
+	// 	}
+	// 	c.lastPmuErrLog = time.Now()
+	// }
 	if err != nil {
 		klog.Warningf("bpf: CollectProcesses failed: %v", err)
 		return

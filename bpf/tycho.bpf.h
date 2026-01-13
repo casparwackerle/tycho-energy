@@ -90,6 +90,29 @@ struct bpf_perf_event_value {
 	__u64 running;
 };
 
+// struct {
+//   __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+//   __type(key, u32);
+//   __type(value, u64);
+//   __uint(max_entries, 1);
+// } perf_read_err_cycles SEC(".maps");
+
+// struct {
+//   __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+//   __type(key, u32);
+//   __type(value, u64);
+//   __uint(max_entries, 1);
+// } perf_read_err_instr SEC(".maps");
+
+// struct {
+//   __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+//   __type(key, u32);
+//   __type(value, u64);
+//   __uint(max_entries, 1);
+// } perf_read_err_miss SEC(".maps");
+
+
+
 /* ---- Kernel/thread classification ---- */
 /* PF_KTHREAD from linux/sched.h (bit 22). Using a literal keeps us BTF-agnostic. */
 #ifndef PF_KTHREAD
@@ -282,8 +305,15 @@ static inline u64 get_on_cpu_cycles(u32 *cpu_id)
 
 	error = bpf_perf_event_read_value(
 		&cpu_cycles_event_reader, *cpu_id, &c, sizeof(c));
-	if (error)
+	if (error) {
+		// u32 k = 0;
+		// u64 *errcnt = bpf_map_lookup_elem(&perf_read_err_cycles, &k);
+		// if (errcnt) {
+		// 	__sync_fetch_and_add(errcnt, 1);
+		// }
 		return 0;
+	}
+
 
 	val = c.counter;
 	prev_val = bpf_map_lookup_elem(&cpu_cycles, cpu_id);
@@ -293,6 +323,7 @@ static inline u64 get_on_cpu_cycles(u32 *cpu_id)
 	return delta;
 }
 
+
 static inline u64 get_on_cpu_instr(u32 *cpu_id)
 {
 	u64 delta, val, *prev_val;
@@ -301,8 +332,15 @@ static inline u64 get_on_cpu_instr(u32 *cpu_id)
 
 	error = bpf_perf_event_read_value(
 		&cpu_instructions_event_reader, *cpu_id, &c, sizeof(c));
-	if (error)
+	if (error) {
+		// u32 k = 0;
+		// u64 *errcnt = bpf_map_lookup_elem(&perf_read_err_instr, &k);
+		// if (errcnt) {
+		// 	__sync_fetch_and_add(errcnt, 1);
+		// }
 		return 0;
+	}
+
 
 	val = c.counter;
 	prev_val = bpf_map_lookup_elem(&cpu_instructions, cpu_id);
@@ -312,6 +350,7 @@ static inline u64 get_on_cpu_instr(u32 *cpu_id)
 	return delta;
 }
 
+
 static inline u64 get_on_cpu_cache_miss(u32 *cpu_id)
 {
 	u64 delta, val, *prev_val;
@@ -320,8 +359,16 @@ static inline u64 get_on_cpu_cache_miss(u32 *cpu_id)
 
 	error = bpf_perf_event_read_value(
 		&cache_miss_event_reader, *cpu_id, &c, sizeof(c));
-	if (error)
+	if (error) {
+		// u32 k = 0;
+		// u64 *errcnt = bpf_map_lookup_elem(&perf_read_err_miss, &k);
+		// if (errcnt) {
+		// 	__sync_fetch_and_add(errcnt, 1);
+		// }
 		return 0;
+	}
+
+
 	val = c.counter;
 	prev_val = bpf_map_lookup_elem(&cache_miss, cpu_id);
 	delta = calc_delta(prev_val, val);
@@ -329,6 +376,7 @@ static inline u64 get_on_cpu_cache_miss(u32 *cpu_id)
 
 	return delta;
 }
+
 
 static inline void register_new_process_if_not_exist(u32 tgid)
 {
@@ -429,9 +477,17 @@ static inline int do_kepler_sched_switch_trace(
 			 * Instead, create a minimal slot for prev_tgid WITHOUT cgroup_id.
 			 * This allows us to accumulate on the next switch-out safely.
 			 */
+// struct process_metrics_t init = {};
+// init.pid = prev_tgid;   // leave cgroup_id as 0 (unknown)
+// // (We also skip comm here to avoid capturing the next task’s name.)
+// bpf_map_update_elem(&processes, &prev_tgid, &init, BPF_NOEXIST);
+			/* Entry missing (often due to userspace read/delete). Do NOT drop deltas. */
 			struct process_metrics_t init = {};
-			init.pid = prev_tgid;   // leave cgroup_id as 0 (unknown)
-			// (We also skip comm here to avoid capturing the next task’s name.)
+			init.pid = prev_tgid;          /* cgroup_id unknown here, keep 0 */
+			init.process_run_time = buf.process_run_time;
+			init.cpu_cycles       = buf.cpu_cycles;
+			init.cpu_instr        = buf.cpu_instr;
+			init.cache_miss       = buf.cache_miss;
 			bpf_map_update_elem(&processes, &prev_tgid, &init, BPF_NOEXIST);
 		}
 	}

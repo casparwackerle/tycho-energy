@@ -37,7 +37,7 @@ import (
 )
 
 type exporter struct {
-	bpfObjects keplerObjects
+	bpfObjects tychoObjects
 
 	schedSwitchLink  link.Link
 	irqEntryLink     link.Link
@@ -87,7 +87,7 @@ func (e *exporter) attach() error {
 	}
 
 	// Load eBPF Specs
-	specs, err := loadKepler()
+	specs, err := loadTycho()
 	if err != nil {
 		return fmt.Errorf("error loading eBPF specs: %v", err)
 	}
@@ -252,28 +252,82 @@ func (e *exporter) Detach() {
 }
 
 func (e *exporter) CollectProcesses() ([]ProcessMetrics, error) {
-	// Get the max number of entries in the map
+	// Snapshot the current content of the map (batched), then reset only the counter fields.
+	// This avoids the sched_switch "missing entry" delta-drop when userspace deletes keys.
+
 	maxEntries := e.bpfObjects.Processes.MaxEntries()
-	total := 0
-	deleteKeys := make([]uint32, maxEntries)
-	deleteValues := make([]ProcessMetrics, maxEntries)
+	if maxEntries == 0 {
+		return nil, nil
+	}
+
+	keys := make([]uint32, maxEntries)
+	vals := make([]ProcessMetrics, maxEntries)
+
 	var cursor ebpf.MapBatchCursor
+	total := 0
+
 	for {
-		count, err := e.bpfObjects.Processes.BatchLookupAndDelete(
+		n, err := e.bpfObjects.Processes.BatchLookup(
 			&cursor,
-			deleteKeys,
-			deleteValues,
+			keys,
+			vals,
 			&ebpf.BatchOptions{},
 		)
-		total += count
+		total += n
+
+		// BatchLookup returns ErrKeyNotExist when the cursor reaches the end.
 		if errors.Is(err, ebpf.ErrKeyNotExist) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("failed to batch lookup and delete: %v", err)
+			return nil, fmt.Errorf("failed to batch lookup processes: %v", err)
+		}
+
+		// Continue until ErrKeyNotExist.
+		if n == 0 {
+			// Defensive: avoid tight loop on unexpected "0, nil".
+			break
 		}
 	}
-	return deleteValues[:total], nil
+
+	if total == 0 {
+		return nil, nil
+	}
+
+	// Reset counters for the keys we actually read.
+	//
+	// IMPORTANT: keep identity fields, only reset "delta" fields:
+	// - ProcessRunTime, CpuCycles, CpuInstr, CacheMiss, PageCacheHit, VecNr
+	//
+	// We do this per-key Update for correctness and simplicity.
+	// If you later want to optimize, we can switch to BatchUpdate (if supported in your ebpf lib version).
+	for i := 0; i < total; i++ {
+		k := keys[i]
+		v := vals[i]
+
+		// Keep identity. Zero everything else.
+		reset := v
+		reset.ProcessRunTime = 0
+		reset.CpuCycles = 0
+		reset.CpuInstr = 0
+		reset.CacheMiss = 0
+		reset.PageCacheHit = 0
+		reset.VecNr = [10]uint16{}
+
+		// // Write back the reset value. Use UpdateAny to handle concurrent existence reliably.
+		if err := e.bpfObjects.Processes.Update(k, reset, ebpf.UpdateAny); err != nil {
+			// This can happen if the key was evicted/replaced between lookup and update (LRU map),
+			// or if the entry got deleted for other reasons.
+			// We treat it as non-fatal, because the next tick will re-sync.
+			//klog.V(4).Infof("[bpf] reset processes[%d] failed: %v", k, err)
+		}
+	}
+
+	// Return a compact slice of the snapshot we took.
+	// NOTE: this includes entries that may be "all zeros"; your caller can filter if desired.
+	out := make([]ProcessMetrics, total)
+	copy(out, vals[:total])
+	return out, nil
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -321,6 +375,16 @@ func unixOpenPerfEvent(typ, conf, cpuCores int) ([]int, error) {
 		if fd < 0 {
 			return nil, fmt.Errorf("failed to open bpf perf event on cpu %d: %w", i, err)
 		}
+
+		if err := unix.IoctlSetInt(fd, unix.PERF_EVENT_IOC_RESET, 0); err != nil {
+			unix.Close(fd)
+			return nil, fmt.Errorf("perf reset failed on cpu %d: %w", i, err)
+		}
+		if err := unix.IoctlSetInt(fd, unix.PERF_EVENT_IOC_ENABLE, 0); err != nil {
+			unix.Close(fd)
+			return nil, fmt.Errorf("perf enable failed on cpu %d: %w", i, err)
+		}
+
 		fds = append(fds, fd)
 	}
 	return fds, nil
@@ -414,3 +478,102 @@ func createHardwarePerfEvents(cpuInstructionsMap, cpuCyclesMap, cacheMissMap *eb
 	}
 	return events, nil
 }
+
+// // DebugPerfReadErrors logs cumulative perf_event_read errors from BPF.
+// // Call this occasionally (e.g., once per second), not per tick.
+// func (e *exporter) DebugPerfReadErrors() {
+// 	if e == nil {
+// 		return
+// 	}
+// 	// Defensive: maps can be nil if object load/assign didn't include them.
+// 	if e.bpfObjects.PerfReadErrCycles == nil || e.bpfObjects.PerfReadErrInstr == nil || e.bpfObjects.PerfReadErrMiss == nil {
+// 		klog.Warningf("[bpf][pmu] error maps missing: cycles=%v instr=%v miss=%v",
+// 			e.bpfObjects.PerfReadErrCycles != nil,
+// 			e.bpfObjects.PerfReadErrInstr != nil,
+// 			e.bpfObjects.PerfReadErrMiss != nil,
+// 		)
+// 		return
+// 	}
+
+// 	sumPerCPUArray0 := func(m *ebpf.Map) uint64 {
+// 		if m == nil {
+// 			return 0
+// 		}
+
+// 		numCPU := getCPUCores()
+// 		if numCPU <= 0 {
+// 			numCPU = runtime.NumCPU()
+// 		}
+// 		if numCPU <= 0 {
+// 			numCPU = 1
+// 		}
+
+// 		key := uint32(0)
+// 		vals := make([]uint64, numCPU) // per-cpu values
+
+// 		if err := m.Lookup(key, &vals); err != nil {
+// 			klog.Warningf("[bpf][pmu] lookup percpu err map failed: %v", err)
+// 			return 0
+// 		}
+
+// 		var total uint64
+// 		for i := 0; i < len(vals); i++ {
+// 			total += vals[i]
+// 		}
+// 		return total
+// 	}
+
+// 	errCycles := sumPerCPUArray0(e.bpfObjects.PerfReadErrCycles)
+// 	errInstr := sumPerCPUArray0(e.bpfObjects.PerfReadErrInstr)
+// 	errMiss := sumPerCPUArray0(e.bpfObjects.PerfReadErrMiss)
+
+// 	klog.Infof("[bpf][pmu] perf_event_read errors: cycles=%d instr=%d miss=%d", errCycles, errInstr, errMiss)
+
+// }
+
+// // DebugDumpPMURaw dumps a few entries from the raw per-CPU ARRAY maps that store
+// // the last read absolute PMU counter values (not deltas). Call e.g. once/sec.
+// func (e *exporter) DebugDumpPMURaw() {
+// 	if e == nil {
+// 		return
+// 	}
+// 	if e.bpfObjects.CpuInstructions == nil || e.bpfObjects.CpuCycles == nil {
+// 		klog.Warningf("[bpf][pmu] raw maps missing: instr=%v cycles=%v",
+// 			e.bpfObjects.CpuInstructions != nil,
+// 			e.bpfObjects.CpuCycles != nil,
+// 		)
+// 		return
+// 	}
+
+// 	numCPU := getCPUCores()
+// 	if numCPU <= 0 {
+// 		numCPU = runtime.NumCPU()
+// 	}
+// 	if numCPU <= 0 {
+// 		numCPU = 1
+// 	}
+
+// 	// Print only first few CPUs to keep logs readable.
+// 	limit := 8
+// 	if numCPU < limit {
+// 		limit = numCPU
+// 	}
+
+// 	readU64 := func(m *ebpf.Map, cpu int) uint64 {
+// 		var v uint64
+// 		k := uint32(cpu)
+// 		if err := m.Lookup(k, &v); err != nil {
+// 			klog.Warningf("[bpf][pmu] lookup raw map failed cpu=%d: %v", cpu, err)
+// 			return 0
+// 		}
+// 		return v
+// 	}
+
+// 	msg := "[bpf][pmu] raw last counters:"
+// 	for cpu := 0; cpu < limit; cpu++ {
+// 		instr := readU64(e.bpfObjects.CpuInstructions, cpu)
+// 		cyc := readU64(e.bpfObjects.CpuCycles, cpu)
+// 		msg += fmt.Sprintf(" cpu%d(instr=%d cycles=%d)", cpu, instr, cyc)
+// 	}
+// 	klog.Info(msg)
+// }

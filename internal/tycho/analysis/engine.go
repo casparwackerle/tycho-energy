@@ -67,7 +67,7 @@ func (e *Engine) Collect(ctx context.Context, _ time.Time) {
 		Meta:    e.meta,
 	}
 
-	klog.V(2).Infof("[analysis] cycle now=%d window=%s", nowMono, win.String())
+	//klog.V(2).Infof("[analysis] cycle now=%d window=%s", nowMono, win.String())
 
 	plan := e.planner.BuildPlan(cycle)
 	if plan == nil {

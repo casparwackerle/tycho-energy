@@ -2,7 +2,6 @@
 package analysismetrics
 
 import (
-	"fmt"
 	"sort"
 	"time"
 
@@ -11,7 +10,6 @@ import (
 	analysisctx "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/context"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/ring"
 	"github.com/casparwackerle/tycho-energy/pkg/config"
-	"k8s.io/klog/v2"
 )
 
 // Output metric family (Prometheus sink prefix "tycho" yields tycho_workload_energy_mj).
@@ -353,16 +351,16 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 		emitDiagCounter(c, MetricAttribResolvedCgroup, "count", nCgroup)
 		emitDiagCounter(c, MetricAttribFallbackSystem, "count", nSystem)
 
-		logAttributionAudit(
-			c,
-			componentRaplPkg, componentRaplDram,
-			pkgBudgetMJ, dramBudgetMJ,
-			wSumPkg, wSumDram,
-			wSysPkg, wSysDram,
-			wByWkPkg, wByWkDram,
-			examplePIDs,
-			nProcID, nCgroup, nSystem,
-		)
+		// logAttributionAudit(
+		// 	c,
+		// 	componentRaplPkg, componentRaplDram,
+		// 	pkgBudgetMJ, dramBudgetMJ,
+		// 	wSumPkg, wSumDram,
+		// 	wSysPkg, wSysDram,
+		// 	wByWkPkg, wByWkDram,
+		// 	examplePIDs,
+		// 	nProcID, nCgroup, nSystem,
+		// )
 	}
 
 	return nil
@@ -844,101 +842,101 @@ func gcAttributionWorkloads(
 
 // --- diagnostics-only audit logging (no Prometheus series) --------------------
 
-type wkWeight struct {
-	wk wk
-	v  float64
-}
+// type wkWeight struct {
+// 	wk wk
+// 	v  float64
+// }
 
-func topKWeights(m map[wk]float64, k int) []wkWeight {
-	if k <= 0 {
-		return nil
-	}
-	out := make([]wkWeight, 0, len(m))
-	for kk, vv := range m {
-		if vv <= 0 {
-			continue
-		}
-		out = append(out, wkWeight{wk: kk, v: vv})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].v > out[j].v })
-	if len(out) > k {
-		out = out[:k]
-	}
-	return out
-}
+// func topKWeights(m map[wk]float64, k int) []wkWeight {
+// 	if k <= 0 {
+// 		return nil
+// 	}
+// 	out := make([]wkWeight, 0, len(m))
+// 	for kk, vv := range m {
+// 		if vv <= 0 {
+// 			continue
+// 		}
+// 		out = append(out, wkWeight{wk: kk, v: vv})
+// 	}
+// 	sort.Slice(out, func(i, j int) bool { return out[i].v > out[j].v })
+// 	if len(out) > k {
+// 		out = out[:k]
+// 	}
+// 	return out
+// }
 
-func wkString(wk wk) string {
-	if wk.IsSystem() || (wk.Namespace == "" && wk.Pod == "" && wk.Container == "") {
-		return "__system__"
-	}
-	return wk.Namespace + "/" + wk.Pod + "/" + wk.Container
-}
+// func wkString(wk wk) string {
+// 	if wk.IsSystem() || (wk.Namespace == "" && wk.Pod == "" && wk.Container == "") {
+// 		return "__system__"
+// 	}
+// 	return wk.Namespace + "/" + wk.Pod + "/" + wk.Container
+// }
 
-func logAttributionAudit(
-	c *analysis.Cycle,
-	compPkg string,
-	compDram string,
-	budgetPkgMJ uint64,
-	budgetDramMJ uint64,
-	sumWPkg float64,
-	sumWDram float64,
-	sysWPkg float64,
-	sysWDram float64,
-	wByWkPkg map[wk]float64,
-	wByWkDram map[wk]float64,
-	examplePIDs map[wk][]uint32,
-	nProcID, nCgroup, nSystem uint64,
-) {
-	if c == nil {
-		return
-	}
+// func logAttributionAudit(
+// 	c *analysis.Cycle,
+// 	compPkg string,
+// 	compDram string,
+// 	budgetPkgMJ uint64,
+// 	budgetDramMJ uint64,
+// 	sumWPkg float64,
+// 	sumWDram float64,
+// 	sysWPkg float64,
+// 	sysWDram float64,
+// 	wByWkPkg map[wk]float64,
+// 	wByWkDram map[wk]float64,
+// 	examplePIDs map[wk][]uint32,
+// 	nProcID, nCgroup, nSystem uint64,
+// ) {
+// 	if c == nil {
+// 		return
+// 	}
 
-	sysFracPkg := 0.0
-	if sumWPkg > 0 {
-		sysFracPkg = sysWPkg / sumWPkg
-	}
-	sysFracDram := 0.0
-	if sumWDram > 0 {
-		sysFracDram = sysWDram / sumWDram
-	}
+// 	sysFracPkg := 0.0
+// 	if sumWPkg > 0 {
+// 		sysFracPkg = sysWPkg / sumWPkg
+// 	}
+// 	sysFracDram := 0.0
+// 	if sumWDram > 0 {
+// 		sysFracDram = sysWDram / sumWDram
+// 	}
 
-	topPkg := topKWeights(wByWkPkg, 5)
-	topDram := topKWeights(wByWkDram, 5)
+// 	topPkg := topKWeights(wByWkPkg, 5)
+// 	topDram := topKWeights(wByWkDram, 5)
 
-	formatTop := func(xs []wkWeight) string {
-		if len(xs) == 0 {
-			return "[]"
-		}
-		s := "["
-		for i := range xs {
-			if i > 0 {
-				s += " "
-			}
-			wk := xs[i].wk
-			pids := examplePIDs[wk]
-			s += fmt.Sprintf("%s:%.1f", wkString(wk), xs[i].v)
-			if len(pids) > 0 {
-				s += ":pids="
-				for j := range pids {
-					if j > 0 {
-						s += ","
-					}
-					s += fmt.Sprintf("%d", pids[j])
-				}
-			}
-		}
-		s += "]"
-		return s
-	}
+// 	formatTop := func(xs []wkWeight) string {
+// 		if len(xs) == 0 {
+// 			return "[]"
+// 		}
+// 		s := "["
+// 		for i := range xs {
+// 			if i > 0 {
+// 				s += " "
+// 			}
+// 			wk := xs[i].wk
+// 			pids := examplePIDs[wk]
+// 			s += fmt.Sprintf("%s:%.1f", wkString(wk), xs[i].v)
+// 			if len(pids) > 0 {
+// 				s += ":pids="
+// 				for j := range pids {
+// 					if j > 0 {
+// 						s += ","
+// 					}
+// 					s += fmt.Sprintf("%d", pids[j])
+// 				}
+// 			}
+// 		}
+// 		s += "]"
+// 		return s
+// 	}
 
-	klog.Infof(
-		"[attrib/audit] win=%s budgets_mj{pkg=%d dram=%d} weights{sum_pkg=%.1f sys_frac_pkg=%.3f sum_dram=%.1f sys_frac_dram=%.3f} resolved{procid=%d cgroup=%d system=%d} top_pkg=%s top_dram=%s",
-		c.Window.String(),
-		budgetPkgMJ, budgetDramMJ,
-		sumWPkg, sysFracPkg,
-		sumWDram, sysFracDram,
-		nProcID, nCgroup, nSystem,
-		formatTop(topPkg),
-		formatTop(topDram),
-	)
-}
+// 	klog.Infof(
+// 		"[attrib/audit] win=%s budgets_mj{pkg=%d dram=%d} weights{sum_pkg=%.1f sys_frac_pkg=%.3f sum_dram=%.1f sys_frac_dram=%.3f} resolved{procid=%d cgroup=%d system=%d} top_pkg=%s top_dram=%s",
+// 		c.Window.String(),
+// 		budgetPkgMJ, budgetDramMJ,
+// 		sumWPkg, sysFracPkg,
+// 		sumWDram, sysFracDram,
+// 		nProcID, nCgroup, nSystem,
+// 		formatTop(topPkg),
+// 		formatTop(topDram),
+// 	)
+// }

@@ -108,6 +108,10 @@ type keplerMapSpecs struct {
 	CpuStates                  *ebpf.MapSpec `ebpf:"cpu_states"`
 	PidTimeMap                 *ebpf.MapSpec `ebpf:"pid_time_map"`
 	Processes                  *ebpf.MapSpec `ebpf:"processes"`
+
+	PerfReadErrCycles *ebpf.Map `ebpf:"perf_read_err_cycles"`
+	PerfReadErrInstr  *ebpf.Map `ebpf:"perf_read_err_instr"`
+	PerfReadErrMiss   *ebpf.Map `ebpf:"perf_read_err_miss"`
 }
 
 // keplerObjects contains all objects after they have been loaded into the kernel.
@@ -139,6 +143,10 @@ type keplerMaps struct {
 	CpuStates                  *ebpf.Map `ebpf:"cpu_states"`
 	PidTimeMap                 *ebpf.Map `ebpf:"pid_time_map"`
 	Processes                  *ebpf.Map `ebpf:"processes"`
+
+	PerfReadErrCycles *ebpf.Map `ebpf:"perf_read_err_cycles"`
+	PerfReadErrInstr  *ebpf.Map `ebpf:"perf_read_err_instr"`
+	PerfReadErrMiss   *ebpf.Map `ebpf:"perf_read_err_miss"`
 }
 
 func (m *keplerMaps) Close() error {
@@ -153,6 +161,10 @@ func (m *keplerMaps) Close() error {
 		m.CpuStates,
 		m.PidTimeMap,
 		m.Processes,
+
+		m.PerfReadErrCycles,
+		m.PerfReadErrInstr,
+		m.PerfReadErrMiss,
 	)
 }
 
