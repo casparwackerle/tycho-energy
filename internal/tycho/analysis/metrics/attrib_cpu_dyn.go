@@ -2,6 +2,7 @@
 package analysismetrics
 
 import (
+	"fmt"
 	"sort"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	analysisctx "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/context"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/ring"
 	"github.com/casparwackerle/tycho-energy/pkg/config"
+	"k8s.io/klog/v2"
 )
 
 // Output metric family (Prometheus sink prefix "tycho" yields tycho_workload_energy_mj).
@@ -71,6 +73,8 @@ func (m *CpuDynamicAttributionPerTick) IsEnabled(c *analysis.Cycle) bool {
 // - No overlap/partial-bin scaling. Bins are simply consecutive tick intervals.
 // - Budgets are already emitted as cumulative dynamic energy; we difference them here.
 // NOTE: Requires allocateComponent to be the "single rounding" version (largest remainder) provided earlier.
+
+// Drop-in replacement for (*CpuDynamicAttributionPerTick).Run
 func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 	if c == nil || c.Sink == nil || c.Store == nil || c.State == nil || c.Meta == nil || c.Bpf() == nil || c.Mono == nil {
 		return nil
@@ -82,7 +86,6 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 	delayTicks := c.Mono.TicksForMsCeil(config.BpfDelayMs())
 	wEff := c.EffectiveWindowTicks(delayTicks)
 
-	// Load ticks in [start,end] plus predecessor tick < start.
 	ticks := analysisctx.FilterWindowWithPrevChrono[ring.BpfTick](
 		c.Bpf(),
 		wEff.StartMono,
@@ -92,13 +95,12 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 	if len(ticks) < 2 {
 		return nil
 	}
-
-	// Exclude predecessor tick for "in-window ticks".
 	inWindow := ticks[1:]
 
 	// -------------------------------------------------------------------------
-	// Refresh cgroup index once per cycle (explicit dependency).
-	// Use only in-window ticks for the join (exclude the predecessor tick).
+	// Refresh cgroup index once per cycle.
+	// Keep this call, but make sure the underlying implementation is PID-reuse safe
+	// (see replacement in section B below).
 	// -------------------------------------------------------------------------
 	nowWall := time.Now()
 	attribution.BuildCgroupIndexFromBpfWindow(c.Meta, nowWall, c.NowMono, inWindow)
@@ -113,13 +115,24 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 	}
 
 	// -------------------------------------------------------------------------
-	// Build per-bin workload weight maps using per-tick deltas reconstructed
-	// from monotonic counters at the predecessor tick.
-	// pkg weight: CPUInstr delta
-	// dram weight: CacheMiss delta, with fallback to CPUCycles delta if miss mass is zero.
+	// State-based PMU baseline (NOT prev-tick-only).
+	// This prevents weight loss for first-seen/churning PIDs and handles PID reuse safely
+	// when ProcID (PID+StartJiffies) is available.
 	// -------------------------------------------------------------------------
 	sys := attribution.SystemWorkloadKey()
 
+	baselines := getOrInitPmuBaselines(c)
+	nowMono := c.NowMono
+	if nowMono == 0 {
+		nowMono = c.Window.EndMono
+	}
+	ttlTicks := c.Mono.TicksForDurationCeil(2 * time.Minute)
+
+	// -------------------------------------------------------------------------
+	// Build per-bin workload weight maps using deltas vs state baselines.
+	// pkg weight: CPUInstr delta
+	// dram weight: CacheMiss delta, with fallback to CPUCycles delta if miss mass is zero.
+	// -------------------------------------------------------------------------
 	binPkg := make(attribBins, 0, len(inWindow))
 	binDram := make(attribBins, 0, len(inWindow))
 
@@ -130,35 +143,17 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 	var nProcID, nCgroup, nSystem uint64
 
 	diagEnabled := config.GetAttributionDiagnosticsEnabled()
+
 	var wSumPkg float64
 	var wSumDram float64
 	var wSysPkg float64
 	var wSysDram float64
-
 	wByWkPkg := map[wk]float64{}
 	wByWkDram := map[wk]float64{}
 	examplePIDs := map[wk][]uint32{} // cap to 3 PIDs per workload
 
-	// Iterate bins: for inWindow[k] at ticks[1+k], predecessor is ticks[k]
 	for k := 0; k < len(inWindow); k++ {
 		curr := inWindow[k]
-		prev := ticks[k]
-
-		// predecessor counter map
-		type prevCounters struct {
-			instr uint64
-			cyc   uint64
-			miss  uint64
-		}
-		prevByPID := make(map[uint64]prevCounters, len(prev.Procs))
-		for i := range prev.Procs {
-			p := &prev.Procs[i]
-			prevByPID[p.PID] = prevCounters{
-				instr: p.CPUInstr,
-				cyc:   p.CPUCycles,
-				miss:  p.CacheMiss,
-			}
-		}
 
 		mp := attribBin{w: make(map[wk]float64, 64)}
 		md := attribBin{w: make(map[wk]float64, 64)}
@@ -168,32 +163,61 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 		for i := range curr.Procs {
 			d := &curr.Procs[i]
 
-			pc, okPrev := prevByPID[d.PID]
-			if !okPrev {
-				// Conservative: do not "credit" first-seen PIDs with unknown prior baseline.
+			// Resolve ProcID (PID+StartJiffies) if available. This is the key to PID-reuse safety.
+			procID, _, okProc := attribution.ResolveProcFromCycle(c, d.PID)
+			procPtr := attribution.ProcIDPtr(procID, okProc)
+
+			key := pmuBaselineKey(d.PID, procID, okProc)
+
+			// Load baseline. If first time seen, init baseline and skip crediting this tick.
+			prev, ok := baselines[key]
+			if !ok {
+				baselines[key] = pmuBaseline{
+					Instr:    d.CPUInstr,
+					Cycles:   d.CPUCycles,
+					Misses:   d.CacheMiss,
+					LastSeen: nowMono,
+				}
 				continue
 			}
 
-			// Reconstruct per-tick deltas (guard underflow).
+			// Compute deltas with underflow protection. Underflow => treat as reset/PID reuse; rebase.
 			var dInstr, dCyc, dMiss uint64
-			if d.CPUInstr >= pc.instr {
-				dInstr = d.CPUInstr - pc.instr
+			underflow := false
+
+			if d.CPUInstr >= prev.Instr {
+				dInstr = d.CPUInstr - prev.Instr
+			} else {
+				underflow = true
 			}
-			if d.CPUCycles >= pc.cyc {
-				dCyc = d.CPUCycles - pc.cyc
+			if d.CPUCycles >= prev.Cycles {
+				dCyc = d.CPUCycles - prev.Cycles
+			} else {
+				underflow = true
 			}
-			if d.CacheMiss >= pc.miss {
-				dMiss = d.CacheMiss - pc.miss
+			if d.CacheMiss >= prev.Misses {
+				dMiss = d.CacheMiss - prev.Misses
+			} else {
+				underflow = true
+			}
+
+			// Update baseline to current regardless.
+			baselines[key] = pmuBaseline{
+				Instr:    d.CPUInstr,
+				Cycles:   d.CPUCycles,
+				Misses:   d.CacheMiss,
+				LastSeen: nowMono,
+			}
+
+			// If reset/reuse detected, do not credit this tick (avoid biasing allocation elsewhere).
+			if underflow {
+				continue
 			}
 
 			// If no activity, skip.
 			if dInstr == 0 && dCyc == 0 && dMiss == 0 {
 				continue
 			}
-
-			// Resolve ProcID readiness via Cycle metadata (StartJiffies required).
-			procID, _, okProc := attribution.ResolveProcFromCycle(c, d.PID)
-			procPtr := attribution.ProcIDPtr(procID, okProc)
 
 			// Resolve workload (ProcID preferred, else cgroup fallback).
 			wkKey, okWk := attribution.ResolveWorkload(c.Meta, procPtr, d.CgroupID)
@@ -255,9 +279,25 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 		binDram = append(binDram, md)
 	}
 
+	// Persist updated baselines + GC old entries.
+	gcPmuBaselines(baselines, nowMono, ttlTicks)
+	setPmuBaselines(c, baselines)
+
 	// DRAM fallback (window-level): if miss mass is zero but cycles > 0, rebuild DRAM bins using cycles deltas.
+	// With state-based baselines, "rebuild" is unnecessary. Instead, we just interpret md as misses, and if sumMiss==0,
+	// we should have built md from cycles in the first place. So: rebuild using cycles deltas by re-walking ticks again
+	// is expensive and redundant.
+	//
+	// Minimal safe approach: keep your existing rebuild logic, but it would need to re-compute deltas from baselines too.
+	// To keep this drop-in small: we do NOT rebuild here. We instead choose the DRAM bins to be cycles-based from the start
+	// only when misses appear to be absent. That requires a second pass over the same data.
+	//
+	// For now, keep your window-level fallback behavior, but implement it without prev-tick maps:
 	useCyclesForDram := (sumMiss == 0 && sumCycles > 0)
 	if useCyclesForDram {
+		// Recompute binDram using cycles deltas only, reusing the baselines already updated above is not correct
+		// (it would produce zero). Therefore, we do a second pass using a *separate* baseline map for cycles-only.
+		cycBaselines := getOrInitPmuCycleBaselines(c)
 		binDram = binDram[:0]
 
 		if diagEnabled {
@@ -268,37 +308,36 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 
 		for k := 0; k < len(inWindow); k++ {
 			curr := inWindow[k]
-			prev := ticks[k]
-
-			type prevCounters struct {
-				cyc uint64
-			}
-			prevByPID := make(map[uint64]prevCounters, len(prev.Procs))
-			for i := range prev.Procs {
-				p := &prev.Procs[i]
-				prevByPID[p.PID] = prevCounters{cyc: p.CPUCycles}
-			}
 
 			md := attribBin{w: make(map[wk]float64, 64)}
 			md.w[sys] = 0
 
 			for i := range curr.Procs {
 				d := &curr.Procs[i]
-				pc, okPrev := prevByPID[d.PID]
-				if !okPrev {
+
+				procID, _, okProc := attribution.ResolveProcFromCycle(c, d.PID)
+				procPtr := attribution.ProcIDPtr(procID, okProc)
+				key := pmuBaselineKey(d.PID, procID, okProc)
+
+				prev, ok := cycBaselines[key]
+				if !ok {
+					cycBaselines[key] = pmuCycleBaseline{Cycles: d.CPUCycles, LastSeen: nowMono}
 					continue
 				}
 
-				var dCyc uint64
-				if d.CPUCycles >= pc.cyc {
-					dCyc = d.CPUCycles - pc.cyc
+				if d.CPUCycles < prev.Cycles {
+					// reset/reuse
+					cycBaselines[key] = pmuCycleBaseline{Cycles: d.CPUCycles, LastSeen: nowMono}
+					continue
 				}
+
+				dCyc := d.CPUCycles - prev.Cycles
+				cycBaselines[key] = pmuCycleBaseline{Cycles: d.CPUCycles, LastSeen: nowMono}
+
 				if dCyc == 0 {
 					continue
 				}
 
-				procID, _, okProc := attribution.ResolveProcFromCycle(c, d.PID)
-				procPtr := attribution.ProcIDPtr(procID, okProc)
 				wkKey, okWk := attribution.ResolveWorkload(c.Meta, procPtr, d.CgroupID)
 				if !okWk {
 					wkKey = sys
@@ -319,6 +358,9 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 
 			binDram = append(binDram, md)
 		}
+
+		gcPmuCycleBaselines(cycBaselines, nowMono, ttlTicks)
+		setPmuCycleBaselines(c, cycBaselines)
 	}
 
 	// -------------------------------------------------------------------------
@@ -335,7 +377,6 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 
 	// -------------------------------------------------------------------------
 	// Allocate budgets and emit workload monotonic energy counters.
-	// (allocateComponent must be the corrected, single-rounding implementation.)
 	// -------------------------------------------------------------------------
 	pkgSystemMJ := allocateComponent(c, componentRaplPkg, pkgBudgetMJ, binPkg)
 	dramSystemMJ := allocateComponent(c, componentRaplDram, dramBudgetMJ, binDram)
@@ -350,6 +391,9 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 		emitDiagCounter(c, MetricAttribResolvedProcID, "count", nProcID)
 		emitDiagCounter(c, MetricAttribResolvedCgroup, "count", nCgroup)
 		emitDiagCounter(c, MetricAttribFallbackSystem, "count", nSystem)
+
+		_ = dramSystemMJ
+		_ = pkgSystemMJ
 
 		// logAttributionAudit(
 		// 	c,
@@ -840,103 +884,207 @@ func gcAttributionWorkloads(
 	c.State.Set(idxK, nextIdx)
 }
 
+// --- PMU baselines (state-based) ---------------------------------------------
+
+type pmuBaseline struct {
+	Instr    uint64
+	Cycles   uint64
+	Misses   uint64
+	LastSeen uint64
+}
+
+type pmuCycleBaseline struct {
+	Cycles   uint64
+	LastSeen uint64
+}
+
+func pmuBaselineKey(pid uint64, procID attribution.ProcID, okProc bool) string {
+	// Prefer stable ProcID (PID + StartJiffies) to avoid PID reuse poisoning.
+	if okProc {
+		// Explicitly construct a stable key.
+		// This MUST uniquely identify a process instance.
+		return "pid:" + u64toa(uint64(procID.PID)) +
+			":start:" + u64toa(procID.StartJiffies)
+	}
+
+	// Fallback: PID only (less safe, but still better than prev-tick-only).
+	return "pid:" + u64toa(pid)
+}
+func getOrInitPmuBaselines(c *analysis.Cycle) map[string]pmuBaseline {
+	key := analysis.Key("__attrib_pmu_baselines", nil)
+	if v, ok := c.State.Get(key); ok {
+		if m, ok2 := v.(map[string]pmuBaseline); ok2 && m != nil {
+			return m
+		}
+	}
+	m := make(map[string]pmuBaseline, 4096)
+	c.State.Set(key, m)
+	return m
+}
+
+func setPmuBaselines(c *analysis.Cycle, m map[string]pmuBaseline) {
+	key := analysis.Key("__attrib_pmu_baselines", nil)
+	c.State.Set(key, m)
+}
+
+func gcPmuBaselines(m map[string]pmuBaseline, nowMono uint64, ttlTicks uint64) {
+	if ttlTicks == 0 || nowMono == 0 {
+		return
+	}
+	for k, v := range m {
+		if v.LastSeen == 0 {
+			continue
+		}
+		if nowMono > v.LastSeen && (nowMono-v.LastSeen) > ttlTicks {
+			delete(m, k)
+		}
+	}
+}
+
+// cycles-only baselines for DRAM fallback pass
+func getOrInitPmuCycleBaselines(c *analysis.Cycle) map[string]pmuCycleBaseline {
+	key := analysis.Key("__attrib_pmu_cycle_baselines", nil)
+	if v, ok := c.State.Get(key); ok {
+		if m, ok2 := v.(map[string]pmuCycleBaseline); ok2 && m != nil {
+			return m
+		}
+	}
+	m := make(map[string]pmuCycleBaseline, 4096)
+	c.State.Set(key, m)
+	return m
+}
+
+func setPmuCycleBaselines(c *analysis.Cycle, m map[string]pmuCycleBaseline) {
+	key := analysis.Key("__attrib_pmu_cycle_baselines", nil)
+	c.State.Set(key, m)
+}
+
+func gcPmuCycleBaselines(m map[string]pmuCycleBaseline, nowMono uint64, ttlTicks uint64) {
+	if ttlTicks == 0 || nowMono == 0 {
+		return
+	}
+	for k, v := range m {
+		if v.LastSeen == 0 {
+			continue
+		}
+		if nowMono > v.LastSeen && (nowMono-v.LastSeen) > ttlTicks {
+			delete(m, k)
+		}
+	}
+}
+
+// tiny u64 -> string without fmt import (keep file lean)
+func u64toa(v uint64) string {
+	if v == 0 {
+		return "0"
+	}
+	var buf [32]byte
+	i := len(buf)
+	for v > 0 {
+		i--
+		buf[i] = byte('0' + (v % 10))
+		v /= 10
+	}
+	return string(buf[i:])
+}
+
 // --- diagnostics-only audit logging (no Prometheus series) --------------------
 
-// type wkWeight struct {
-// 	wk wk
-// 	v  float64
-// }
+type wkWeight struct {
+	wk wk
+	v  float64
+}
 
-// func topKWeights(m map[wk]float64, k int) []wkWeight {
-// 	if k <= 0 {
-// 		return nil
-// 	}
-// 	out := make([]wkWeight, 0, len(m))
-// 	for kk, vv := range m {
-// 		if vv <= 0 {
-// 			continue
-// 		}
-// 		out = append(out, wkWeight{wk: kk, v: vv})
-// 	}
-// 	sort.Slice(out, func(i, j int) bool { return out[i].v > out[j].v })
-// 	if len(out) > k {
-// 		out = out[:k]
-// 	}
-// 	return out
-// }
+func topKWeights(m map[wk]float64, k int) []wkWeight {
+	if k <= 0 {
+		return nil
+	}
+	out := make([]wkWeight, 0, len(m))
+	for kk, vv := range m {
+		if vv <= 0 {
+			continue
+		}
+		out = append(out, wkWeight{wk: kk, v: vv})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].v > out[j].v })
+	if len(out) > k {
+		out = out[:k]
+	}
+	return out
+}
 
-// func wkString(wk wk) string {
-// 	if wk.IsSystem() || (wk.Namespace == "" && wk.Pod == "" && wk.Container == "") {
-// 		return "__system__"
-// 	}
-// 	return wk.Namespace + "/" + wk.Pod + "/" + wk.Container
-// }
+func wkString(wk wk) string {
+	if wk.IsSystem() || (wk.Namespace == "" && wk.Pod == "" && wk.Container == "") {
+		return "__system__"
+	}
+	return wk.Namespace + "/" + wk.Pod + "/" + wk.Container
+}
 
-// func logAttributionAudit(
-// 	c *analysis.Cycle,
-// 	compPkg string,
-// 	compDram string,
-// 	budgetPkgMJ uint64,
-// 	budgetDramMJ uint64,
-// 	sumWPkg float64,
-// 	sumWDram float64,
-// 	sysWPkg float64,
-// 	sysWDram float64,
-// 	wByWkPkg map[wk]float64,
-// 	wByWkDram map[wk]float64,
-// 	examplePIDs map[wk][]uint32,
-// 	nProcID, nCgroup, nSystem uint64,
-// ) {
-// 	if c == nil {
-// 		return
-// 	}
+func logAttributionAudit(
+	c *analysis.Cycle,
+	compPkg string,
+	compDram string,
+	budgetPkgMJ uint64,
+	budgetDramMJ uint64,
+	sumWPkg float64,
+	sumWDram float64,
+	sysWPkg float64,
+	sysWDram float64,
+	wByWkPkg map[wk]float64,
+	wByWkDram map[wk]float64,
+	examplePIDs map[wk][]uint32,
+	nProcID, nCgroup, nSystem uint64,
+) {
+	if c == nil {
+		return
+	}
 
-// 	sysFracPkg := 0.0
-// 	if sumWPkg > 0 {
-// 		sysFracPkg = sysWPkg / sumWPkg
-// 	}
-// 	sysFracDram := 0.0
-// 	if sumWDram > 0 {
-// 		sysFracDram = sysWDram / sumWDram
-// 	}
+	sysFracPkg := 0.0
+	if sumWPkg > 0 {
+		sysFracPkg = sysWPkg / sumWPkg
+	}
+	sysFracDram := 0.0
+	if sumWDram > 0 {
+		sysFracDram = sysWDram / sumWDram
+	}
 
-// 	topPkg := topKWeights(wByWkPkg, 5)
-// 	topDram := topKWeights(wByWkDram, 5)
+	topPkg := topKWeights(wByWkPkg, 5)
+	topDram := topKWeights(wByWkDram, 5)
 
-// 	formatTop := func(xs []wkWeight) string {
-// 		if len(xs) == 0 {
-// 			return "[]"
-// 		}
-// 		s := "["
-// 		for i := range xs {
-// 			if i > 0 {
-// 				s += " "
-// 			}
-// 			wk := xs[i].wk
-// 			pids := examplePIDs[wk]
-// 			s += fmt.Sprintf("%s:%.1f", wkString(wk), xs[i].v)
-// 			if len(pids) > 0 {
-// 				s += ":pids="
-// 				for j := range pids {
-// 					if j > 0 {
-// 						s += ","
-// 					}
-// 					s += fmt.Sprintf("%d", pids[j])
-// 				}
-// 			}
-// 		}
-// 		s += "]"
-// 		return s
-// 	}
+	formatTop := func(xs []wkWeight) string {
+		if len(xs) == 0 {
+			return "[]"
+		}
+		s := "["
+		for i := range xs {
+			if i > 0 {
+				s += " "
+			}
+			wk := xs[i].wk
+			pids := examplePIDs[wk]
+			s += fmt.Sprintf("%s:%.1f", wkString(wk), xs[i].v)
+			if len(pids) > 0 {
+				s += ":pids="
+				for j := range pids {
+					if j > 0 {
+						s += ","
+					}
+					s += fmt.Sprintf("%d", pids[j])
+				}
+			}
+		}
+		s += "]"
+		return s
+	}
 
-// 	klog.Infof(
-// 		"[attrib/audit] win=%s budgets_mj{pkg=%d dram=%d} weights{sum_pkg=%.1f sys_frac_pkg=%.3f sum_dram=%.1f sys_frac_dram=%.3f} resolved{procid=%d cgroup=%d system=%d} top_pkg=%s top_dram=%s",
-// 		c.Window.String(),
-// 		budgetPkgMJ, budgetDramMJ,
-// 		sumWPkg, sysFracPkg,
-// 		sumWDram, sysFracDram,
-// 		nProcID, nCgroup, nSystem,
-// 		formatTop(topPkg),
-// 		formatTop(topDram),
-// 	)
-// }
+	klog.Infof(
+		"[attrib/audit] win=%s budgets_mj{pkg=%d dram=%d} weights{sum_pkg=%.1f sys_frac_pkg=%.3f sum_dram=%.1f sys_frac_dram=%.3f} resolved{procid=%d cgroup=%d system=%d} top_pkg=%s top_dram=%s",
+		c.Window.String(),
+		budgetPkgMJ, budgetDramMJ,
+		sumWPkg, sysFracPkg,
+		sumWDram, sysFracDram,
+		nProcID, nCgroup, nSystem,
+		formatTop(topPkg),
+		formatTop(topDram),
+	)
+}

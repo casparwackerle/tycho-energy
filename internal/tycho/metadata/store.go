@@ -3,6 +3,8 @@ package metadata
 import (
 	"sync"
 	"time"
+
+	"github.com/casparwackerle/tycho-energy/pkg/utils"
 )
 
 // Store holds the in-memory metadata caches for processes, containers, and pods.
@@ -254,9 +256,14 @@ func (s *Store) GC(now time.Time) (droppedProcs, droppedContainers, droppedPods 
 // UpsertCgroupMapping inserts or refreshes a cgroupID -> containerID mapping.
 // This is best-effort and may be overwritten; it is GC'd via LastSeenWall.
 func (s *Store) UpsertCgroupMapping(cgroupID uint64, containerID string, nowMono uint64, nowWall time.Time) {
-	if cgroupID == 0 || containerID == "" {
+	// Reject non-attributable IDs (0 = missing, 1 = root/default/sentinel).
+	if s == nil || cgroupID <= 1 {
 		return
 	}
+	if containerID == "" || containerID == utils.SystemProcessName {
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -272,23 +279,25 @@ func (s *Store) UpsertCgroupMapping(cgroupID uint64, containerID string, nowMono
 	}
 
 	// Update container ID opportunistically (best-effort).
-	if containerID != "" {
-		old.ContainerID = containerID
-	}
+	// Never overwrite with empty/system values (already filtered above).
+	old.ContainerID = containerID
+
+	// Refresh timestamps.
 	old.LastSeenMono = nowMono
 	old.LastSeenWall = nowWall
 }
 
 // LookupContainerIDByCgroupID returns the container ID associated with a cgroup ID, if present.
 func (s *Store) LookupContainerIDByCgroupID(cgroupID uint64) (string, bool) {
-	if cgroupID == 0 {
+	if s == nil || cgroupID <= 1 {
 		return "", false
 	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	ent, ok := s.cgroups[cgroupID]
-	if !ok || ent == nil || ent.ContainerID == "" {
+	if !ok || ent == nil || ent.ContainerID == "" || ent.ContainerID == utils.SystemProcessName {
 		return "", false
 	}
 	return ent.ContainerID, true
