@@ -14,9 +14,11 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// Output metric family (Prometheus sink prefix "tycho" yields tycho_workload_energy_mj).
+// Output metric family (Prometheus sink prefix "tycho" yields tycho_*).
 const (
-	MetricWorkloadEnergyMJ analysis.MetricID = "workload_energy_mj"
+	// NEW (schema-aligned with tycho_rapl_energy_mj):
+	// tycho_workload_rapl_energy_mj{domain,kind,source,namespace,pod,container}
+	MetricWorkloadRaplEnergyMJ analysis.MetricID = "workload_rapl_energy_mj"
 
 	// Diag-only (low cardinality).
 	MetricAttribBinsTotal      analysis.MetricID = "attrib_bins_total"
@@ -31,8 +33,11 @@ const (
 
 const (
 	attribKindDynamic = "dynamic"
-	componentRaplPkg  = "rapl_pkg"
-	componentRaplDram = "rapl_dram"
+
+	raplDomainPkg    = "pkg"
+	raplDomainCore   = "core"
+	raplDomainUncore = "uncore"
+	raplDomainDram   = "dram"
 )
 
 type wk = attribution.WorkloadKey
@@ -43,14 +48,6 @@ type attribBin struct {
 }
 
 type attribBins []attribBin
-
-type attribSeriesRef struct {
-	Component string
-	Kind      string
-	Namespace string
-	Pod       string
-	Container string
-}
 
 type CpuDynamicAttributionPerTick struct {
 	// No config yet; keep slice minimal.
@@ -109,11 +106,15 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 	// Obtain per-window dynamic energy budgets (authoritative).
 	// -------------------------------------------------------------------------
 	pkgBudgetMJ, pkgBudgetOK := raplDynamicDeltaBudgetMJ(c, "pkg")
+	coreBudgetMJ, coreBudgetOK := raplDynamicDeltaBudgetMJ(c, "core")
+	uncoreBudgetMJ, uncoreBudgetOK := raplDynamicDeltaBudgetMJ(c, "uncore")
 	dramBudgetMJ, dramBudgetOK := raplDynamicDeltaBudgetMJ(c, "dram")
-	if !pkgBudgetOK && !dramBudgetOK {
+
+	// If none of the dynamic RAPL series exist / are available, nothing to do.
+	// (When some domains are missing, budgets stay 0 and we still emit 0 for __system__.)
+	if !pkgBudgetOK && !coreBudgetOK && !uncoreBudgetOK && !dramBudgetOK {
 		return nil
 	}
-
 	// -------------------------------------------------------------------------
 	// State-based PMU baseline (NOT prev-tick-only).
 	// This prevents weight loss for first-seen/churning PIDs and handles PID reuse safely
@@ -378,34 +379,35 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 	// -------------------------------------------------------------------------
 	// Allocate budgets and emit workload monotonic energy counters.
 	// -------------------------------------------------------------------------
-	pkgSystemMJ := allocateComponent(c, componentRaplPkg, pkgBudgetMJ, binPkg)
-	dramSystemMJ := allocateComponent(c, componentRaplDram, dramBudgetMJ, binDram)
+	allocPkg := applyWorkloadRaplAllocs(c, raplDomainPkg, pkgBudgetMJ, binPkg)
+	allocCore := applyWorkloadRaplAllocs(c, raplDomainCore, coreBudgetMJ, binPkg)
+	allocUncore := applyWorkloadRaplAllocs(c, raplDomainUncore, uncoreBudgetMJ, binPkg)
+	allocDram := applyWorkloadRaplAllocs(c, raplDomainDram, dramBudgetMJ, binDram)
 
 	// -------------------------------------------------------------------------
 	// Diagnostics.
 	// -------------------------------------------------------------------------
 	if diagEnabled {
-		emitWeightDiag(c, componentRaplPkg, binPkg, pkgBudgetMJ, pkgSystemMJ)
-		emitWeightDiag(c, componentRaplDram, binDram, dramBudgetMJ, dramSystemMJ)
+		emitWeightDiagDomain(c, raplDomainPkg, binPkg, pkgBudgetMJ, allocPkg)
+		emitWeightDiagDomain(c, raplDomainCore, binPkg, coreBudgetMJ, allocCore)
+		emitWeightDiagDomain(c, raplDomainUncore, binPkg, uncoreBudgetMJ, allocUncore)
+		emitWeightDiagDomain(c, raplDomainDram, binDram, dramBudgetMJ, allocDram)
 
 		emitDiagCounter(c, MetricAttribResolvedProcID, "count", nProcID)
 		emitDiagCounter(c, MetricAttribResolvedCgroup, "count", nCgroup)
 		emitDiagCounter(c, MetricAttribFallbackSystem, "count", nSystem)
-
-		_ = dramSystemMJ
-		_ = pkgSystemMJ
-
-		// logAttributionAudit(
-		// 	c,
-		// 	componentRaplPkg, componentRaplDram,
-		// 	pkgBudgetMJ, dramBudgetMJ,
-		// 	wSumPkg, wSumDram,
-		// 	wSysPkg, wSysDram,
-		// 	wByWkPkg, wByWkDram,
-		// 	examplePIDs,
-		// 	nProcID, nCgroup, nSystem,
-		// )
 	}
+
+	// logAttributionAudit(
+	// 	c,
+	// 	"rapl_pkg", "rapl_dram",
+	// 	pkgBudgetMJ, dramBudgetMJ,
+	// 	wSumPkg, wSumDram,
+	// 	wSysPkg, wSysDram,
+	// 	wByWkPkg, wByWkDram,
+	// 	examplePIDs,
+	// 	nProcID, nCgroup, nSystem,
+	// )
 
 	return nil
 }
@@ -441,46 +443,217 @@ func raplDynamicDeltaBudgetMJ(c *analysis.Cycle, domain string) (uint64, bool) {
 	return uint64(d + 0.5), true
 }
 
-// allocateComponent performs the two-stage allocation for one component budget.
-// It guarantees conservation exactly in integer mJ:
-//
-//	sum_alloc == budgetMJ, with all remainder routed to __system__.
-//
-// It updates monotonic workload counters in state and emits tycho_workload_energy_mj points
-// ONCE per workload per cycle (not per bin).
-//
-// Returns the system-allocated amount (mJ) for system fraction diagnostics.
-func allocateComponent(
-	c *analysis.Cycle,
-	component string,
-	budgetMJ uint64,
-	bins attribBins,
-) uint64 {
-	if c == nil || c.Sink == nil || c.State == nil {
-		return 0
-	}
+type raplSeriesRef struct {
+	Domain    string
+	Kind      string
+	Source    string
+	Namespace string
+	Pod       string
+	Container string
+}
 
+// applyWorkloadRaplAllocs allocates a domain budget using bins and emits
+// tycho_workload_rapl_energy_mj{domain,kind,source,namespace,pod,container} as a monotonic counter.
+//
+// Missing domains are handled by emitting a single __system__ series with value 0 (or the allocated amount).
+func applyWorkloadRaplAllocs(c *analysis.Cycle, domain string, budgetMJ uint64, bins attribBins) map[attribution.WorkloadKey]uint64 {
 	sys := attribution.SystemWorkloadKey()
 
-	// Always emit system series even if budget is 0.
-	if budgetMJ == 0 {
-		applyWorkloadAllocs(c, component, map[attribution.WorkloadKey]uint64{sys: 0})
-		return 0
+	// Always return a valid map (even on nil cycle).
+	if c == nil || c.Sink == nil || c.State == nil {
+		return map[attribution.WorkloadKey]uint64{sys: 0}
 	}
 
-	// Window total weight (sum of bin totals).
+	// Allocate (conserving exactly).
+	alloc := allocateComponentToMap(budgetMJ, bins)
+
+	// Ensure system always present.
+	if _, ok := alloc[sys]; !ok {
+		alloc[sys] = 0
+	}
+
+	now := c.NowMono
+	if now == 0 {
+		now = c.Window.EndMono
+	}
+
+	ttlTicks := uint64(0)
+	if c.Mono != nil {
+		ttlTicks = c.Mono.TicksForDurationCeil(2 * time.Minute)
+	}
+
+	// Index in state so we can GC without StateStore iteration.
+	idxKey := analysis.Key("__attrib_rapl_series_index", analysis.Labels{
+		"domain": domain,
+		"kind":   attribKindDynamic,
+		"source": raplSource,
+	})
+	var index []raplSeriesRef
+	if v, ok := c.State.Get(idxKey); ok {
+		if vv, ok2 := v.([]raplSeriesRef); ok2 {
+			index = vv
+		}
+	}
+	if index == nil {
+		index = []raplSeriesRef{}
+	}
+
+	active := make(map[raplSeriesRef]struct{}, len(alloc))
+
+	for wk, deltaMJ := range alloc {
+		if wk.IsZero() {
+			wk = sys
+		}
+
+		ref := raplSeriesRef{
+			Domain:    domain,
+			Kind:      attribKindDynamic,
+			Source:    raplSource,
+			Namespace: wk.Namespace,
+			Pod:       wk.Pod,
+			Container: wk.Container,
+		}
+		active[ref] = struct{}{}
+
+		// Add to index if missing.
+		found := false
+		for i := range index {
+			if index[i] == ref {
+				found = true
+				break
+			}
+		}
+		if !found {
+			index = append(index, ref)
+		}
+
+		// Monotonic accumulator in state (per workload + domain).
+		stateKey := analysis.Key("__attrib_workload_rapl_energy_u64", analysis.Labels{
+			"domain": domain,
+			"kind":   attribKindDynamic,
+			"source": raplSource,
+			"ns":     wk.Namespace,
+			"pod":    wk.Pod,
+			"ctr":    wk.Container,
+		})
+
+		var prev uint64
+		if prevAny, ok := c.State.Get(stateKey); ok {
+			if u, ok2 := prevAny.(uint64); ok2 {
+				prev = u
+			}
+		}
+		next := prev + deltaMJ
+		c.State.Set(stateKey, next)
+
+		lastSeenKey := analysis.Key("__attrib_workload_rapl_last_seen_u64", analysis.Labels{
+			"domain": domain,
+			"kind":   attribKindDynamic,
+			"source": raplSource,
+			"ns":     wk.Namespace,
+			"pod":    wk.Pod,
+			"ctr":    wk.Container,
+		})
+		c.State.Set(lastSeenKey, now)
+
+		labels := analysis.Labels{
+			"domain":    domain,
+			"kind":      attribKindDynamic,
+			"source":    raplSource,
+			"namespace": wk.Namespace,
+			"pod":       wk.Pod,
+			"container": wk.Container,
+		}
+		c.Sink.Emit(c.Ctx, analysis.Point{
+			Key:    analysis.Key(MetricWorkloadRaplEnergyMJ, labels),
+			Window: c.Window,
+			Unit:   "mJ",
+			Value:  float64(next),
+		})
+	}
+
+	// GC stale series.
+	if ttlTicks > 0 && now > 0 {
+		nextIndex := make([]raplSeriesRef, 0, len(index))
+		for _, ref := range index {
+			if _, ok := active[ref]; ok {
+				nextIndex = append(nextIndex, ref)
+				continue
+			}
+
+			lastSeenKey := analysis.Key("__attrib_workload_rapl_last_seen_u64", analysis.Labels{
+				"domain": ref.Domain,
+				"kind":   ref.Kind,
+				"source": ref.Source,
+				"ns":     ref.Namespace,
+				"pod":    ref.Pod,
+				"ctr":    ref.Container,
+			})
+
+			v, ok := c.State.Get(lastSeenKey)
+			if !ok {
+				nextIndex = append(nextIndex, ref)
+				continue
+			}
+			last, ok := v.(uint64)
+			if !ok {
+				nextIndex = append(nextIndex, ref)
+				continue
+			}
+			if now > last && (now-last) > ttlTicks {
+				lbl := analysis.Labels{
+					"domain":    ref.Domain,
+					"kind":      ref.Kind,
+					"source":    ref.Source,
+					"namespace": ref.Namespace,
+					"pod":       ref.Pod,
+					"container": ref.Container,
+				}
+				c.Sink.Delete(c.Ctx, analysis.Key(MetricWorkloadRaplEnergyMJ, lbl))
+
+				energyKey := analysis.Key("__attrib_workload_rapl_energy_u64", analysis.Labels{
+					"domain": ref.Domain,
+					"kind":   ref.Kind,
+					"source": ref.Source,
+					"ns":     ref.Namespace,
+					"pod":    ref.Pod,
+					"ctr":    ref.Container,
+				})
+				c.State.Delete(energyKey)
+				c.State.Delete(lastSeenKey)
+				continue
+			}
+
+			nextIndex = append(nextIndex, ref)
+		}
+		index = nextIndex
+	}
+
+	c.State.Set(idxKey, index)
+	return alloc
+}
+
+// allocateComponentToMap is the allocator core from allocateComponent, but returns alloc map.
+// It guarantees sum(alloc)==budgetMJ with remainder routed to system.
+func allocateComponentToMap(budgetMJ uint64, bins attribBins) map[attribution.WorkloadKey]uint64 {
+	sys := attribution.SystemWorkloadKey()
+
+	alloc := make(map[attribution.WorkloadKey]uint64, 128)
+	alloc[sys] = 0
+
+	if budgetMJ == 0 {
+		return alloc
+	}
+
 	sumW := 0.0
 	for i := range bins {
 		sumW += bins[i].total
 	}
-
-	// If no weight, allocate full budget to system.
 	if sumW <= 0 {
-		applyWorkloadAllocs(c, component, map[attribution.WorkloadKey]uint64{sys: budgetMJ})
-		return budgetMJ
+		alloc[sys] = budgetMJ
+		return alloc
 	}
 
-	// Accumulate window-level weights per workload across bins.
 	wByWk := make(map[attribution.WorkloadKey]float64, 128)
 	for i := range bins {
 		for wk, ww := range bins[i].w {
@@ -493,56 +666,41 @@ func allocateComponent(
 			wByWk[wk] += ww
 		}
 	}
-
-	// Ensure system exists as sink.
 	if _, ok := wByWk[sys]; !ok {
 		wByWk[sys] = 0
 	}
 
-	// First pass: floor allocations, track fractional remainders.
 	type fracEntry struct {
 		wk   attribution.WorkloadKey
 		frac float64
 	}
 	fracs := make([]fracEntry, 0, len(wByWk))
 
-	alloc := make(map[attribution.WorkloadKey]uint64, len(wByWk))
 	var sumFloor uint64
-
 	for wk, ww := range wByWk {
 		if ww <= 0 {
 			continue
 		}
-		exact := float64(budgetMJ) * (ww / sumW) // exact in mJ
-		floor := uint64(exact)                   // floor
+		exact := float64(budgetMJ) * (ww / sumW)
+		floor := uint64(exact)
 		alloc[wk] = floor
 		sumFloor += floor
-
-		frac := exact - float64(floor)
-		if frac > 0 {
+		if frac := exact - float64(floor); frac > 0 {
 			fracs = append(fracs, fracEntry{wk: wk, frac: frac})
 		}
 	}
 
-	// Distribute remaining mJ using largest remainder method (minimizes bias).
 	if sumFloor < budgetMJ && len(fracs) > 0 {
 		rem := budgetMJ - sumFloor
 		sort.Slice(fracs, func(i, j int) bool { return fracs[i].frac > fracs[j].frac })
-
-		// Give +1 mJ to top fractional parts.
-		// If rem > len(fracs), we cycle through (rare; implies huge rem due to empty weights).
 		for rem > 0 && len(fracs) > 0 {
 			for i := 0; i < len(fracs) && rem > 0; i++ {
-				wk := fracs[i].wk
-				alloc[wk] += 1
+				alloc[fracs[i].wk] += 1
 				rem--
 			}
 		}
-		sumFloor = budgetMJ // all remainder distributed
 	}
 
-	// If still any gap (e.g., all weights were 0), route to system.
-	// Also ensure exact conservation.
 	var sumAlloc uint64
 	for _, v := range alloc {
 		sumAlloc += v
@@ -550,226 +708,7 @@ func allocateComponent(
 	if sumAlloc < budgetMJ {
 		alloc[sys] += (budgetMJ - sumAlloc)
 	}
-
-	systemAdded := alloc[sys]
-	applyWorkloadAllocs(c, component, alloc)
-	return systemAdded
-}
-
-// applyWorkloadAllocs increments monotonic counters in state and emits them once per workload.
-// alloc is the per-window delta allocation in mJ.
-func applyWorkloadAllocs(
-	c *analysis.Cycle,
-	component string,
-	alloc map[attribution.WorkloadKey]uint64,
-) {
-	if c == nil || c.Sink == nil || c.State == nil || c.Mono == nil {
-		return
-	}
-
-	sys := attribution.SystemWorkloadKey()
-
-	// Ensure system always present.
-	if _, ok := alloc[sys]; !ok {
-		alloc[sys] = 0
-	}
-
-	now := c.NowMono
-	if now == 0 {
-		now = c.Window.EndMono
-	}
-
-	// TTL: start conservative, tune later.
-	ttlTicks := c.Mono.TicksForDurationCeil(2 * time.Minute)
-
-	// Load / init index.
-	idxKey := analysis.Key("__attrib_series_index", analysis.Labels{
-		"component": component,
-		"kind":      attribKindDynamic,
-	})
-	var index []attribSeriesRef
-	if v, ok := c.State.Get(idxKey); ok {
-		if vv, ok2 := v.([]attribSeriesRef); ok2 {
-			index = vv
-		}
-	}
-	if index == nil {
-		index = []attribSeriesRef{}
-	}
-
-	// Track active series this cycle + ensure index contains them.
-	active := make(map[attribSeriesRef]struct{}, len(alloc))
-
-	for wk, deltaMJ := range alloc {
-		if wk.IsZero() {
-			wk = sys
-		}
-
-		ref := attribSeriesRef{
-			Component: component,
-			Kind:      attribKindDynamic,
-			Namespace: wk.Namespace,
-			Pod:       wk.Pod,
-			Container: wk.Container,
-		}
-		active[ref] = struct{}{}
-
-		// Add to index if missing (linear scan is OK at your scale; can optimize later).
-		found := false
-		for i := range index {
-			if index[i] == ref {
-				found = true
-				break
-			}
-		}
-		if !found {
-			index = append(index, ref)
-		}
-
-		// Monotonic accumulator in state (per workload + component).
-		stateKey := analysis.Key("__attrib_workload_energy_u64", analysis.Labels{
-			"component": component,
-			"kind":      attribKindDynamic,
-			"ns":        wk.Namespace,
-			"pod":       wk.Pod,
-			"ctr":       wk.Container,
-		})
-
-		var prev uint64
-		if prevAny, ok := c.State.Get(stateKey); ok {
-			if u, ok2 := prevAny.(uint64); ok2 {
-				prev = u
-			}
-		}
-		next := prev + deltaMJ
-		c.State.Set(stateKey, next)
-
-		// Update last-seen for this series.
-		lastSeenKey := analysis.Key("__attrib_last_seen_u64", analysis.Labels{
-			"component": component,
-			"kind":      attribKindDynamic,
-			"ns":        wk.Namespace,
-			"pod":       wk.Pod,
-			"ctr":       wk.Container,
-		})
-		c.State.Set(lastSeenKey, now)
-
-		// Emit user-facing series.
-		labels := analysis.Labels{
-			"component": component,
-			"kind":      attribKindDynamic,
-			"namespace": wk.Namespace,
-			"pod":       wk.Pod,
-			"container": wk.Container,
-		}
-		c.Sink.Emit(c.Ctx, analysis.Point{
-			Key:    analysis.Key(MetricWorkloadEnergyMJ, labels),
-			Window: c.Window,
-			Unit:   "mJ",
-			Value:  float64(next),
-		})
-	}
-
-	// GC pass: remove stale series (not active, lastSeen too old).
-	if ttlTicks > 0 {
-		nextIndex := make([]attribSeriesRef, 0, len(index))
-		for _, ref := range index {
-			if _, ok := active[ref]; ok {
-				nextIndex = append(nextIndex, ref)
-				continue
-			}
-
-			lastSeenKey := analysis.Key("__attrib_last_seen_u64", analysis.Labels{
-				"component": ref.Component,
-				"kind":      ref.Kind,
-				"ns":        ref.Namespace,
-				"pod":       ref.Pod,
-				"ctr":       ref.Container,
-			})
-			v, ok := c.State.Get(lastSeenKey)
-			if !ok {
-				// No timestamp: keep for now (conservative).
-				nextIndex = append(nextIndex, ref)
-				continue
-			}
-			last, ok := v.(uint64)
-			if !ok {
-				nextIndex = append(nextIndex, ref)
-				continue
-			}
-			if now > last && (now-last) > ttlTicks {
-				// Delete user-facing series.
-				lbl := analysis.Labels{
-					"component": ref.Component,
-					"kind":      ref.Kind,
-					"namespace": ref.Namespace,
-					"pod":       ref.Pod,
-					"container": ref.Container,
-				}
-				c.Sink.Delete(c.Ctx, analysis.Key(MetricWorkloadEnergyMJ, lbl))
-
-				// Delete internal state.
-				energyKey := analysis.Key("__attrib_workload_energy_u64", analysis.Labels{
-					"component": ref.Component,
-					"kind":      ref.Kind,
-					"ns":        ref.Namespace,
-					"pod":       ref.Pod,
-					"ctr":       ref.Container,
-				})
-				c.State.Delete(energyKey)
-				c.State.Delete(lastSeenKey)
-
-				// Do not keep in index.
-				continue
-			}
-
-			// Not stale yet.
-			nextIndex = append(nextIndex, ref)
-		}
-		index = nextIndex
-	}
-
-	// Persist updated index.
-	c.State.Set(idxKey, index)
-}
-
-func emitWeightDiag(
-	c *analysis.Cycle,
-	component string,
-	bins attribBins,
-	budgetMJ uint64,
-	systemAllocMJ uint64,
-) {
-	if c == nil || c.Sink == nil {
-		return
-	}
-	if !config.GetAttributionDiagnosticsEnabled() {
-		return
-	}
-
-	sumW := 0.0
-	for i := range bins {
-		sumW += bins[i].total
-	}
-
-	c.Sink.Emit(c.Ctx, analysis.Point{
-		Key:    analysis.Key(MetricAttribWeightSum, analysis.Labels{"component": component}),
-		Window: c.Window,
-		Unit:   "count",
-		Value:  sumW,
-	})
-
-	frac := 0.0
-	if budgetMJ > 0 {
-		frac = float64(systemAllocMJ) / float64(budgetMJ)
-	}
-
-	c.Sink.Emit(c.Ctx, analysis.Point{
-		Key:    analysis.Key(MetricAttribSystemFraction, analysis.Labels{"component": component}),
-		Window: c.Window,
-		Unit:   "ratio",
-		Value:  clamp01(frac),
-	})
+	return alloc
 }
 
 func emitDiagCounter(c *analysis.Cycle, id analysis.MetricID, unit string, delta uint64) {
@@ -800,89 +739,6 @@ func emitDiagCounter(c *analysis.Cycle, id analysis.MetricID, unit string, delta
 }
 
 // --- churn control ------------------------------------------------------------
-
-// We maintain a small index of known workload series keys in StateStore so we can GC
-// without requiring StateStore iteration.
-func indexKey(component string) analysis.MetricKey {
-	return analysis.Key("__attrib_workload_index", analysis.Labels{
-		"component": component,
-		"kind":      attribKindDynamic,
-	})
-}
-
-func gcAttributionWorkloads(
-	c *analysis.Cycle,
-	component string,
-	ttlTicks uint64,
-	now uint64,
-	activeKeys map[string]struct{},
-) {
-	if c == nil || c.State == nil || c.Sink == nil {
-		return
-	}
-	if ttlTicks == 0 {
-		return
-	}
-
-	// Load index: []string of canonical state keys for "__attrib_workload_energy_u64"
-	idxK := indexKey(component)
-	var idx []string
-	if v, ok := c.State.Get(idxK); ok {
-		if vv, ok2 := v.([]string); ok2 {
-			// shallow copy to avoid accidental mutation
-			idx = append([]string(nil), vv...)
-		}
-	}
-	if idx == nil {
-		idx = []string{}
-	}
-
-	// Rebuild index in-place to drop stale entries.
-	nextIdx := make([]string, 0, len(idx))
-
-	for _, canon := range idx {
-		// Keep if it is active this cycle (avoid flapping deletes)
-		if _, ok := activeKeys[canon]; ok {
-			nextIdx = append(nextIdx, canon)
-			continue
-		}
-
-		// Parse back labels: we can’t reliably parse CanonicalString, so we also store lastSeen
-		// under the same dimensions and keep a parallel key in the index.
-		//
-		// Simpler approach: index stores the LAST-SEEN key canonical string, not energy key.
-		// To avoid breaking your current deployment, we implement a dual-mode:
-		// - If canon starts with "__attrib_workload_last_seen_u64", treat as lastSeen key.
-		// - Else, treat as energy key and derive lastSeen key by swapping MetricID.
-		isLastSeen := false
-		if len(canon) >= len("__attrib_workload_last_seen_u64") && canon[:len("__attrib_workload_last_seen_u64")] == "__attrib_workload_last_seen_u64" {
-			isLastSeen = true
-		}
-
-		var lastSeenKey analysis.MetricKey
-		var energyKey analysis.MetricKey
-
-		if isLastSeen {
-			// This case requires us to reconstitute MetricKey, which we can’t from canon.
-			// Therefore: we do not support this mode without changing index format.
-			// Keep entry to avoid accidental deletions.
-			nextIdx = append(nextIdx, canon)
-			continue
-		}
-
-		// We can’t reconstruct labels from canon either, so we must store labels explicitly.
-		// => To keep this drop-in minimal and safe, we implement the index in a reliable way:
-		// store structured entries instead of strings.
-
-		nextIdx = append(nextIdx, canon)
-		_ = lastSeenKey
-		_ = energyKey
-	}
-
-	// Write back unchanged for now.
-	// (See below: the robust index implementation replacement.)
-	c.State.Set(idxK, nextIdx)
-}
 
 // --- PMU baselines (state-based) ---------------------------------------------
 
@@ -1087,4 +943,53 @@ func logAttributionAudit(
 		formatTop(topPkg),
 		formatTop(topDram),
 	)
+}
+func emitWeightDiagDomain(
+	c *analysis.Cycle,
+	domain string,
+	bins attribBins,
+	budgetMJ uint64,
+	alloc map[attribution.WorkloadKey]uint64,
+) {
+	if c == nil || c.Sink == nil {
+		return
+	}
+	if !config.GetAttributionDiagnosticsEnabled() {
+		return
+	}
+
+	sumW := 0.0
+	for i := range bins {
+		sumW += bins[i].total
+	}
+
+	// IMPORTANT:
+	// Keep label KEY "component" to avoid schema change for existing diag metric IDs.
+	// Only change the label VALUE.
+	lbl := analysis.Labels{"component": "rapl_" + domain}
+
+	c.Sink.Emit(c.Ctx, analysis.Point{
+		Key:    analysis.Key(MetricAttribWeightSum, lbl),
+		Window: c.Window,
+		Unit:   "count",
+		Value:  sumW,
+	})
+
+	sys := attribution.SystemWorkloadKey()
+	systemAllocMJ := uint64(0)
+	if alloc != nil {
+		systemAllocMJ = alloc[sys]
+	}
+
+	frac := 0.0
+	if budgetMJ > 0 {
+		frac = float64(systemAllocMJ) / float64(budgetMJ)
+	}
+
+	c.Sink.Emit(c.Ctx, analysis.Point{
+		Key:    analysis.Key(MetricAttribSystemFraction, lbl),
+		Window: c.Window,
+		Unit:   "ratio",
+		Value:  clamp01(frac),
+	})
 }
