@@ -385,6 +385,17 @@ func (m *CpuDynamicAttributionPerTick) Run(c *analysis.Cycle) error {
 	allocDram := applyWorkloadRaplAllocs(c, raplDomainDram, dramBudgetMJ, binDram)
 
 	// -------------------------------------------------------------------------
+	// Persist per-window dynamic alloc maps for downstream slices (Slice 13E+).
+	// These maps are "window-sticky" and already PID-reuse safe via Slice 13D.
+	// -------------------------------------------------------------------------
+	if c.State != nil {
+		c.State.Set(analysis.Key("__attrib13d_dyn_alloc_u64", analysis.Labels{"domain": raplDomainPkg}), allocPkg)
+		c.State.Set(analysis.Key("__attrib13d_dyn_alloc_u64", analysis.Labels{"domain": raplDomainCore}), allocCore)
+		c.State.Set(analysis.Key("__attrib13d_dyn_alloc_u64", analysis.Labels{"domain": raplDomainUncore}), allocUncore)
+		c.State.Set(analysis.Key("__attrib13d_dyn_alloc_u64", analysis.Labels{"domain": raplDomainDram}), allocDram)
+	}
+
+	// -------------------------------------------------------------------------
 	// Diagnostics.
 	// -------------------------------------------------------------------------
 	if diagEnabled {

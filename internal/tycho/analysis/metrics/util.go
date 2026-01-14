@@ -5,12 +5,14 @@ package analysismetrics
 import (
 	"fmt"
 	"math"
+	"runtime"
 	"sort"
 	"time"
 
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis/fusion"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/clock"
+	"github.com/jaypipes/ghw"
 )
 
 // Diagnostics metric IDs remain separate (unchanged).
@@ -21,6 +23,19 @@ const (
 	MetricIdleModelMode   analysis.MetricID = "idle_model_mode"
 	MetricIdleModelBetaMW analysis.MetricID = "idle_model_beta_mw"
 )
+
+func getCPUCores() int {
+	cores := runtime.NumCPU()
+	if cpu, err := ghw.CPU(ghw.WithDisableWarnings()); err == nil && cpu != nil {
+		if cpu.TotalThreads > 0 {
+			cores = int(cpu.TotalThreads)
+		}
+	}
+	if cores <= 0 {
+		cores = 1
+	}
+	return cores
+}
 
 // getPointValue returns the point value for an exact MetricKey from a PointStore.
 func getPointValue(store *analysis.PointStore, key analysis.MetricKey) float64 {

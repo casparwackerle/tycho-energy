@@ -2,10 +2,7 @@ package analysismetrics
 
 import (
 	"math"
-	"runtime"
 	"time"
-
-	"github.com/jaypipes/ghw"
 
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis"
 	analysisctx "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/context"
@@ -33,19 +30,6 @@ const (
 )
 
 const bpfSource = "ebpf"
-
-func getCPUCores() int {
-	cores := runtime.NumCPU()
-	if cpu, err := ghw.CPU(ghw.WithDisableWarnings()); err == nil && cpu != nil {
-		if cpu.TotalThreads > 0 {
-			cores = int(cpu.TotalThreads)
-		}
-	}
-	if cores <= 0 {
-		cores = 1
-	}
-	return cores
-}
 
 // BpfSystemMetrics emits eBPF-derived system metrics:
 //   - CPU time-share ratios (idle/irq/softirq/active) as window-relative gauges (unit="ratio").

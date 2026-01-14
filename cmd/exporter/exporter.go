@@ -336,6 +336,7 @@ func main() {
 	// Attribution (consumes: BPF ticks + Meta store + rapl dynamic cum energy)
 	if enableRapl && enableBpf {
 		analysisreg.Register(analysismetrics.NewCpuDynamicAttributionPerTick())
+		analysisreg.Register(analysismetrics.NewCpuIdleAllocationWindowV1())
 	}
 
 	// Fusion / residual (independent of workload attribution for now)
