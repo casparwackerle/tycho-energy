@@ -415,7 +415,17 @@ func main() {
 	)
 
 	// Run analysis periodically (Slice 0: 5s cadence).
-	_ = eng.Register("analysis", time.Duration(config.TriggerIntervalSec())*time.Second, true, analysisEng.Collect)
+	analysisCollect := func(ctx context.Context, ts time.Time) {
+		// best-effort metadata refresh at cycle start.
+		// Runs proc/kubelet only if stale; never runs GC; never fails the cycle.
+		if m != nil {
+			m.RefreshIfStale(ctx, ts)
+		}
+		analysisEng.Collect(ctx, ts)
+	}
+
+	_ = eng.Register("analysis", time.Duration(config.TriggerIntervalSec())*time.Second, true, analysisCollect)
+
 	//--------------------------------------------------
 
 	tychoCtx, tychoCancel := context.WithCancel(context.Background())
