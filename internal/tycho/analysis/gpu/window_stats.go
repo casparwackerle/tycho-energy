@@ -1,3 +1,4 @@
+// file: internal/tycho/analysis/gpu/window_stats.go
 package gpu
 
 import (

@@ -1,3 +1,4 @@
+// file: internal/tycho/analysis/gpu/types.go
 package gpu
 
 // PowerObs is a power observation (W) at corrected time (seconds).

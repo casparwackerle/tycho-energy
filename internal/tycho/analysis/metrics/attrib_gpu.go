@@ -3,6 +3,7 @@ package analysismetrics
 import (
 	"math"
 	"sort"
+	"time"
 
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/analysis/attribution"
@@ -17,6 +18,21 @@ import (
 const (
 	MetricWorkloadGpuEnergyMJ analysis.MetricID = "workload_gpu_energy_mj"
 )
+
+// Internal state keys for GPU workload series GC.
+const (
+	metricWorkloadGpuLastSeenU64 analysis.MetricID = "__attrib_workload_gpu_last_seen_u64"
+	metricWorkloadGpuIndex       analysis.MetricID = "__attrib_workload_gpu_series_index"
+)
+
+// gpuSeriesRef identifies one emitted workload series (per GPU UUID and kind).
+type gpuSeriesRef struct {
+	GpuUUID   string
+	Kind      string
+	Namespace string
+	Pod       string
+	Container string
+}
 
 type GpuWorkloadDynamic struct {
 	delayTicks uint64
@@ -59,6 +75,58 @@ func (m *GpuWorkloadDynamic) Run(c *analysis.Cycle) error {
 		return nil
 	}
 	dtWinSec := winEndSec - winStartSec
+
+	// Series TTL GC (mirrors CPU attribution behavior).
+	//
+	// We use a conservative TTL derived from the analysis buffer window.
+	// This is only for deleting *inactive* workload series from the sink/state.
+	ttlSec := config.BufferWindowSec()
+	if ttlSec <= 0 {
+		ttlSec = 90
+	}
+	// Make TTL a bit larger than the buffer window to avoid flapping.
+	ttlTicks := c.Mono.TicksForDurationCeil(time.Duration(ttlSec) * time.Second)
+
+	now := c.Window.EndMono
+
+	// Load series index from state (persistent across cycles).
+	idxKey := analysis.Key(metricWorkloadGpuIndex, nil)
+	var index []gpuSeriesRef
+	if v, ok := c.State.Get(idxKey); ok {
+		if vv, ok := v.([]gpuSeriesRef); ok {
+			index = vv
+		}
+	}
+
+	// Active series in this cycle (used to keep them alive in the index and skip deletion).
+	active := make(map[gpuSeriesRef]struct{}, 128)
+
+	markActive := func(ref gpuSeriesRef) {
+		active[ref] = struct{}{}
+
+		// Ensure it is present in the persistent index.
+		// (Linear scan is fine; cardinality is limited by active containers.)
+		found := false
+		for i := range index {
+			if index[i] == ref {
+				found = true
+				break
+			}
+		}
+		if !found {
+			index = append(index, ref)
+		}
+
+		// Update last-seen tick for TTL GC.
+		lastSeenKey := analysis.Key(metricWorkloadGpuLastSeenU64, analysis.Labels{
+			"gpu_uuid": ref.GpuUUID,
+			"kind":     ref.Kind,
+			"ns":       ref.Namespace,
+			"pod":      ref.Pod,
+			"ctr":      ref.Container,
+		})
+		c.State.Set(lastSeenKey, now)
+	}
 
 	// Dynamic window budget: MetricGpuPowerMW{kind="dynamic"} is mean power (mW) over the window.
 	// Multiply by window duration to get dynamic energy delta (mJ).
@@ -173,6 +241,15 @@ func (m *GpuWorkloadDynamic) Run(c *analysis.Cycle) error {
 	systemDeltaByUUID := map[string]float64{}
 
 	emitCounter := func(uuid, ns, pod, ctr string, delta float64) {
+		// Mark series active and update last-seen (dynamic).
+		markActive(gpuSeriesRef{
+			GpuUUID:   uuid,
+			Kind:      "dynamic",
+			Namespace: ns,
+			Pod:       pod,
+			Container: ctr,
+		})
+
 		labels := analysis.Labels{
 			"gpu_uuid":  uuid,
 			"kind":      "dynamic",
@@ -209,6 +286,15 @@ func (m *GpuWorkloadDynamic) Run(c *analysis.Cycle) error {
 			"pod":       pod,
 			"container": ctr,
 		}
+
+		markActive(gpuSeriesRef{
+			GpuUUID:   uuid,
+			Kind:      kind,
+			Namespace: ns,
+			Pod:       pod,
+			Container: ctr,
+		})
+
 		k := analysis.Key(MetricWorkloadGpuEnergyMJ, labels)
 
 		prevV, _ := c.State.Get(k)
@@ -400,6 +486,72 @@ func (m *GpuWorkloadDynamic) Run(c *analysis.Cycle) error {
 			idleAbs,
 		)
 	}
+
+	// GC stale series (TTL-based). Mirrors CPU attribution behavior.
+	//
+	// We only delete series that:
+	// - are not active this cycle
+	// - are not __system__ (we keep system series always)
+	// - have lastSeen older than ttlTicks
+	if ttlTicks > 0 && now > 0 {
+		nextIndex := make([]gpuSeriesRef, 0, len(index))
+		for _, ref := range index {
+			if _, ok := active[ref]; ok {
+				nextIndex = append(nextIndex, ref)
+				continue
+			}
+
+			// Keep __system__ series always.
+			if ref.Namespace == attribution.SystemNamespace &&
+				ref.Pod == attribution.SystemPod &&
+				ref.Container == attribution.SystemContainer {
+				nextIndex = append(nextIndex, ref)
+				continue
+			}
+
+			lastSeenKey := analysis.Key(metricWorkloadGpuLastSeenU64, analysis.Labels{
+				"gpu_uuid": ref.GpuUUID,
+				"kind":     ref.Kind,
+				"ns":       ref.Namespace,
+				"pod":      ref.Pod,
+				"ctr":      ref.Container,
+			})
+
+			v, ok := c.State.Get(lastSeenKey)
+			if !ok {
+				nextIndex = append(nextIndex, ref)
+				continue
+			}
+			last, ok := v.(uint64)
+			if !ok {
+				nextIndex = append(nextIndex, ref)
+				continue
+			}
+
+			if now > last && (now-last) > ttlTicks {
+				lbl := analysis.Labels{
+					"gpu_uuid":  ref.GpuUUID,
+					"kind":      ref.Kind,
+					"namespace": ref.Namespace,
+					"pod":       ref.Pod,
+					"container": ref.Container,
+				}
+				metricKey := analysis.Key(MetricWorkloadGpuEnergyMJ, lbl)
+				c.Sink.Delete(c.Ctx, metricKey)
+
+				// Remove stored counter and last-seen marker.
+				c.State.Delete(metricKey)
+				c.State.Delete(lastSeenKey)
+				continue
+			}
+
+			nextIndex = append(nextIndex, ref)
+		}
+		index = nextIndex
+	}
+
+	// Persist updated index.
+	c.State.Set(idxKey, index)
 
 	return nil
 }

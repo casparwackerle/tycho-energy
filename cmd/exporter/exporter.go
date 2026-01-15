@@ -326,6 +326,7 @@ func main() {
 	if enableGpu {
 		analysisreg.Register(analysismetrics.NewGpuWindowEnergy(mono))
 		analysisreg.Register(analysismetrics.NewGpuIdleDynamic())
+		analysisreg.Register(analysismetrics.NewGpuWorkloadDynamic(mono))
 	}
 
 	// RAPL split (produces rapl_energy_mj kind=dynamic that attribution consumes)

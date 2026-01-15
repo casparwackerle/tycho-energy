@@ -1,3 +1,4 @@
+// file: internal/tycho/analysis/gpu/windowed_getter.go
 package gpu
 
 import (
