@@ -457,7 +457,7 @@ func main() {
 					g.SetCumEnergyDiag(validMap) // matches gpuCollector signature
 				}
 				klog.V(2).Infof(
-					"TYCHO-CAL: cumulative energy validation done: devices_valid=%d devices_invalid=%d (warmup≈%.0fs)",
+					"TYCHO-CAL: cumulative energy validation done: gpu_devices_with_cumulative_energy=%d gpu_devices_without_cumulative_energy=%d (warmup≈%.0fs)",
 					valid, invalid, warmup.Seconds(),
 				)
 			} else {

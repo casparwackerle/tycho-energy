@@ -260,13 +260,20 @@ func (m *FusionSubstrate) refreshRedfishObs(
 
 	// Candidate search defaults.
 	const (
-		dMinMs          = 0
-		dMaxMs          = 8000
-		dStepMs         = 250
-		maxStepPerCycle = 500 // ms change limit per analysis cycle
+		dMinMs  = 0
+		dMaxMs  = 12000
+		dStepMs = 250
+
+		// Slew rate: stable in steady-state, fast only on detected steps.
+		maxStepPerCycleNormal = 500  // ms change limit per analysis cycle (steady-state)
+		maxStepPerCycleStep   = 3000 // ms change limit per analysis cycle (step-only fast path)
 
 		// Score only most recent part of horizon (better for sharp steps).
 		recentScoreSec = 20.0
+
+		// Step detector threshold on parts power change (mW).
+		// Keep conservative: above noise, below real stress steps. TODO: make configurable if needed.
+		stepTauMW = 20000.0 // 20 W
 	)
 
 	// Candidate list.
@@ -323,6 +330,43 @@ func (m *FusionSubstrate) refreshRedfishObs(
 		}
 	}
 
+	// --- Slice 15: step proxy computed from already-available parts power series ---
+	// DeltaP_parts(t) = |P_parts(t) - P_parts(t-Δ)|, over the most recent scoring region.
+	// We detect a step if max DeltaP_parts exceeds stepTauMW.
+	stepDetected := false
+	stepMaxDeltaMW := 0.0
+
+	if cache.HorizonBins > 1 {
+		// Evaluate over the same "recent" tail we score.
+		recentBins := int(math.Round(recentScoreSec / dtSec))
+		if recentBins < 2 {
+			recentBins = 2
+		}
+		if recentBins > cache.HorizonBins {
+			recentBins = cache.HorizonBins
+		}
+		startIdx := cache.HorizonBins - recentBins
+
+		prevP := -1.0
+		for i := startIdx; i < cache.HorizonBins; i++ {
+			p := (cache.EpkgMJ[i] + cache.EdramMJ[i] + cache.EgpuMJ[i]) / dtSec
+			if !finiteLocal(p) || p < 0 {
+				p = 0
+			}
+			if prevP >= 0 {
+				d := math.Abs(p - prevP)
+				if finiteLocal(d) && d > stepMaxDeltaMW {
+					stepMaxDeltaMW = d
+				}
+			}
+			prevP = p
+		}
+
+		if stepMaxDeltaMW > stepTauMW {
+			stepDetected = true
+		}
+	}
+
 	// Score candidate by extracting obs, then summing deficit over recent obs only.
 	// Search objective uses eps (noise margin).
 	scoreCandidate := func(delayMs int) (score float64, obsOut []fusion.RedfishObs, ok bool) {
@@ -334,7 +378,8 @@ func (m *FusionSubstrate) refreshRedfishObs(
 		rawStart := hStart + dTicks
 		rawEnd := hEnd + dTicks
 
-		obs, n := fusion.ExtractRedfishObs(c, chassis, 0, rawStart, rawEnd, kernel, kernelMs)
+		obs, n := fusion.ExtractRedfishObs(c, chassis, dTicks, rawStart, rawEnd, kernel, kernelMs)
+
 		if n <= 0 || len(obs) == 0 {
 			// Trigger: insufficient Redfish samples.
 			return 0, nil, false
@@ -410,6 +455,12 @@ func (m *FusionSubstrate) refreshRedfishObs(
 	}
 
 	// Rate-limit delay changes.
+	// Slice 15: adaptive slew. Only allow fast movement when a step is detected.
+	maxStepPerCycle := maxStepPerCycleNormal
+	if stepDetected {
+		maxStepPerCycle = maxStepPerCycleStep
+	}
+
 	if prevDelayMs >= 0 && maxStepPerCycle > 0 {
 		lo := prevDelayMs - maxStepPerCycle
 		hi := prevDelayMs + maxStepPerCycle
@@ -428,6 +479,8 @@ func (m *FusionSubstrate) refreshRedfishObs(
 	c.State.Set(prevKey, chosenMs)
 	selDelayMs = chosenMs
 
+	//klog.V(2).Infof("[analysis] fusion redfish: chosen_delay_ms=%d chassis=%q", selDelayMs, chassis)
+
 	// Populate cache.RedfishObs for chosen delay (reuse bestObs if matches).
 	cache.RedfishObs = cache.RedfishObs[:0]
 	var chosenObs []fusion.RedfishObs
@@ -438,7 +491,7 @@ func (m *FusionSubstrate) refreshRedfishObs(
 		dTicks := c.Mono.TicksForMsCeil(chosenMs)
 		rawStart := hStart + dTicks
 		rawEnd := hEnd + dTicks
-		obs, n := fusion.ExtractRedfishObs(c, chassis, 0, rawStart, rawEnd, kernel, kernelMs)
+		obs, n := fusion.ExtractRedfishObs(c, chassis, dTicks, rawStart, rawEnd, kernel, kernelMs)
 		if n > 0 && len(obs) > 0 {
 			chosenObs = obs
 		}
