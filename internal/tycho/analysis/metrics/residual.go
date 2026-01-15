@@ -208,7 +208,7 @@ func (m *Residual) Run(c *analysis.Cycle) error {
 					Key:    analysis.Key(analysis.MetricID(MetricResidualtransientHold), analysis.Labels{"chassis": chassis}),
 					Window: c.Window,
 					Unit:   "count",
-					Value:  float64(hold),
+					Value:  math.Floor(float64(hold)),
 				})
 			}
 		}
@@ -252,71 +252,6 @@ func (m *Residual) Run(c *analysis.Cycle) error {
 			Value:  deficitMW,
 		})
 	}
-
-	// // ---------------------------
-	// // Slice 11B: gated residual idle learning + separate baseline export
-	// // ---------------------------
-
-	// cfg := idle.DefaultConfig()
-	// model := idle.GetOrInitScalar(c.State, "residual", cfg)
-	// if model == nil {
-	// 	return nil
-	// }
-
-	// now := time.Now()
-
-	// // Learn only when window is usable AND residual is meaningful.
-	// // Also: only learn on corrected source (recommended), so warmup never pollutes the baseline.
-	// allowLearn := (source == redfishSourceCorrected) && windowUsable && (resMWClamp >= minLearnMW)
-
-	// // Persisted baseline (state) used for unusable windows.
-	// lastIdleKey := analysis.Key(analysis.MetricID(MetricResidualIdleBaselineMWState), analysis.Labels{"chassis": chassis})
-
-	// getLast := func() (float64, bool) {
-	// 	if v, ok := c.State.Get(lastIdleKey); ok {
-	// 		if f, ok2 := v.(float64); ok2 && f >= 0 && !math.IsNaN(f) && !math.IsInf(f, 0) {
-	// 			return f, true
-	// 		}
-	// 	}
-	// 	return 0, false
-	// }
-	// setLast := func(v float64) {
-	// 	if v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
-	// 		return
-	// 	}
-	// 	c.State.Set(lastIdleKey, v)
-	// }
-
-	// // baselineMW is the *model state* (export separately), independent of clamp.
-	// var baselineMW float64
-
-	// if allowLearn {
-	// 	model.Observe(0.0, resMWClamp, now)
-
-	// 	est, _ := model.Estimate()
-	// 	if est < 0 || math.IsNaN(est) || math.IsInf(est, 0) {
-	// 		est = 0
-	// 	}
-
-	// 	baselineMW = est
-	// 	setLast(baselineMW)
-	// } else {
-	// 	if prev, ok := getLast(); ok {
-	// 		baselineMW = prev
-	// 	} else {
-	// 		baselineMW = 0
-	// 	}
-	// }
-
-	// // Export baseline as a separate diagnostic/model-state metric (accuracy-first, no conservation claim).
-	// baseLabels := analysis.Labels{"chassis": chassis}
-
-	// c.Sink.Emit(c.Ctx, analysis.Point{
-	// 	Key:    analysis.Key(analysis.MetricID(MetricResidualIdleBaselineMW), baseLabels),
-	// 	Window: c.Window,
-	// 	Unit:   "mW",
-	// 	Value:  baselineMW,
-	// })
 
 	// ---------------------------
 	// Slice 11B + Slice 12C: gated residual idle learning (robust against transient dips)
@@ -485,7 +420,7 @@ func (m *Residual) Run(c *analysis.Cycle) error {
 			Key:    analysis.Key(MetricResidualPowerMW, labels),
 			Window: c.Window,
 			Unit:   "mW",
-			Value:  v,
+			Value:  math.Floor(v),
 		})
 	}
 

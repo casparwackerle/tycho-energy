@@ -3,6 +3,7 @@ package analysismetrics
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -983,7 +984,7 @@ func emitWeightDiagDomain(
 		Key:    analysis.Key(MetricAttribWeightSum, lbl),
 		Window: c.Window,
 		Unit:   "count",
-		Value:  sumW,
+		Value:  math.Floor(sumW),
 	})
 
 	sys := attribution.SystemWorkloadKey()

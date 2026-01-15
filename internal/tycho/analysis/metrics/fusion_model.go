@@ -197,13 +197,13 @@ func (m *FusionModel) Run(c *analysis.Cycle) error {
 		Key:    analysis.Key(MetricSystemPowerMW, labels),
 		Window: c.Window,
 		Unit:   "mW",
-		Value:  pMW,
+		Value:  math.Floor(pMW),
 	})
 	c.Sink.Emit(c.Ctx, analysis.Point{
 		Key:    analysis.Key(MetricSystemEnergyMJ, labels),
 		Window: c.Window,
 		Unit:   "mJ",
-		Value:  exportCum,
+		Value:  math.Floor(exportCum),
 	})
 
 	return nil

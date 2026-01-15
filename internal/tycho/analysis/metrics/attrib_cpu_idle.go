@@ -3,6 +3,7 @@ package analysismetrics
 
 import (
 	"bufio"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -332,13 +333,13 @@ func (m *CpuIdleAllocationWindowV1) allocAndEmitDomain(
 			Key:    analysis.Key(MetricIdleAllocWeightSumReq, lbl),
 			Window: c.Window,
 			Unit:   "count",
-			Value:  float64(sumReqW),
+			Value:  math.Floor(float64(sumReqW)),
 		})
 		c.Sink.Emit(c.Ctx, analysis.Point{
 			Key:    analysis.Key(MetricIdleAllocWeightSumOpp, lbl),
 			Window: c.Window,
 			Unit:   "count",
-			Value:  float64(sumOppW),
+			Value:  math.Floor(float64(sumOppW)),
 		})
 	}
 }

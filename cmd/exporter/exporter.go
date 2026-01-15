@@ -322,6 +322,7 @@ func main() {
 	}
 	if enableBpf {
 		analysisreg.Register(analysismetrics.NewBpfSystemMetrics())
+		analysisreg.Register(analysismetrics.NewBpfWorkloadCounters())
 	}
 	if enableGpu {
 		analysisreg.Register(analysismetrics.NewGpuWindowEnergy(mono))

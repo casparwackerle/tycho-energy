@@ -355,7 +355,7 @@ func (m *GpuWindowEnergy) Run(c *analysis.Cycle) error {
 			Key:    analysis.Key(analysis.MetricID(MetricGpuEnergyMJ), labelsTotal),
 			Window: c.Window,
 			Unit:   "mJ",
-			Value:  energyWindowMJ,
+			Value:  math.Floor(energyWindowMJ),
 			Quality: &analysis.Quality{
 				SamplesUsed: a.rawTicks,
 				DelayTicks:  m.delayTicks,
@@ -366,7 +366,7 @@ func (m *GpuWindowEnergy) Run(c *analysis.Cycle) error {
 			Key:    analysis.Key(analysis.MetricID(MetricGpuPowerMW), labelsTotal),
 			Window: c.Window,
 			Unit:   "mW",
-			Value:  powerTotalMW,
+			Value:  math.Floor(powerTotalMW),
 			Quality: &analysis.Quality{
 				SamplesUsed: a.rawTicks,
 				DelayTicks:  m.delayTicks,
@@ -581,47 +581,47 @@ func (m *GpuIdleDynamic) Run(c *analysis.Cycle) error {
 			Key:    analysis.Key(MetricGpuPowerMW, labelsTotal),
 			Window: c.Window,
 			Unit:   "mW",
-			Value:  totalPowerMW,
+			Value:  math.Floor(totalPowerMW),
 		})
 		c.Sink.Emit(c.Ctx, analysis.Point{
 			Key:    analysis.Key(MetricGpuPowerMW, labelsIdle),
 			Window: c.Window,
 			Unit:   "mW",
-			Value:  idleMW,
+			Value:  math.Floor(idleMW),
 		})
 		c.Sink.Emit(c.Ctx, analysis.Point{
 			Key:    analysis.Key(MetricGpuPowerMW, labelsDyn),
 			Window: c.Window,
 			Unit:   "mW",
-			Value:  dynMW,
+			Value:  math.Floor(dynMW),
 		})
 
 		c.Sink.Emit(c.Ctx, analysis.Point{
 			Key:    analysis.Key(MetricGpuEnergyMJ, labelsTotal),
 			Window: c.Window,
 			Unit:   "mJ",
-			Value:  st.TotalMJ,
+			Value:  math.Floor(st.TotalMJ),
 		})
 		c.Sink.Emit(c.Ctx, analysis.Point{
 			Key:    analysis.Key(MetricGpuEnergyMJ, labelsIdle),
 			Window: c.Window,
 			Unit:   "mJ",
-			Value:  st.IdleMJ,
+			Value:  math.Floor(st.IdleMJ),
 		})
 		c.Sink.Emit(c.Ctx, analysis.Point{
 			Key:    analysis.Key(MetricGpuEnergyMJ, labelsDyn),
 			Window: c.Window,
 			Unit:   "mJ",
-			Value:  st.DynamicMJ,
+			Value:  math.Floor(st.DynamicMJ),
 		})
 		diag := config.GetIdleDiagnosticsEnabled()
 		if diag {
 			ql := analysis.Labels{"name": modelName, "gpu_uuid": uuid, "mode": q.Mode}
 			c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricIdleModelReady, ql), Window: c.Window, Unit: "bool", Value: boolToFloat(q.Ready)})
-			c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricIdleModelBins, ql), Window: c.Window, Unit: "count", Value: float64(q.BinsPopulated)})
-			c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricIdleModelPoints, ql), Window: c.Window, Unit: "count", Value: float64(q.TotalPoints)})
-			c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricIdleModelMode, ql), Window: c.Window, Unit: "enum", Value: modeToFloat(q.Mode)})
-			c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricIdleModelBetaMW, ql), Window: c.Window, Unit: "mW", Value: q.Beta})
+			c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricIdleModelBins, ql), Window: c.Window, Unit: "count", Value: math.Floor(float64(q.BinsPopulated))})
+			c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricIdleModelPoints, ql), Window: c.Window, Unit: "count", Value: math.Floor(float64(q.TotalPoints))})
+			c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricIdleModelMode, ql), Window: c.Window, Unit: "enum", Value: math.Floor(modeToFloat(q.Mode))})
+			c.Sink.Emit(c.Ctx, analysis.Point{Key: analysis.Key(MetricIdleModelBetaMW, ql), Window: c.Window, Unit: "mW", Value: math.Floor(q.Beta)})
 		}
 	}
 
