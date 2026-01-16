@@ -126,23 +126,6 @@ func main() {
 
 	klog.Infof("Kepler running on version: %s", build.Version)
 
-	// // prometheus
-	// registry := metrics.GetRegistry()
-	// registry.MustRegister(prometheus.NewGaugeFunc(
-	// 	prometheus.GaugeOpts{
-	// 		Name: "kepler_exporter_build_info",
-	// 		Help: "A metric with a constant '1' value labeled by version, revision, branch, os and arch from which kepler_exporter was built.",
-	// 		ConstLabels: prometheus.Labels{
-	// 			"branch":   build.Branch,
-	// 			"revision": build.Revision,
-	// 			"version":  build.Version,
-	// 			"os":       build.OS,
-	// 			"arch":     build.Arch,
-	// 		},
-	// 	},
-	// 	func() float64 { return 1 },
-	// ))
-
 	platform.SetIsSystemCollectionSupported(!appConfig.DisablePowerMeter)
 	components.SetIsSystemCollectionSupported(!appConfig.DisablePowerMeter)
 
@@ -179,7 +162,53 @@ func main() {
 		config.SetEnabledGPU(false)
 	}
 
+	// ============================================================
+	// IMPORTANT FIX:
+	// Start HTTP server (including /healthz) BEFORE any long-running
+	// calibration so Kubernetes startupProbe can succeed even when
+	// calibration budgets are large/user-configurable.
+	// ============================================================
+
+	// Create Tycho-owned Prometheus registry + HTTP server early
+	reg := prometheus.NewRegistry()
+
+	reg.MustRegister(prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Name: "tycho_exporter_build_info",
+			Help: "Constant 1 with build labels.",
+			ConstLabels: prometheus.Labels{
+				"branch":   build.Branch,
+				"revision": build.Revision,
+				"version":  build.Version,
+				"os":       build.OS,
+				"arch":     build.Arch,
+			},
+		},
+		func() float64 { return 1 },
+	))
+
+	// TLS optional
+	tlsCfg, _ := exporterhttp.LoadTLSFromWebConfig(appConfig.TLSFilePath)
+
+	metricPathConfig := config.GetMetricPath(appConfig.MetricsPath)
+	bindAddressConfig := config.GetBindAddress(appConfig.Address)
+
+	httpSrv := exporterhttp.New(exporterhttp.Config{
+		Address:       bindAddressConfig,
+		MetricsPath:   metricPathConfig,
+		EnableHealthz: true,
+		EnableRoot:    true,
+		EnablePprof:   true,
+		TLS:           tlsCfg,
+	}, reg)
+
+	// Start listening immediately so startupProbe can pass during calibration.
+	httpSrv.Start()
+
+	// ------------------------------------------------------------
+
 	// Optional: GPU accelerator registry (only when GPU is enabled and not empty).
+	// NOTE: This is still before calibration because calibration does not depend on it.
 	if !*tychoEmpty && config.EnableGpu() {
 		r := accelerator.GetRegistry()
 		if a, err := accelerator.New(config.GPU, true); err == nil {
@@ -190,26 +219,7 @@ func main() {
 		defer accelerator.Shutdown()
 	}
 
-	// new eBPF exporter
-	bpfExporter, err := bpf.NewExporter()
-	if err != nil {
-		klog.Fatalf("failed to create eBPF exporter: %v", err)
-	}
-	defer bpfExporter.Detach()
-
-	// new eBPF exporter manager
-	collMgr := engine.New(bpfExporter)
-	if collMgr == nil {
-		klog.Fatal("could not create a collector manager")
-	}
-	defer collMgr.Stop()
-
-	// Tycho owns scheduling
-	if err := collMgr.StatsCollector.Initialize(); err != nil {
-		klog.Fatalf("failed to init stats collector: %v", err)
-	}
-
-	// start monotonic time
+	// start monotonic time (needed for calibration.Init later, and for main runtime)
 	mono := clock.NewMono(clock.DefaultSource, time.Duration(config.TimebaseQuantumMs())*time.Millisecond)
 
 	// calibrate if necessary
@@ -237,6 +247,25 @@ func main() {
 	enableGpu := config.EnableGpu()
 
 	klog.Infof("[tycho] enabled collectors: bpf=%v rapl=%v redfish=%v gpu=%v", enableBpf, enableRapl, enableRedfish, enableGpu)
+
+	// new eBPF exporter
+	bpfExporter, err := bpf.NewExporter()
+	if err != nil {
+		klog.Fatalf("failed to create eBPF exporter: %v", err)
+	}
+	defer bpfExporter.Detach()
+
+	// new eBPF exporter manager
+	collMgr := engine.New(bpfExporter)
+	if collMgr == nil {
+		klog.Fatal("could not create a collector manager")
+	}
+	defer collMgr.Stop()
+
+	// Tycho owns scheduling
+	if err := collMgr.StatsCollector.Initialize(); err != nil {
+		klog.Fatalf("failed to init stats collector: %v", err)
+	}
 
 	// Central buffer manager
 	bufMgr := ring.NewManager()
@@ -350,56 +379,14 @@ func main() {
 	}
 
 	// --- Analysis sinks ---
-	//logSink := analysisexport.NewLogSink()
-
-	// Prometheus sink for analysis points (registered into the existing registry later).
 	tychoPromSink := analysisexport.NewPrometheusSink(analysisexport.PrometheusConfig{
 		Prefix:      "tycho", // becomes "tycho_"
 		EnableDebug: false,   // window ticks + quality gauges
 	})
-
-	// Fan-out so logs stay useful while you bring up Prometheus.
-	// sink := analysisexport.NewMultiSink(logSink, analysisexport.NewTruncatingSink(tychoPromSink))
-	//sink := analysisexport.NewMultiSink(logSink, tychoPromSink)
 	sink := analysisexport.Sink(tychoPromSink)
 
-	// Create Tycho-owned Prometheus registry + HTTP server
-	reg := prometheus.NewRegistry()
-
-	reg.MustRegister(prometheus.NewGaugeFunc(
-		prometheus.GaugeOpts{
-			Name: "tycho_exporter_build_info",
-			Help: "Constant 1 with build labels.",
-			ConstLabels: prometheus.Labels{
-				"branch":   build.Branch,
-				"revision": build.Revision,
-				"version":  build.Version,
-				"os":       build.OS,
-				"arch":     build.Arch,
-			},
-		},
-		func() float64 { return 1 },
-	))
-
-	// Register Tycho analysis collector into this registry
+	// Register Tycho analysis collector into the already-running registry
 	reg.MustRegister(tychoPromSink.Collector())
-
-	// TLS optional
-	tlsCfg, _ := exporterhttp.LoadTLSFromWebConfig(appConfig.TLSFilePath)
-
-	metricPathConfig := config.GetMetricPath(appConfig.MetricsPath)
-	bindAddressConfig := config.GetBindAddress(appConfig.Address)
-
-	httpSrv := exporterhttp.New(exporterhttp.Config{
-		Address:       bindAddressConfig,
-		MetricsPath:   metricPathConfig,
-		EnableHealthz: true,
-		EnableRoot:    true,
-		EnablePprof:   true,
-		TLS:           tlsCfg,
-	}, reg)
-
-	httpSrv.Start()
 
 	analysisEng := analysis.NewEngine(
 		mono,
@@ -494,7 +481,6 @@ func main() {
 	klog.Flush()
 	return
 	//klog.FlushAndExit(klog.ExitFlushTimeout, 0)
-
 }
 
 // func rootHandler(metricPathConfig string) http.HandlerFunc {
