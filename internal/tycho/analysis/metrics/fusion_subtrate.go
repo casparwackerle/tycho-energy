@@ -209,7 +209,7 @@ func (m *FusionSubstrate) Run(c *analysis.Cycle) error {
 		emit("fusion_redfish_obs_count_horizon", "count", float64(len(cache.RedfishObs)))
 
 		// Lightweight log.
-		klog.V(2).Infof("[analysis] fusion diag window=%s chassis=%q epkg_mj=%.3f edram_mj=%.3f egpu_mj=%.3f instr=%.0f redfish_obs=%d",
+		klog.V(5).Infof("[analysis] fusion diag window=%s chassis=%q epkg_mj=%.3f edram_mj=%.3f egpu_mj=%.3f instr=%.0f redfish_obs=%d",
 			c.Window.String(), chassis, epkg, edram, egpu, instr, len(cache.RedfishObs))
 	}
 
@@ -571,7 +571,7 @@ func (m *FusionSubstrate) refreshRedfishObs(
 			}
 		}
 
-		klog.V(2).Infof(
+		klog.V(5).Infof(
 			"[analysis] fusion redfish diag chassis=%q searchOK=%v bestDelayMs=%d chosenMs=%d rawObs=%d zeroMonoCorr=%d recent=%d recentIdxOK=%d kept=%d epsMW=%.3f stepDetected=%v stepMaxDeltaMW=%.3f scoreCut=%d h=[%d,%d)",
 			chassis, searchOK, bestDelayMs, selDelayMs, len(obs), nZero, nRecent, nIdxOK, len(cache.RedfishObs),
 			epsMW, stepDetected, stepMaxDeltaMW, scoreCut, hStart, hEnd,
