@@ -272,7 +272,6 @@ func (m *FusionSubstrate) refreshRedfishObs(
 		recentScoreSec = 20.0
 
 		// Step detector threshold on parts power change (mW).
-		// Keep conservative: above noise, below real stress steps. TODO: make configurable if needed.
 		stepTauMW = 20000.0 // 20 W
 	)
 
@@ -331,13 +330,10 @@ func (m *FusionSubstrate) refreshRedfishObs(
 	}
 
 	// --- Slice 15: step proxy computed from already-available parts power series ---
-	// DeltaP_parts(t) = |P_parts(t) - P_parts(t-Δ)|, over the most recent scoring region.
-	// We detect a step if max DeltaP_parts exceeds stepTauMW.
 	stepDetected := false
 	stepMaxDeltaMW := 0.0
 
 	if cache.HorizonBins > 1 {
-		// Evaluate over the same "recent" tail we score.
 		recentBins := int(math.Round(recentScoreSec / dtSec))
 		if recentBins < 2 {
 			recentBins = 2
@@ -379,9 +375,7 @@ func (m *FusionSubstrate) refreshRedfishObs(
 		rawEnd := hEnd + dTicks
 
 		obs, n := fusion.ExtractRedfishObs(c, chassis, dTicks, rawStart, rawEnd, kernel, kernelMs)
-
 		if n <= 0 || len(obs) == 0 {
-			// Trigger: insufficient Redfish samples.
 			return 0, nil, false
 		}
 
@@ -391,13 +385,18 @@ func (m *FusionSubstrate) refreshRedfishObs(
 		for i := range obs {
 			o := obs[i]
 
+			// HARD GUARD: never allow MonoCorr==0 into scoring path.
+			if o.MonoCorr == 0 {
+				continue
+			}
+
 			// Only score the most recent part.
 			if o.MonoCorr+1 <= scoreCut {
 				continue
 			}
 
 			k := fusion.BinIndex(int64(o.MonoCorr / cache.QuantumTicks))
-			idx, okIdx := cacheIdx(cache, k) // from fusion_model.go, same package
+			idx, okIdx := cacheIdx(cache, k)
 			if !okIdx {
 				continue
 			}
@@ -444,9 +443,6 @@ func (m *FusionSubstrate) refreshRedfishObs(
 	searchOK := (bestDelayMs >= 0) && len(bestObs) > 0 && finiteLocal(bestScore)
 
 	// Choose delay:
-	// - if search succeeded: bestDelayMs
-	// - else: hold last known-good
-	// - else: configured fixed delay
 	chosenMs := cfgDelayMs
 	if searchOK {
 		chosenMs = bestDelayMs
@@ -454,8 +450,7 @@ func (m *FusionSubstrate) refreshRedfishObs(
 		chosenMs = prevDelayMs
 	}
 
-	// Rate-limit delay changes.
-	// Slice 15: adaptive slew. Only allow fast movement when a step is detected.
+	// Rate-limit delay changes (adaptive slew).
 	maxStepPerCycle := maxStepPerCycleNormal
 	if stepDetected {
 		maxStepPerCycle = maxStepPerCycleStep
@@ -479,8 +474,6 @@ func (m *FusionSubstrate) refreshRedfishObs(
 	c.State.Set(prevKey, chosenMs)
 	selDelayMs = chosenMs
 
-	//klog.V(2).Infof("[analysis] fusion redfish: chosen_delay_ms=%d chassis=%q", selDelayMs, chassis)
-
 	// Populate cache.RedfishObs for chosen delay (reuse bestObs if matches).
 	cache.RedfishObs = cache.RedfishObs[:0]
 	var chosenObs []fusion.RedfishObs
@@ -498,18 +491,27 @@ func (m *FusionSubstrate) refreshRedfishObs(
 	}
 
 	if len(chosenObs) > 0 {
-		cache.RedfishObs = append(cache.RedfishObs, chosenObs...)
+		// HARD GUARD: drop MonoCorr==0 even if upstream accidentally emits it.
+		for i := range chosenObs {
+			if chosenObs[i].MonoCorr == 0 {
+				continue
+			}
+			cache.RedfishObs = append(cache.RedfishObs, chosenObs[i])
+		}
 	}
 
 	// Diagnostics return values: deficit (no eps) over the same recent region.
 	// deficit = max(0, parts - sys)
-	if len(chosenObs) > 0 {
+	if len(cache.RedfishObs) > 0 {
 		var sum float64
 		var mx float64
 
 		used := 0
-		for i := range chosenObs {
-			o := chosenObs[i]
+		for i := range cache.RedfishObs {
+			o := cache.RedfishObs[i]
+			if o.MonoCorr == 0 {
+				continue
+			}
 			if o.MonoCorr+1 <= scoreCut {
 				continue
 			}
@@ -539,6 +541,41 @@ func (m *FusionSubstrate) refreshRedfishObs(
 			deficitSumMW = sum
 			deficitMaxMW = mx
 		}
+	}
+
+	// NEW: actionable log when something looks wrong (search failed or no usable obs).
+	if klog.V(2).Enabled() && (!searchOK || len(cache.RedfishObs) == 0) {
+		// Quick breakdown for debugging: how many raw obs would have been dropped due to MonoCorr==0?
+		dTicks := c.Mono.TicksForMsCeil(selDelayMs)
+		rawStart := hStart + dTicks
+		rawEnd := hEnd + dTicks
+		obs, _ := fusion.ExtractRedfishObs(c, chassis, dTicks, rawStart, rawEnd, kernel, kernelMs)
+
+		var nZero int
+		var nRecent int
+		var nIdxOK int
+
+		for i := range obs {
+			o := obs[i]
+			if o.MonoCorr == 0 {
+				nZero++
+				continue
+			}
+			if o.MonoCorr+1 <= scoreCut {
+				continue
+			}
+			nRecent++
+			k := fusion.BinIndex(int64(o.MonoCorr / cache.QuantumTicks))
+			if _, okIdx := cacheIdx(cache, k); okIdx {
+				nIdxOK++
+			}
+		}
+
+		klog.V(2).Infof(
+			"[analysis] fusion redfish diag chassis=%q searchOK=%v bestDelayMs=%d chosenMs=%d rawObs=%d zeroMonoCorr=%d recent=%d recentIdxOK=%d kept=%d epsMW=%.3f stepDetected=%v stepMaxDeltaMW=%.3f scoreCut=%d h=[%d,%d)",
+			chassis, searchOK, bestDelayMs, selDelayMs, len(obs), nZero, nRecent, nIdxOK, len(cache.RedfishObs),
+			epsMW, stepDetected, stepMaxDeltaMW, scoreCut, hStart, hEnd,
+		)
 	}
 
 	klog.V(6).Infof("[analysis] fusion redfish obs chassis=%q n=%d delayMs=%d kernel=%q searchOK=%v",

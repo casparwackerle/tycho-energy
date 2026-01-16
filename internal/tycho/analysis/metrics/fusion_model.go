@@ -517,10 +517,16 @@ func clampThetaNonNeg(th theta5) (theta5, int) {
 	// Delta: keep as-is.
 	return th, clamped
 }
-
 func obsToRow(cache *fusion.Cache, dtSec, monoQuantumSec float64, obs fusion.RedfishObs) ([5]float64, bool) {
 	var x [5]float64
 	if cache == nil || cache.QuantumTicks == 0 || cache.HorizonBins <= 0 {
+		return x, false
+	}
+	if dtSec <= 0 || monoQuantumSec <= 0 {
+		return x, false
+	}
+	// CRITICAL: MonoCorr==0 can cause uint64 underflow in (t1-1) later.
+	if obs.MonoCorr == 0 {
 		return x, false
 	}
 
@@ -566,18 +572,45 @@ func obsToRow(cache *fusion.Cache, dtSec, monoQuantumSec float64, obs fusion.Red
 		}
 
 		t1 := obs.MonoCorr
+		if t1 == 0 {
+			return x, false
+		}
+
 		t0 := uint64(0)
 		if t1 > Tticks {
 			t0 = t1 - Tticks
 		}
+		// If the window is empty/degenerate, no usable row.
+		if t1 <= t0 {
+			return x, false
+		}
 
 		kStart := fusion.BinIndex(int64(t0 / cache.QuantumTicks))
+
+		// Prevent underflow in (t1-1).
+		if t1 == 0 {
+			return x, false
+		}
 		kEnd := fusion.BinIndex(int64((t1 - 1) / cache.QuantumTicks))
 
 		var sumPkg, sumDram, sumGpu, sumInstr float64
 		var sumSec float64
 
+		// Belt-and-suspenders: cap the number of bins we are willing to iterate.
+		// In the normal case, this should be tiny (about Tsec/quantum).
+		const maxBinsToScan = 5000
+		var binsScanned int
+
 		for k := kStart; k <= kEnd; k++ {
+			binsScanned++
+			if binsScanned > maxBinsToScan {
+				klog.V(2).Infof(
+					"[analysis] fusion obsToRow abort: too many bins scanned=%d kStart=%d kEnd=%d t0=%d t1=%d quantumTicks=%d horizon=%d",
+					binsScanned, int64(kStart), int64(kEnd), t0, t1, cache.QuantumTicks, cache.HorizonBins,
+				)
+				return x, false
+			}
+
 			i, ok := cacheIdx(cache, k)
 			if !ok {
 				continue

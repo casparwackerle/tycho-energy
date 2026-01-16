@@ -10,6 +10,7 @@ import (
 	gpufuse "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/gpu"
 	analysisops "github.com/casparwackerle/tycho-energy/internal/tycho/analysis/operators"
 	"github.com/casparwackerle/tycho-energy/internal/tycho/ring"
+	"k8s.io/klog/v2"
 )
 
 // DistributeDeltaToBins distributes a delta value (in "units") over overlap between
@@ -329,22 +330,43 @@ func ExtractRedfishObs(
 		func(s ring.RedfishSample) uint64 { return s.Mono },
 	)
 	if len(samples) == 0 {
+		// No data in the window at all.
 		return nil, 0
 	}
 
 	out := make([]RedfishObs, 0, len(samples))
+
+	// Diagnostics counters (for the "why is out empty?" case).
+	total := len(samples)
+	var matchedChassis int
+	var droppedChassis int
+	var droppedEarly int // tRaw <= delayTicks
+	var emitted int
+
 	for i := range samples {
 		s := samples[i]
+
 		if chassis != "" && s.ChassisID != chassis {
+			droppedChassis++
 			continue
 		}
+		matchedChassis++
+
 		tRaw := s.Mono
-		var tCorr uint64
-		if tRaw > delayTicks {
-			tCorr = tRaw - delayTicks
-		} else {
-			tCorr = 0
+
+		// CRITICAL: never emit MonoCorr==0.
+		// If we clamp to 0, obsToRow(avg1s_trailing) can underflow (t1-1) and/or scan absurd ranges.
+		if tRaw <= delayTicks {
+			droppedEarly++
+			continue
 		}
+		tCorr := tRaw - delayTicks
+		if tCorr == 0 {
+			// Should be impossible due to guard above, but keep belt-and-suspenders.
+			droppedEarly++
+			continue
+		}
+
 		out = append(out, RedfishObs{
 			ChassisID: s.ChassisID,
 			MonoCorr:  tCorr,
@@ -352,7 +374,18 @@ func ExtractRedfishObs(
 			Kernel:    kernel,
 			KernelMs:  kernelMs,
 		})
+		emitted++
 	}
+
+	// Log only in the pathological case (what you are debugging).
+	// This makes the log actionable without spamming normal operation.
+	if emitted == 0 {
+		klog.V(2).Infof(
+			"[analysis] redfish obs empty: chassis=%q total=%d matchedChassis=%d droppedChassis=%d droppedEarly(tRaw<=delayTicks)=%d delayTicks=%d raw=[%d,%d]",
+			chassis, total, matchedChassis, droppedChassis, droppedEarly, delayTicks, rawStart, rawEnd,
+		)
+	}
+
 	return out, len(out)
 }
 
