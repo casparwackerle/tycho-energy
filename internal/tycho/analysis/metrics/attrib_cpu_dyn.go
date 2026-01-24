@@ -645,8 +645,15 @@ func applyWorkloadRaplAllocs(c *analysis.Cycle, domain string, budgetMJ uint64, 
 	return alloc
 }
 
-// allocateComponentToMap is the allocator core from allocateComponent, but returns alloc map.
-// It guarantees sum(alloc)==budgetMJ with remainder routed to system.
+// allocateComponentToMap is the allocator core.
+// true two-stage allocation (window -> bins -> workloads)
+// with largest-remainder rounding at both stages.
+// Guarantees sum(alloc)==budgetMJ with any residual routed to __system__.
+//
+// Safety goals
+// - Conservative completion: any deficit is assigned to __system__.
+// - Stable remainder tie-breaking to reduce nondeterminism.
+// - No expensive second-pass verification.
 func allocateComponentToMap(budgetMJ uint64, bins attribBins) map[attribution.WorkloadKey]uint64 {
 	sys := attribution.SystemWorkloadKey()
 
@@ -656,18 +663,106 @@ func allocateComponentToMap(budgetMJ uint64, bins attribBins) map[attribution.Wo
 	if budgetMJ == 0 {
 		return alloc
 	}
-
-	sumW := 0.0
-	for i := range bins {
-		sumW += bins[i].total
-	}
-	if sumW <= 0 {
+	if len(bins) == 0 {
 		alloc[sys] = budgetMJ
 		return alloc
 	}
 
-	wByWk := make(map[attribution.WorkloadKey]float64, 128)
+	// Stable string key for deterministic tie-breaking.
+	wkKeyStr := func(w attribution.WorkloadKey) string {
+		if w.IsZero() || w.IsSystem() || (w.Namespace == "" && w.Pod == "" && w.Container == "") {
+			return "__system__"
+		}
+		return w.Namespace + "/" + w.Pod + "/" + w.Container
+	}
+
+	// -------------------------------------------------------------------------
+	// Stage 1: allocate window budget across bins proportional to bins[i].total.
+	// -------------------------------------------------------------------------
+	sumBins := 0.0
 	for i := range bins {
+		if bins[i].total > 0 {
+			sumBins += bins[i].total
+		}
+	}
+	if sumBins <= 0 {
+		alloc[sys] = budgetMJ
+		return alloc
+	}
+
+	binBudgets := make([]uint64, len(bins))
+
+	type binFrac struct {
+		i    int
+		frac float64
+	}
+
+	var sumFloor uint64
+	binFracs := make([]binFrac, 0, len(bins))
+
+	for i := range bins {
+		w := bins[i].total
+		if w <= 0 {
+			binBudgets[i] = 0
+			continue
+		}
+		exact := float64(budgetMJ) * (w / sumBins)
+		floor := uint64(exact) // truncation
+		binBudgets[i] = floor
+		sumFloor += floor
+		if frac := exact - float64(floor); frac > 0 {
+			binFracs = append(binFracs, binFrac{i: i, frac: frac})
+		}
+	}
+
+	if sumFloor < budgetMJ && len(binFracs) > 0 {
+		rem := budgetMJ - sumFloor
+		sort.Slice(binFracs, func(a, b int) bool {
+			if binFracs[a].frac != binFracs[b].frac {
+				return binFracs[a].frac > binFracs[b].frac
+			}
+			return binFracs[a].i < binFracs[b].i
+		})
+		for rem > 0 {
+			for j := 0; j < len(binFracs) && rem > 0; j++ {
+				binBudgets[binFracs[j].i]++
+				rem--
+			}
+		}
+	}
+
+	// Conservative completion at bin level (should normally be exact).
+	var sumBinBudgets uint64
+	for _, v := range binBudgets {
+		sumBinBudgets += v
+	}
+	if sumBinBudgets < budgetMJ {
+		alloc[sys] += (budgetMJ - sumBinBudgets)
+	}
+
+	// -------------------------------------------------------------------------
+	// Stage 2: per bin, allocate bin budget across workloads proportional to bins[i].w.
+	// -------------------------------------------------------------------------
+	type wkFrac struct {
+		wk   attribution.WorkloadKey
+		frac float64
+		key  string
+	}
+
+	for i := range bins {
+		bBudget := binBudgets[i]
+		if bBudget == 0 {
+			continue
+		}
+
+		// Bin has no observable mass -> route bin budget to system.
+		if bins[i].total <= 0 || len(bins[i].w) == 0 {
+			alloc[sys] += bBudget
+			continue
+		}
+
+		// Sum positive weights for this bin.
+		sumW := 0.0
 		for wk, ww := range bins[i].w {
 			if ww <= 0 {
 				continue
@@ -675,44 +770,72 @@ func allocateComponentToMap(budgetMJ uint64, bins attribBins) map[attribution.Wo
 			if wk.IsZero() {
 				wk = sys
 			}
-			wByWk[wk] += ww
+			sumW += ww
 		}
-	}
-	if _, ok := wByWk[sys]; !ok {
-		wByWk[sys] = 0
-	}
-
-	type fracEntry struct {
-		wk   attribution.WorkloadKey
-		frac float64
-	}
-	fracs := make([]fracEntry, 0, len(wByWk))
-
-	var sumFloor uint64
-	for wk, ww := range wByWk {
-		if ww <= 0 {
+		if sumW <= 0 {
+			alloc[sys] += bBudget
 			continue
 		}
-		exact := float64(budgetMJ) * (ww / sumW)
-		floor := uint64(exact)
-		alloc[wk] = floor
-		sumFloor += floor
-		if frac := exact - float64(floor); frac > 0 {
-			fracs = append(fracs, fracEntry{wk: wk, frac: frac})
-		}
-	}
 
-	if sumFloor < budgetMJ && len(fracs) > 0 {
-		rem := budgetMJ - sumFloor
-		sort.Slice(fracs, func(i, j int) bool { return fracs[i].frac > fracs[j].frac })
-		for rem > 0 && len(fracs) > 0 {
-			for i := 0; i < len(fracs) && rem > 0; i++ {
-				alloc[fracs[i].wk] += 1
-				rem--
+		// Floors and fractional parts for largest remainder within bin.
+		var sumFloorBin uint64
+		wkFracs := make([]wkFrac, 0, len(bins[i].w))
+
+		for wk, ww := range bins[i].w {
+			if ww <= 0 {
+				continue
+			}
+			if wk.IsZero() {
+				wk = sys
+			}
+
+			exact := float64(bBudget) * (ww / sumW)
+			floor := uint64(exact)
+			if floor > 0 {
+				alloc[wk] += floor
+				sumFloorBin += floor
+			}
+
+			if frac := exact - float64(floor); frac > 0 {
+				wkFracs = append(wkFracs, wkFrac{
+					wk:   wk,
+					frac: frac,
+					key:  wkKeyStr(wk),
+				})
 			}
 		}
+
+		// Distribute remainder (if any) to largest fractional parts.
+		if sumFloorBin < bBudget && len(wkFracs) > 0 {
+			rem := bBudget - sumFloorBin
+			sort.Slice(wkFracs, func(a, b int) bool {
+				if wkFracs[a].frac != wkFracs[b].frac {
+					return wkFracs[a].frac > wkFracs[b].frac
+				}
+				// Deterministic tie-break to reduce output jitter.
+				return wkFracs[a].key < wkFracs[b].key
+			})
+			for rem > 0 {
+				for j := 0; j < len(wkFracs) && rem > 0; j++ {
+					alloc[wkFracs[j].wk]++
+					rem--
+				}
+			}
+			sumFloorBin = bBudget // remainder distribution completes the bin
+		}
+
+		// Conservative completion within bin (covers numerical corner cases).
+		if sumFloorBin < bBudget {
+			alloc[sys] += (bBudget - sumFloorBin)
+		}
 	}
 
+	// Ensure system always present.
+	if _, ok := alloc[sys]; !ok {
+		alloc[sys] = 0
+	}
+
+	// Final conservative completion at component level (covers any unexpected deficit).
 	var sumAlloc uint64
 	for _, v := range alloc {
 		sumAlloc += v
@@ -720,6 +843,7 @@ func allocateComponentToMap(budgetMJ uint64, bins attribBins) map[attribution.Wo
 	if sumAlloc < budgetMJ {
 		alloc[sys] += (budgetMJ - sumAlloc)
 	}
+
 	return alloc
 }
 
