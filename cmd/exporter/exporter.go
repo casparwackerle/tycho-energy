@@ -399,6 +399,9 @@ func main() {
 			SafetyOffset:   500 * time.Millisecond,
 		},
 		m.Store(),
+		func(ctx context.Context, store *analysis.PointStore) {
+			tychoPromSink.PublishStore(ctx, store)
+		},
 	)
 
 	// Run analysis periodically (Slice 0: 5s cadence).

@@ -98,44 +98,9 @@ func (s *PrometheusSink) Emit(_ context.Context, p analysis.Point) {
 	if s == nil {
 		return
 	}
-
-	// Defensive copy: labels map is mutable.
-	labels := p.Key.Labels.Clone()
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	f := s.ensureFamilyLocked(p.Key.ID, labels, p.Unit)
-
-	// Build label values in fixed order (missing keys -> "")
-	lv := make([]string, len(f.labelKeys))
-	for i, k := range f.labelKeys {
-		lv[i] = labels[k]
-	}
-
-	// Construct a stable per-series key under the fixed schema.
-	// This avoids issues where CanonicalString() would differ when some labels are missing.
-	serKey := seriesKey(f.name, f.labelKeys, lv)
-
-	ps := f.series[serKey]
-	if ps == nil {
-		ps = &promSeries{labelVals: lv}
-		f.series[serKey] = ps
-	} else {
-		// Keep stored slice immutable to reduce accidental aliasing.
-		ps.labelVals = lv
-	}
-
-	ps.value = p.Value
-	ps.winStart = p.Window.StartMono
-	ps.winEnd = p.Window.EndMono
-
-	if p.Quality != nil {
-		ps.hasQuality = true
-		ps.samples = p.Quality.SamplesUsed
-		ps.sockets = p.Quality.SocketsUsed
-		ps.delayTicks = p.Quality.DelayTicks
-	}
+	s.emitLocked(p)
 }
 
 // Delete implements analysis.Sink. It removes a time-series so it disappears from /metrics.
@@ -391,4 +356,51 @@ func isValidPromName(name string) bool {
 		}
 	}
 	return true
+}
+
+// PublishStore applies a full cycle's points under one lock.
+// This makes the exported snapshot atomic w.r.t. Prometheus scrapes.
+func (s *PrometheusSink) PublishStore(_ context.Context, store *analysis.PointStore) {
+	if s == nil || store == nil {
+		return
+	}
+
+	pts := store.AllUnique()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, p := range pts {
+		s.emitLocked(p)
+	}
+}
+
+func (s *PrometheusSink) emitLocked(p analysis.Point) {
+	labels := p.Key.Labels.Clone()
+	f := s.ensureFamilyLocked(p.Key.ID, labels, p.Unit)
+
+	lv := make([]string, len(f.labelKeys))
+	for i, k := range f.labelKeys {
+		lv[i] = labels[k]
+	}
+	serKey := seriesKey(f.name, f.labelKeys, lv)
+
+	ps := f.series[serKey]
+	if ps == nil {
+		ps = &promSeries{labelVals: lv}
+		f.series[serKey] = ps
+	} else {
+		ps.labelVals = lv
+	}
+
+	ps.value = p.Value
+	ps.winStart = p.Window.StartMono
+	ps.winEnd = p.Window.EndMono
+
+	if p.Quality != nil {
+		ps.hasQuality = true
+		ps.samples = p.Quality.SamplesUsed
+		ps.sockets = p.Quality.SocketsUsed
+		ps.delayTicks = p.Quality.DelayTicks
+	}
 }

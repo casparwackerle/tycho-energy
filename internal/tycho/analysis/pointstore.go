@@ -55,3 +55,24 @@ func (s *PointStore) AllInOrder() []Point {
 	copy(out, s.order)
 	return out
 }
+
+// AllUnique returns the last point per MetricKey, in first-seen order.
+// This avoids re-publishing overwritten points.
+func (s *PointStore) AllUnique() []Point {
+	if s == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(s.byKey))
+	out := make([]Point, 0, len(s.byKey))
+
+	for _, p := range s.order {
+		k := p.Key.CanonicalString()
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		// take the last version from byKey
+		out = append(out, s.byKey[k])
+	}
+	return out
+}
