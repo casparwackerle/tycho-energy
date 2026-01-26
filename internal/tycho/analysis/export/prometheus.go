@@ -360,18 +360,42 @@ func isValidPromName(name string) bool {
 
 // PublishStore applies a full cycle's points under one lock.
 // This makes the exported snapshot atomic w.r.t. Prometheus scrapes.
-func (s *PrometheusSink) PublishStore(_ context.Context, store *analysis.PointStore) {
+func (s *PrometheusSink) PublishStore(ctx context.Context, store *analysis.PointStore) {
 	if s == nil || store == nil {
 		return
 	}
 
-	pts := store.AllUnique()
+	dels := store.Deleted()
+	pts := store.AllInOrder() // or AllUnique() if you added it
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Apply explicit deletes first (from TTL GC etc.)
+	for _, k := range dels {
+		s.deleteLocked(k)
+	}
+
+	// Apply updates
 	for _, p := range pts {
 		s.emitLocked(p)
+	}
+}
+
+func (s *PrometheusSink) deleteLocked(key analysis.MetricKey) {
+	labels := key.Labels.Clone()
+	f := s.families[key.ID]
+	if f == nil {
+		return
+	}
+	lv := make([]string, len(f.labelKeys))
+	for i, k := range f.labelKeys {
+		lv[i] = labels[k]
+	}
+	serKey := seriesKey(f.name, f.labelKeys, lv)
+	delete(f.series, serKey)
+	if len(f.series) == 0 {
+		delete(s.families, key.ID)
 	}
 }
 

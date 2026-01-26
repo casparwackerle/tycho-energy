@@ -7,7 +7,8 @@ type PointStore struct {
 	byID  map[MetricID][]Point
 
 	// insertion order (debugging / deterministic “first encountered”)
-	order []Point
+	order   []Point
+	deleted []MetricKey
 }
 
 func NewPointStore() *PointStore {
@@ -34,6 +35,22 @@ func (s *PointStore) GetExact(key MetricKey) (Point, bool) {
 	}
 	p, ok := s.byKey[key.CanonicalString()]
 	return p, ok
+}
+
+func (s *PointStore) Delete(key MetricKey) {
+	if s == nil {
+		return
+	}
+	s.deleted = append(s.deleted, key)
+}
+
+func (s *PointStore) Deleted() []MetricKey {
+	if s == nil {
+		return nil
+	}
+	out := make([]MetricKey, len(s.deleted))
+	copy(out, s.deleted)
+	return out
 }
 
 func (s *PointStore) ListByID(id MetricID) []Point {

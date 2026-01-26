@@ -28,6 +28,9 @@ func (s *CollectingSink) Emit(ctx context.Context, p Point) {
 // Delete forwards deletions to the downstream sink.
 // The PointStore is per-cycle and does not need deletion semantics.
 func (s *CollectingSink) Delete(ctx context.Context, key MetricKey) {
+	if s.store != nil {
+		s.store.Delete(key)
+	}
 	if s.downstream != nil {
 		s.downstream.Delete(ctx, key)
 	}
