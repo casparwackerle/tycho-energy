@@ -213,22 +213,6 @@ func stateKeyCumEnergyU64(component, domain, kind string) string {
 	return fmt.Sprintf("cum_energy_u64_mj:%s:%s:%s", component, domain, kind)
 }
 
-// NOTE: these state helpers assume c.State is map-backed (common in Tycho slices).
-// If your concrete State type has Get/Set methods, adapt these four functions only.
-
-// func stateGetU64(st any, key string) (uint64, bool) {
-// 	m, ok := st.(map[string]any)
-// 	if !ok || m == nil {
-// 		return 0, false
-// 	}
-// 	v, ok := m[key]
-// 	if !ok {
-// 		return 0, false
-// 	}
-// 	u, ok := v.(uint64)
-// 	return u, ok
-// }
-
 func stateGetU64(st any, key string) (uint64, bool) {
 	// Preferred: StateStore-backed
 	if ss, ok := st.(*analysis.StateStore); ok && ss != nil {
@@ -253,13 +237,6 @@ func stateGetU64(st any, key string) (uint64, bool) {
 	return u, ok
 }
 
-//	func stateSetU64(st any, key string, v uint64) {
-//		m, ok := st.(map[string]any)
-//		if !ok || m == nil {
-//			return
-//		}
-//		m[key] = v
-//	}
 func stateSetU64(st any, key string, v uint64) {
 	// Preferred: StateStore-backed
 	if ss, ok := st.(*analysis.StateStore); ok && ss != nil {
@@ -275,12 +252,6 @@ func stateSetU64(st any, key string, v uint64) {
 	m[key] = v
 }
 
-//	func stateAddU64(st any, key string, delta uint64) uint64 {
-//		prev, _ := stateGetU64(st, key)
-//		next := prev + delta
-//		stateSetU64(st, key, next)
-//		return next
-//	}
 func stateAddU64(st any, key string, delta uint64) uint64 {
 	prev, _ := stateGetU64(st, key)
 	next := prev + delta
@@ -321,22 +292,6 @@ func deltaFromCumulative(state any, lastKey string, curr float64) float64 {
 	return d
 }
 
-// These state helpers assume c.State is map-backed.
-// If your concrete State type has Get/Set methods, adapt these four functions only.
-
-// func stateGetF64(st any, key string) (float64, bool) {
-// 	m, ok := st.(map[string]any)
-// 	if !ok || m == nil {
-// 		return 0, false
-// 	}
-// 	v, ok := m[key]
-// 	if !ok {
-// 		return 0, false
-// 	}
-// 	f, ok := v.(float64)
-// 	return f, ok
-// }
-
 func stateGetF64(st any, key string) (float64, bool) {
 	// Preferred: StateStore-backed
 	if ss, ok := st.(*analysis.StateStore); ok && ss != nil {
@@ -360,21 +315,6 @@ func stateGetF64(st any, key string) (float64, bool) {
 	f, ok := v.(float64)
 	return f, ok
 }
-
-// func stateSetF64(st any, key string, v float64) {
-// 	m, ok := st.(map[string]any)
-// 	if !ok || m == nil {
-// 		return
-// 	}
-// 	m[key] = v
-// }
-
-// func stateAddF64(st any, key string, delta float64) float64 {
-// 	prev, _ := stateGetF64(st, key)
-// 	next := prev + delta
-// 	stateSetF64(st, key, next)
-// 	return next
-// }
 
 func stateSetF64(st any, key string, v float64) {
 	// Preferred: StateStore-backed

@@ -668,33 +668,6 @@ func (s *sampler) detectNewSample(curr []ring.GpuSample) bool {
 			return true
 		}
 
-		// // (3) Util deltas (SM + Mem)
-		// duSM := c.SMUtilPct - prev.SMUtilPct
-		// if duSM < 0 {
-		// 	duSM = -duSM
-		// }
-		// if duSM > utilEps {
-		// 	klog.V(5).Infof("GPU-DEDUPE: uuid=%s SM util %.1f -> %.1f Δ=%.1f pp (>%0.1f) -> changed=true",
-		// 		c.UUID, prev.SMUtilPct, c.SMUtilPct, duSM, utilEps)
-		// 	s.lastDevices = curr
-		// 	return true
-		// }
-
-		// duMem := c.MemUtilPct - prev.MemUtilPct
-		// if duMem < 0 {
-		// 	duMem = -duMem
-		// }
-		// if duMem > utilEps {
-		// 	klog.V(5).Infof("GPU-DEDUPE: uuid=%s MEM util %.1f -> %.1f Δ=%.1f pp (>%0.1f) -> changed=true",
-		// 		c.UUID, prev.MemUtilPct, c.MemUtilPct, duMem, utilEps)
-		// 	s.lastDevices = curr
-		// 	return true
-		// }
-
-		// (Optional) You could also OR in InstantPowerMilliW when present, but
-		// it tends to be noisier on some cards.
-		// klog.V(5).Infof("GPU-DEDUPE: uuid=%s no change (power Δ=%d mW, sm Δ=%.2f, mem Δ=%.2f)",
-		// 	c.UUID, dp, duSM, duMem)
 	}
 
 	// If we reach here, none of the devices indicate freshness

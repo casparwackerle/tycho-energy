@@ -16,14 +16,6 @@ const (
 // Optional: helper for iteration where needed (not used by store directly).
 var AllDomains = []Domain{DomainPkg, DomainCore, DomainUncore, DomainDRAM}
 
-/* =========================
-   Orchestration primitives
-   ========================= */
-
-/* =========================
-   Results & baselines
-   ========================= */
-
 type Results struct {
 	// Mode used by orchestrator (optional; filled by orchestrator).
 
