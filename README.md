@@ -17,7 +17,7 @@ This repository combines original Tycho code with inherited upstream Kepler fram
 - [`internal/tycho/`](internal/tycho/) contains the **Tycho implementation** and the primary contribution of this work.
 - [`pkg/`](pkg/) contains **upstream Kepler framework code**, largely retained to avoid risky refactoring shortly before thesis submission. Only sporadic parts of this code are still used, mainly for compatibility and integration with existing collector and exporter paths.
 
-For thesis review and technical understanding of Tycho, readers should start with [`internal/tycho/`](internal/tycho/) and the documentation in [`doc_tycho/`](doc_tycho/).
+For thesis review and technical understanding of Tycho, readers should start with [`internal/tycho/`](internal/tycho/) and the documentation in [`the architecture chapter of the thesis`](https://github.com/casparwackerle/PowerStack/tree/main/thesis/MT/).
 
 
 ## Project overview
@@ -147,20 +147,6 @@ Tycho’s design goals, invariants, temporal model, energy attribution logic,
 and experimental validation. Readers seeking a deep or correct understanding
 of Tycho should start there.
 
-The documentation contained in this repository is intentionally lightweight
-and auxiliary. It exists to support development, debugging, and practical
-use, but it does not attempt to replicate or replace the thesis:
-
-- [`doc_tycho/`](doc_tycho/) contains Tycho-specific notes, configuration
-  guidance, and development-oriented documentation.
-- [`doc_tycho/DEVELOPMENT.md`](doc_tycho/DEVELOPMENT.md) describes the local
-  development environment, build workflow, and debugging setup.
-
-Feature-level documentation may be added over time, but the thesis remains the
-definitive reference for Tycho’s design and behavior.
-
-
-
 ---
 
 ## Related Projects
@@ -214,9 +200,7 @@ PowerStack’s repository also hosts the author’s scientific work that underpi
    https://github.com/casparwackerle/PowerStack/tree/main/thesis/MT  
    **Abstract:** 
    > Accurately attributing energy consumption to individual workloads in containerized environments is challenging due to shared hardware resources, limited observability, and asynchronous, heterogeneous telemetry. This thesis presents \emph{Tycho}, a novel, accuracy-first system for container-level power attribution that departs from window-delta-based approaches by retaining high-frequency measurement data in bounded historical buffers and deferring temporal reconciliation to analysis time. Independent metric collectors operate at source-appropriate frequencies, preserving native temporal structure and enabling post hoc alignment and correlation across diverse energy and utilization signals.
-
    > Building on an extensive review of existing power measurement and attribution approaches, the thesis develops a principled framework that explicitly models observation delay, enforces energy conservation by construction, and treats idle and residual energy as first-class outcomes. Tycho integrates CPU, GPU, and system-level energy signals, including composite GPU energy modelling from heterogeneous telemetry and delay-aware refinement of coarse system energy measurements using fine-grained subsystem proxies. The system is evaluated qualitatively and quantitatively on representative and concurrent workloads, demonstrating accurate and temporally coherent attribution behaviour across diverse execution scenarios without implying a unique ground truth.
-
    > Tycho is released as an open-source contribution to support reproducibility and further research in energy-aware systems. Experimental deployment and evaluation are supported by PowerStack, an auxiliary framework for fully automated installation and test environment setup.
 
 ---
